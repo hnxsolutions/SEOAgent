@@ -1,0 +1,14 @@
+{
+  "extends": ["next/core-web-vitals", "eslint:recommended"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es6": true
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off",
+    "@next/next/no-img-element": "warn",
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }]
+  }
+}
