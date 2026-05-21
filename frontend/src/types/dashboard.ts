@@ -140,6 +140,64 @@ export type AuditSummary = {
   top_issue_types: Record<string, number>;
 };
 
+export type AuditRun = {
+  id: UUID;
+  crawl_job_id: UUID;
+  project_id?: UUID | null;
+  status: string;
+  progress: number;
+  site_score?: number | null;
+  total_pages: number;
+  total_issues: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type SemanticIndexRun = {
+  id: UUID;
+  crawl_job_id: UUID;
+  project_id?: UUID | null;
+  status: string;
+  progress: number;
+  embedding_provider: string;
+  embedding_model: string;
+  embedding_dimension: number;
+  qdrant_collection: string;
+  total_pages: number;
+  total_vectors: number;
+  indexed_vectors: number;
+  skipped_duplicates: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type InternalLinkGeneration = {
+  crawl_id: UUID;
+  created_count: number;
+  recommendations: unknown[];
+};
+
+export type InternalLinkSummary = {
+  crawl_id: UUID;
+  project_id?: UUID | null;
+  total_pages: number;
+  orphan_pages: number;
+  weakly_linked_pages: number;
+  pages_with_too_few_internal_links: number;
+  pages_with_excessive_internal_links: number;
+  duplicate_anchor_text_risks: number;
+  total_recommendations: number;
+  average_priority_score: number;
+  recommendations_by_status: Record<string, number>;
+  recommendations_by_type: Record<string, number>;
+};
+
 export type SearchConsoleSummary = {
   project_id: UUID;
   imports_count: number;
@@ -149,6 +207,7 @@ export type SearchConsoleSummary = {
   opportunities_by_type: Record<string, number>;
   latest_sync_job_id?: UUID | null;
   latest_sync_status?: string | null;
+  selected_property?: GSCProperty | null;
   top_opportunities: SearchConsoleOpportunity[];
 };
 
@@ -171,9 +230,12 @@ export type SearchConsoleImport = {
 export type GSCProperty = {
   id: UUID;
   project_id?: UUID | null;
-  connection_id: UUID;
+  connection_id?: UUID | null;
   site_url: string;
+  source_type?: 'oauth' | 'manual' | string;
+  property_type?: 'domain' | 'url_prefix' | string;
   permission_level?: string | null;
+  notes?: string | null;
   is_selected: boolean;
   last_synced_at?: string | null;
   created_at: string;
@@ -183,6 +245,7 @@ export type GSCProperty = {
 export type GSCSyncJob = {
   id: UUID;
   project_id?: UUID | null;
+  connection_id?: UUID | null;
   property_id: UUID;
   import_id?: UUID | null;
   sync_type: string;
@@ -226,6 +289,173 @@ export type SearchConsoleOpportunity = {
   updated_at?: string | null;
 };
 
+export type RankTrackingRow = {
+  query: string;
+  page_url: string;
+  country?: string | null;
+  device?: string | null;
+  search_appearance?: string | null;
+  current_clicks: number;
+  current_impressions: number;
+  current_ctr: number;
+  current_position: number;
+  previous_clicks: number;
+  previous_impressions: number;
+  previous_ctr: number;
+  previous_position: number;
+  position_delta: number;
+  clicks_delta: number;
+  impressions_delta: number;
+  ctr_delta: number;
+};
+
+export type RankTrackingSummary = {
+  project_id: UUID;
+  total_keywords: number;
+  total_pages: number;
+  total_rows: number;
+  improved_keywords: number;
+  dropped_keywords: number;
+  striking_distance_keywords: number;
+  low_ctr_keywords: number;
+  total_clicks: number;
+  total_impressions: number;
+  average_ctr: number;
+  average_position: number;
+  message?: string | null;
+  top_movements: RankTrackingRow[];
+};
+
+export type RankTrackingPageRow = {
+  page_url: string;
+  query_count: number;
+  current_clicks: number;
+  current_impressions: number;
+  current_ctr: number;
+  current_position: number;
+  previous_clicks: number;
+  previous_impressions: number;
+  previous_ctr: number;
+  previous_position: number;
+  position_delta: number;
+  clicks_delta: number;
+  impressions_delta: number;
+};
+
+export type RankTrackingKeywordRow = {
+  query: string;
+  page_count: number;
+  current_clicks: number;
+  current_impressions: number;
+  current_ctr: number;
+  current_position: number;
+  previous_clicks: number;
+  previous_impressions: number;
+  previous_ctr: number;
+  previous_position: number;
+  position_delta: number;
+  clicks_delta: number;
+  impressions_delta: number;
+};
+
+export type ImpactExperiment = {
+  id: UUID;
+  project_id: UUID;
+  experiment_type: string;
+  source_type: string;
+  source_reference_id?: UUID | null;
+  target_page_url: string;
+  target_query?: string | null;
+  target_keywords?: string[] | null;
+  baseline_start_date: string;
+  baseline_end_date: string;
+  action_date?: string | null;
+  review_start_date?: string | null;
+  review_end_date?: string | null;
+  review_after_days: number;
+  status: string;
+  notes?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type ImpactResult = {
+  id: UUID;
+  project_id: UUID;
+  experiment_id: UUID;
+  clicks_delta: number;
+  impressions_delta: number;
+  ctr_delta: number;
+  position_delta: number;
+  percentage_clicks_change?: number | null;
+  percentage_impressions_change?: number | null;
+  outcome: string;
+  confidence_score: number;
+  summary: string;
+  created_at: string;
+};
+
+export type ImpactSummary = {
+  project_id: UUID;
+  total_experiments: number;
+  by_status: Record<string, number>;
+  by_outcome: Record<string, number>;
+  ready_for_review: number;
+  message?: string | null;
+};
+
+export type SerpSnapshotResult = {
+  id: UUID;
+  position: number;
+  title: string;
+  url: string;
+  domain: string;
+  snippet?: string | null;
+  is_target_domain: boolean;
+  is_target_url: boolean;
+};
+
+export type SerpSnapshotAsset = {
+  id: UUID;
+  snapshot_id: UUID;
+  asset_type: string;
+  file_path: string;
+  original_filename?: string | null;
+  mime_type?: string | null;
+  created_at: string;
+};
+
+export type SerpSnapshot = {
+  id: UUID;
+  project_id: UUID;
+  keyword: string;
+  target_url?: string | null;
+  target_domain: string;
+  search_engine: string;
+  country: string;
+  city?: string | null;
+  device: string;
+  language?: string | null;
+  capture_mode: string;
+  observed_target_rank?: number | null;
+  status: string;
+  captured_at: string;
+  notes?: string | null;
+  results: SerpSnapshotResult[];
+  assets?: SerpSnapshotAsset[];
+  competitors_above_target: SerpSnapshotResult[];
+  previous_rank?: number | null;
+  rank_delta?: number | null;
+};
+
+export type SerpSnapshotSummary = {
+  project_id: UUID;
+  total_snapshots: number;
+  keywords_tracked: number;
+  latest_snapshots: SerpSnapshot[];
+  message: string;
+};
+
 export type ContentSummary = {
   crawl_id: UUID;
   project_id?: UUID | null;
@@ -235,6 +465,22 @@ export type ContentSummary = {
   average_confidence_score: number;
   suggestions_by_status: Record<string, number>;
   suggestions_by_type: Record<string, number>;
+};
+
+export type ContentOptimizationRun = {
+  id: UUID;
+  crawl_id: UUID;
+  project_id?: UUID | null;
+  status: string;
+  progress: number;
+  model: string;
+  total_pages: number;
+  total_suggestions: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
 };
 
 export type ContentSuggestion = {
@@ -271,6 +517,25 @@ export type GeoAeoSummary = {
   average_topical_completeness_score: number;
   recommendations_by_status: Record<string, number>;
   recommendations_by_type: Record<string, number>;
+};
+
+export type GeoAeoRun = {
+  id: UUID;
+  crawl_id: UUID;
+  project_id?: UUID | null;
+  status: string;
+  progress: number;
+  model?: string | null;
+  total_pages: number;
+  total_recommendations: number;
+  average_geo_score: number;
+  average_aeo_score: number;
+  average_citation_readiness_score: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
 };
 
 export type GeoAeoPageScore = {
@@ -354,6 +619,73 @@ export type BlogDraft = {
   status: string;
   created_at: string;
   updated_at?: string | null;
+};
+
+export type BlogPublishConnection = {
+  id: UUID;
+  project_id?: UUID | null;
+  provider: 'wordpress' | 'nextjs_repo' | 'markdown_export' | string;
+  site_url?: string | null;
+  repo_connection_id?: UUID | null;
+  export_folder_path?: string | null;
+  username?: string | null;
+  status: string;
+  auto_upload_drafts_enabled: boolean;
+  auto_publish_enabled: boolean;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type BlogInfrastructureCheck = {
+  id: UUID;
+  project_id?: UUID | null;
+  repo_connection_id?: UUID | null;
+  status: string;
+  framework_detected?: string | null;
+  has_blog_index: boolean;
+  has_blog_detail_route: boolean;
+  has_content_directory: boolean;
+  blog_route_path?: string | null;
+  content_directory?: string | null;
+  recommended_strategy: string;
+  issues?: Record<string, unknown>[] | null;
+  created_at: string;
+};
+
+export type BlogPublishRun = {
+  id: UUID;
+  project_id?: UUID | null;
+  blog_draft_id?: UUID | null;
+  connection_id?: UUID | null;
+  provider: string;
+  mode: string;
+  status: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+  created_at: string;
+};
+
+export type BlogPublishResult = {
+  id: UUID;
+  project_id?: UUID | null;
+  publish_run_id: UUID;
+  blog_draft_id?: UUID | null;
+  provider: string;
+  status: string;
+  external_id?: string | null;
+  external_url?: string | null;
+  file_path?: string | null;
+  patch_id?: UUID | null;
+  pr_id?: UUID | null;
+  title?: string | null;
+  slug?: string | null;
+  created_at: string;
+};
+
+export type BlogPublishActionResponse = {
+  run: BlogPublishRun;
+  result?: BlogPublishResult | null;
 };
 
 export type RepoConnection = {
@@ -458,4 +790,42 @@ export type PullRequestRecord = {
   error_message?: string | null;
   created_at: string;
   updated_at?: string | null;
+};
+
+export type KnowledgeSource = {
+  id: UUID;
+  project_id?: UUID | null;
+  source_type: string;
+  title: string;
+  description?: string | null;
+  status: string;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type KnowledgeIndexRun = {
+  id: UUID;
+  project_id?: UUID | null;
+  source_id: UUID;
+  status: string;
+  progress: number;
+  embedding_provider: string;
+  embedding_model: string;
+  embedding_dimension: number;
+  qdrant_collection: string;
+  documents_processed: number;
+  chunks_indexed: number;
+  skipped_duplicates: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type GoogleOAuthStart = {
+  authorization_url: string;
+  state: string;
+  expires_at: string;
+  scopes: string[];
 };

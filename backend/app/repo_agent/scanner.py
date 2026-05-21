@@ -189,6 +189,8 @@ class NextJsRepoScanner:
                 )
             )
         for file in layout_files + page_files:
+            if is_internal_app_path(file.file_path):
+                continue
             if not file.has_metadata and not self._is_client_component(file.content):
                 issues.append(
                     self._file_issue(
@@ -464,6 +466,11 @@ def has_metadata_export(content: str) -> bool:
     )
 
 
+def is_client_component(content: str) -> bool:
+    first = content.strip().splitlines()[:3]
+    return any(line.strip().strip(";").strip("'\"") == "use client" for line in first)
+
+
 def has_jsonld(content: str) -> bool:
     return bool(
         "application/ld+json" in content
@@ -494,6 +501,8 @@ def static_routes_from_pages(files: Iterable[ScannedRepoFile]) -> List[str]:
     routes = []
     for file in files:
         path = file.file_path
+        if is_internal_app_path(path):
+            continue
         if not path.startswith("app/") or not path.endswith("/page.tsx") and path != "app/page.tsx":
             continue
         if "[" in path or "]" in path:
@@ -502,6 +511,12 @@ def static_routes_from_pages(files: Iterable[ScannedRepoFile]) -> List[str]:
         route = "/" + route.strip("/")
         routes.append(route if route != "/" else "/")
     return sorted(set(routes), key=lambda value: (value.count("/"), value))
+
+
+def is_internal_app_path(file_path: str) -> bool:
+    route = file_path.replace("\\", "/").removeprefix("app/").strip("/")
+    first = route.split("/", 1)[0]
+    return first in {"admin", "api", "_components", "dashboard"}
 
 
 def build_unified_diff(file_path: str, original: str, proposed: str) -> str:
@@ -536,19 +551,109 @@ def metadata_patch_content(original: str, route_label: str, site_url: str) -> st
         "  },\n"
         "};\n\n"
     )
-    if has_metadata_export(original):
+    if is_client_component(original) or re.search(r"export\s+(?:async\s+)?function\s+generateMetadata\b", original):
         return original
+    if has_metadata_export(original):
+        return complete_metadata_object(original, route_label, site_url)
     lines = original.splitlines(keepends=True)
-    insert_at = 0
-    if lines and lines[0].strip().strip(";").strip("'\"") == "use client":
-        insert_at = 1
-    while insert_at < len(lines) and (lines[insert_at].startswith("import ") or lines[insert_at].strip() == ""):
-        insert_at += 1
+    insert_at = find_import_block_end(lines)
     return "".join(lines[:insert_at]) + ("\n" if insert_at and lines[insert_at - 1].strip() else "") + metadata + "".join(lines[insert_at:])
 
 
+def complete_metadata_object(original: str, route_label: str, site_url: str) -> str:
+    bounds = find_exported_const_object_bounds(original, "metadata")
+    if not bounds:
+        return original
+    _open_at, close_at = bounds
+    object_text = original[bounds[0] : close_at + 1]
+    additions = []
+    description = f"Learn about {route_label.lower()} with clear service details and next steps."
+    if not re.search(r"\bdescription\s*:", object_text):
+        additions.append(f"  description: \"{description}\",")
+    if not re.search(r"\balternates\s*:", object_text):
+        additions.append("  alternates: {")
+        additions.append(f"    canonical: \"{site_url}\",")
+        additions.append("  },")
+    if not re.search(r"\bopenGraph\s*:", object_text):
+        additions.append("  openGraph: {")
+        additions.append(f"    title: \"{route_label}\",")
+        additions.append(f"    description: \"{description}\",")
+        additions.append(f"    url: \"{site_url}\",")
+        additions.append("    type: \"website\",")
+        additions.append("  },")
+    if not re.search(r"\btwitter\s*:", object_text):
+        additions.append("  twitter: {")
+        additions.append("    card: \"summary_large_image\",")
+        additions.append(f"    title: \"{route_label}\",")
+        additions.append(f"    description: \"{description}\",")
+        additions.append("  },")
+    if not additions:
+        return original
+    insertion = "\n" + "\n".join(additions) + "\n"
+    return original[:close_at] + insertion + original[close_at:]
+
+
+def find_import_block_end(lines: List[str]) -> int:
+    insert_at = 0
+    in_import = False
+    while insert_at < len(lines):
+        stripped = lines[insert_at].strip()
+        if not stripped:
+            insert_at += 1
+            continue
+        if stripped.startswith("import "):
+            in_import = not stripped.endswith(";")
+            insert_at += 1
+            continue
+        if in_import:
+            in_import = not stripped.endswith(";")
+            insert_at += 1
+            continue
+        break
+    return insert_at
+
+
+def find_exported_const_object_bounds(content: str, name: str) -> Optional[tuple[int, int]]:
+    match = re.search(rf"export\s+const\s+{re.escape(name)}\s*(?::[^=]+)?=\s*\{{", content)
+    if not match:
+        return None
+    open_at = content.find("{", match.start())
+    if open_at < 0:
+        return None
+    close_at = find_matching_delimiter(content, open_at, "{", "}")
+    if close_at is None:
+        return None
+    return open_at, close_at
+
+
+def find_matching_delimiter(content: str, start: int, open_char: str, close_char: str) -> Optional[int]:
+    depth = 0
+    quote: Optional[str] = None
+    escaped = False
+    for index in range(start, len(content)):
+        char = content[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def schema_patch_content(original: str, route_label: str, site_url: str) -> str:
-    if has_jsonld(original):
+    if is_client_component(original) or has_jsonld(original):
         return original
     jsonld_block = (
         "  const jsonLd = {\n"
@@ -598,8 +703,10 @@ def robots_patch_content(site_url: str) -> str:
     )
 
 
-def sitemap_patch_content(routes: Iterable[str], site_url: str) -> str:
+def sitemap_patch_content(routes: Iterable[str], site_url: str, original: str = "") -> str:
     route_list = sorted(set(routes or ["/"]))
+    if original.strip():
+        return extend_existing_sitemap(original, route_list, site_url)
     lines = "\n".join(f"    \"{route}\"," for route in route_list)
     return (
         "import type { MetadataRoute } from \"next\";\n\n"
@@ -614,6 +721,30 @@ def sitemap_patch_content(routes: Iterable[str], site_url: str) -> str:
         "  }));\n"
         "}\n"
     )
+
+
+def extend_existing_sitemap(original: str, routes: Iterable[str], site_url: str) -> str:
+    missing = [route for route in sorted(set(routes)) if route != "/" and route not in original]
+    if not missing:
+        return original
+    match = re.search(r"const\s+staticRoutes\s*:[^=]+=\s*\[", original)
+    if not match:
+        return original
+    array_open = original.rfind("[", 0, match.end())
+    array_close = find_matching_delimiter(original, array_open, "[", "]") if array_open >= 0 else None
+    if array_close is None:
+        return original
+    entries = []
+    for route in missing:
+        entries.append(
+            "    {\n"
+            f"      url: `${{baseUrl}}{route}`,\n"
+            "      lastModified: now,\n"
+            "      changeFrequency: \"monthly\",\n"
+            "      priority: 0.7,\n"
+            "    },\n"
+        )
+    return original[:array_close] + "".join(entries) + original[array_close:]
 
 
 def label_from_route(file_path: str, fallback: str = "Website Page") -> str:

@@ -10,11 +10,18 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.url_utils import URLNormalizer
 from app.models.crawl import CrawlError, CrawlJob, CrawlLink, CrawlPage, CrawlStatus
+
+POSTGRES_TEXT_CODECS = {
+    "UTF8": "utf-8",
+    "UNICODE": "utf-8",
+    "WIN1252": "cp1252",
+    "LATIN1": "latin1",
+}
 
 
 class CrawlRepository:
@@ -106,6 +113,7 @@ class CrawlRepository:
         depth: int = 0,
         retry_count: int = 0,
     ) -> CrawlPage:
+        page_data = await self._sanitize_for_database_encoding(page_data)
         url = page_data.get("url")
         normalized_url = page_data.get("normalized_url") or URLNormalizer.normalize_url(url or "")
 
@@ -143,6 +151,8 @@ class CrawlRepository:
         internal_links: List[Dict[str, Any]],
         external_links: List[Dict[str, Any]],
     ) -> None:
+        internal_links = await self._sanitize_for_database_encoding(internal_links)
+        external_links = await self._sanitize_for_database_encoding(external_links)
         await self.db.execute(delete(CrawlLink).where(CrawlLink.source_page_id == source_page_id))
 
         for link_type, links in (("internal", internal_links), ("external", external_links)):
@@ -178,15 +188,16 @@ class CrawlRepository:
         retry_count: int = 0,
         stack_trace: Optional[str] = None,
     ) -> CrawlError:
+        encoding = await self._server_encoding()
         error = CrawlError(
             crawl_job_id=job_id,
-            error_type=error_type,
-            error_message=error_message,
-            url=url,
+            error_type=self._sanitize_text(error_type, encoding),
+            error_message=self._sanitize_text(error_message, encoding),
+            url=self._sanitize_text(url, encoding),
             page_id=page_id,
-            error_code=error_code,
+            error_code=self._sanitize_text(error_code, encoding),
             retry_count=retry_count,
-            stack_trace=stack_trace,
+            stack_trace=self._sanitize_text(stack_trace, encoding),
         )
         self.db.add(error)
         await self.db.flush()
@@ -275,3 +286,43 @@ class CrawlRepository:
         await self.db.flush()
         await self.db.refresh(job)
         return job
+
+    async def _sanitize_for_database_encoding(self, value: Any) -> Any:
+        encoding = await self._server_encoding()
+        return self._sanitize_value(value, encoding)
+
+    async def _server_encoding(self) -> str:
+        encoding = self.db.info.get("server_encoding")
+        if encoding:
+            return str(encoding)
+        result = await self.db.execute(text("select current_setting('server_encoding')"))
+        encoding = str(result.scalar_one_or_none() or "UTF8").upper()
+        self.db.info["server_encoding"] = encoding
+        return encoding
+
+    def _sanitize_value(self, value: Any, encoding: str) -> Any:
+        if isinstance(value, str):
+            return self._sanitize_text(value, encoding)
+        if isinstance(value, list):
+            return [self._sanitize_value(item, encoding) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._sanitize_value(item, encoding) for item in value)
+        if isinstance(value, dict):
+            return {
+                self._sanitize_value(key, encoding) if isinstance(key, str) else key:
+                self._sanitize_value(item, encoding)
+                for key, item in value.items()
+            }
+        return value
+
+    def _sanitize_text(self, value: Optional[str], encoding: str) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.replace("\x00", "")
+        if encoding.upper() in {"UTF8", "UNICODE"}:
+            return cleaned
+        codec = POSTGRES_TEXT_CODECS.get(encoding.upper(), encoding.lower())
+        try:
+            return cleaned.encode(codec, errors="ignore").decode(codec, errors="ignore")
+        except LookupError:
+            return cleaned.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")

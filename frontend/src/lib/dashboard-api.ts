@@ -1,10 +1,15 @@
 import type { AxiosResponse } from 'axios';
 import { api, projectAPI } from '@/lib/api';
 import type {
+  AuditRun,
   AuditSummary,
   BlogDraft,
+  BlogInfrastructureCheck,
   BlogPlan,
+  BlogPublishActionResponse,
+  BlogPublishConnection,
   BlogTopic,
+  ContentOptimizationRun,
   ContentSuggestion,
   ContentSummary,
   CrawlJob,
@@ -12,20 +17,36 @@ import type {
   CrawlPage,
   GeoAeoPageScore,
   GeoAeoRecommendation,
+  GeoAeoRun,
   GeoAeoSummary,
+  GoogleOAuthStart,
   GSCProperty,
   GSCSyncJob,
+  ImpactExperiment,
+  ImpactResult,
+  ImpactSummary,
+  InternalLinkGeneration,
+  InternalLinkSummary,
+  KnowledgeIndexRun,
+  KnowledgeSource,
   PatchApplyRun,
   PlannerRun,
   PlannerSummary,
   PlannerTask,
   Project,
   PullRequestRecord,
+  RankTrackingKeywordRow,
+  RankTrackingPageRow,
+  RankTrackingRow,
+  RankTrackingSummary,
   RepoConnection,
   RepoScanRun,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
+  SerpSnapshot,
+  SerpSnapshotSummary,
+  SemanticIndexRun,
   SeoCodeIssue,
   SeoCodePatch,
   UUID,
@@ -45,6 +66,12 @@ async function unwrap<T>(request: Promise<AxiosResponse<T>>): Promise<T> {
 
 export const dashboardApi = {
   listProjects: async () => unwrap<Project[]>(projectAPI.list()),
+  createProject: (payload: {
+    name: string;
+    domain: string;
+    description?: string;
+    keywords?: string[];
+  }) => unwrap<Project>(projectAPI.create(payload)),
 
   planner: {
     run: (projectId: UUID) =>
@@ -76,6 +103,20 @@ export const dashboardApi = {
   },
 
   crawls: {
+    start: (payload: {
+      url: string;
+      project_id?: UUID;
+      name?: string;
+      max_pages?: number;
+      depth?: number;
+      priority?: string;
+      render_javascript?: boolean;
+      respect_robots_txt?: boolean;
+    }) => unwrap<CrawlJob>(api.post('/crawls/start', payload)),
+    status: (crawlId: UUID) =>
+      unwrap<{ job: CrawlJob; progress: Record<string, unknown>; stats: Record<string, unknown> }>(
+        api.get(`/crawls/${crawlId}/status`)
+      ),
     list: (projectId?: UUID) =>
       unwrap<CrawlListResponse>(
         api.get('/crawls/', { params: { project_id: projectId, limit: 50 } })
@@ -88,7 +129,32 @@ export const dashboardApi = {
       unwrap<AuditSummary>(api.get(`/audits/crawls/${crawlId}/summary`)),
   },
 
+  audits: {
+    start: (crawlId: UUID) =>
+      unwrap<AuditRun>(api.post(`/audits/crawls/${crawlId}/start`)),
+    status: (auditId: UUID) =>
+      unwrap<AuditRun>(api.get(`/audits/${auditId}/status`)),
+  },
+
+  semantic: {
+    index: (crawlId: UUID) =>
+      unwrap<SemanticIndexRun>(api.post(`/semantic/crawls/${crawlId}/index`)),
+    status: (runId: UUID) =>
+      unwrap<SemanticIndexRun>(api.get(`/semantic/index-runs/${runId}/status`)),
+  },
+
+  internalLinks: {
+    generate: (crawlId: UUID) =>
+      unwrap<InternalLinkGeneration>(
+        api.post(`/internal-links/crawls/${crawlId}/generate`)
+      ),
+    summary: (crawlId: UUID) =>
+      unwrap<InternalLinkSummary>(api.get(`/internal-links/crawls/${crawlId}/summary`)),
+  },
+
   searchConsole: {
+    startOAuth: () =>
+      unwrap<GoogleOAuthStart>(api.post('/search-console/connections/google/start')),
     summary: (projectId: UUID) =>
       unwrap<SearchConsoleSummary>(
         api.get(`/search-console/projects/${projectId}/summary`)
@@ -110,12 +176,46 @@ export const dashboardApi = {
           params: { limit: 25 },
         })
       ),
+    registerManualProperty: (
+      projectId: UUID,
+      payload: { site_url: string; property_type: 'domain' | 'url_prefix'; notes?: string }
+    ) =>
+      unwrap<GSCProperty>(
+        api.post(`/search-console/projects/${projectId}/property/manual`, payload)
+      ),
+    selectProperty: (projectId: UUID, propertyId: UUID) =>
+      unwrap<GSCProperty>(
+        api.post(`/search-console/projects/${projectId}/property`, {
+          property_id: propertyId,
+        })
+      ),
     imports: (projectId: UUID) =>
       unwrap<Envelope<SearchConsoleImport, 'imports'>>(
         api.get('/search-console/imports', {
           params: { project_id: projectId, limit: 25 },
         })
       ),
+    uploadCsv: (payload: {
+      file: File;
+      projectId?: UUID;
+      dateStart: string;
+      dateEnd: string;
+      comparisonWindow?: string;
+    }) => {
+      const form = new FormData();
+      form.append('file', payload.file);
+      if (payload.projectId) form.append('project_id', payload.projectId);
+      form.append('date_start', payload.dateStart);
+      form.append('date_end', payload.dateEnd);
+      if (payload.comparisonWindow) {
+        form.append('comparison_window', payload.comparisonWindow);
+      }
+      return unwrap<SearchConsoleImport>(
+        api.post('/search-console/imports', form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      );
+    },
     opportunities: (importId: UUID, status?: string) =>
       unwrap<Envelope<SearchConsoleOpportunity, 'opportunities'>>(
         api.get(`/search-console/imports/${importId}/opportunities`, {
@@ -136,7 +236,114 @@ export const dashboardApi = {
       ),
   },
 
+  rankTracking: {
+    summary: (projectId: UUID) =>
+      unwrap<RankTrackingSummary>(api.get(`/rank-tracking/projects/${projectId}/summary`)),
+    rankings: (
+      projectId: UUID,
+      params?: {
+        movement?: string;
+        sort?: string;
+        query?: string;
+        page_url?: string;
+        device?: string;
+        country?: string;
+        comparison_window?: string;
+      }
+    ) =>
+      unwrap<Envelope<RankTrackingRow, 'rankings'>>(
+        api.get(`/rank-tracking/projects/${projectId}/rankings`, {
+          params: { limit: 250, ...params },
+        })
+      ),
+    movements: (projectId: UUID, params?: { movement?: string; device?: string; country?: string }) =>
+      unwrap<Envelope<RankTrackingRow, 'rankings'>>(
+        api.get(`/rank-tracking/projects/${projectId}/movements`, {
+          params: { limit: 100, ...params },
+        })
+      ),
+    pages: (projectId: UUID, params?: { query?: string; device?: string; country?: string }) =>
+      unwrap<Envelope<RankTrackingPageRow, 'pages'>>(
+        api.get(`/rank-tracking/projects/${projectId}/pages`, {
+          params: { limit: 100, ...params },
+        })
+      ),
+    keywords: (projectId: UUID, params?: { query?: string; device?: string; country?: string }) =>
+      unwrap<Envelope<RankTrackingKeywordRow, 'keywords'>>(
+        api.get(`/rank-tracking/projects/${projectId}/keywords`, {
+          params: { limit: 100, ...params },
+        })
+      ),
+  },
+
+  impact: {
+    summary: (projectId: UUID) =>
+      unwrap<ImpactSummary>(api.get(`/impact/projects/${projectId}/summary`)),
+    experiments: (projectId: UUID) =>
+      unwrap<Envelope<ImpactExperiment, 'experiments'>>(
+        api.get(`/impact/projects/${projectId}/experiments`, { params: { limit: 100 } })
+      ),
+    createExperiment: (payload: {
+      project_id: UUID;
+      experiment_type: string;
+      source_type?: string;
+      target_page_url: string;
+      target_query?: string;
+      baseline_start_date: string;
+      baseline_end_date: string;
+      review_after_days?: number;
+      notes?: string;
+    }) => unwrap<ImpactExperiment>(api.post('/impact/experiments', payload)),
+    captureBaseline: (id: UUID) =>
+      unwrap(api.post(`/impact/experiments/${id}/capture-baseline`)),
+    markActionApplied: (id: UUID) =>
+      unwrap<ImpactExperiment>(api.post(`/impact/experiments/${id}/mark-action-applied`, {})),
+    evaluate: (id: UUID) =>
+      unwrap<ImpactResult>(api.post(`/impact/experiments/${id}/evaluate`)),
+  },
+
+  serpSnapshots: {
+    summary: (projectId: UUID) =>
+      unwrap<SerpSnapshotSummary>(api.get(`/serp-snapshots/projects/${projectId}/summary`)),
+    list: (projectId: UUID) =>
+      unwrap<Envelope<SerpSnapshot, 'snapshots'>>(
+        api.get(`/serp-snapshots/projects/${projectId}/snapshots`, { params: { limit: 100 } })
+      ),
+    history: (projectId: UUID, keyword?: string) =>
+      unwrap<{ history: SerpSnapshot[] }>(
+        api.get(`/serp-snapshots/projects/${projectId}/history`, {
+          params: keyword ? { keyword } : undefined,
+        })
+      ),
+    create: (projectId: UUID, payload: {
+      keyword: string;
+      target_url?: string;
+      target_domain: string;
+      country: string;
+      city?: string;
+      device: 'desktop' | 'mobile';
+      language?: string;
+      notes?: string;
+      results: Array<{ position: number; title: string; url: string; snippet?: string }>;
+    }) => unwrap<SerpSnapshot>(api.post(`/serp-snapshots/projects/${projectId}/snapshots`, payload)),
+    uploadScreenshot: (snapshotId: UUID, file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      return unwrap(api.post(`/serp-snapshots/${snapshotId}/screenshot`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      }));
+    },
+  },
+
   content: {
+    generate: (crawlId: UUID) =>
+      unwrap<ContentOptimizationRun>(
+        api.post(`/content-optimization/crawls/${crawlId}/generate`)
+      ),
+    runStatus: (runId: UUID) =>
+      unwrap<ContentOptimizationRun>(
+        api.get(`/content-optimization/runs/${runId}/status`)
+      ),
     summary: (crawlId: UUID) =>
       unwrap<ContentSummary>(
         api.get(`/content-optimization/crawls/${crawlId}/summary`)
@@ -162,6 +369,10 @@ export const dashboardApi = {
   },
 
   geoAeo: {
+    analyze: (crawlId: UUID) =>
+      unwrap<GeoAeoRun>(api.post(`/geo-aeo/crawls/${crawlId}/analyze`)),
+    runStatus: (runId: UUID) =>
+      unwrap<GeoAeoRun>(api.get(`/geo-aeo/runs/${runId}/status`)),
     summary: (crawlId: UUID) =>
       unwrap<GeoAeoSummary>(api.get(`/geo-aeo/crawls/${crawlId}/summary`)),
     pageScore: (pageId: UUID) =>
@@ -212,6 +423,77 @@ export const dashboardApi = {
         api.get(`/blogs/plans/${planId}/drafts`, { params: { limit: 50 } })
       ),
     draft: (draftId: UUID) => unwrap<BlogDraft>(api.get(`/blogs/drafts/${draftId}`)),
+  },
+
+  blogPublishing: {
+    connections: (projectId: UUID) =>
+      unwrap<Envelope<BlogPublishConnection, 'connections'>>(
+        api.get(`/blog-publishing/connections/projects/${projectId}`, {
+          params: { limit: 100 },
+        })
+      ),
+    checkInfrastructure: (projectId: UUID, payload?: { repo_connection_id?: UUID }) =>
+      unwrap<BlogInfrastructureCheck>(
+        api.post(`/blog-publishing/projects/${projectId}/check-infrastructure`, payload ?? {})
+      ),
+    infrastructure: (projectId: UUID) =>
+      unwrap<BlogInfrastructureCheck>(
+        api.get(`/blog-publishing/projects/${projectId}/infrastructure`)
+      ),
+    exportMarkdown: (
+      draftId: UUID,
+      payload: { connection_id?: UUID; export_folder_path?: string; overwrite?: boolean }
+    ) =>
+      unwrap<BlogPublishActionResponse>(
+        api.post(`/blog-publishing/drafts/${draftId}/export-markdown`, payload)
+      ),
+    createWordPressDraft: (draftId: UUID, connectionId: UUID) =>
+      unwrap<BlogPublishActionResponse>(
+        api.post(`/blog-publishing/drafts/${draftId}/create-wordpress-draft`, {
+          connection_id: connectionId,
+        })
+      ),
+    createNextJsBlogPatch: (
+      draftId: UUID,
+      payload: {
+        connection_id?: UUID;
+        repo_connection_id?: UUID;
+        content_directory?: string;
+        extension?: 'md' | 'mdx';
+        overwrite?: boolean;
+      }
+    ) =>
+      unwrap<BlogPublishActionResponse>(
+        api.post(`/blog-publishing/drafts/${draftId}/create-nextjs-blog-patch`, payload)
+      ),
+    createInfrastructurePatch: (
+      projectId: UUID,
+      payload?: { connection_id?: UUID; repo_connection_id?: UUID; strategy?: string }
+    ) =>
+      unwrap<BlogPublishActionResponse>(
+        api.post(`/blog-publishing/projects/${projectId}/create-blog-infrastructure-patch`, payload ?? {})
+      ),
+  },
+
+  knowledge: {
+    sources: (projectId: UUID) =>
+      unwrap<Envelope<KnowledgeSource, 'sources'>>(
+        api.get('/knowledge/sources', {
+          params: { project_id: projectId, limit: 50 },
+        })
+      ),
+    createSource: (payload: {
+      project_id?: UUID;
+      title: string;
+      content: string;
+      source_type?: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+    }) => unwrap<KnowledgeSource>(api.post('/knowledge/sources', payload)),
+    indexSource: (sourceId: UUID) =>
+      unwrap<KnowledgeIndexRun>(api.post(`/knowledge/sources/${sourceId}/index`)),
+    indexStatus: (runId: UUID) =>
+      unwrap<KnowledgeIndexRun>(api.get(`/knowledge/index-runs/${runId}/status`)),
   },
 
   repos: {

@@ -18,6 +18,7 @@ from app.schemas.search_console import (
     GoogleOAuthCallbackResponse,
     GoogleOAuthStartResponse,
     GSCPropertyListResponse,
+    GSCPropertyManualCreateRequest,
     GSCPropertyResponse,
     GSCPropertySelectRequest,
     GSCSyncJobListResponse,
@@ -106,6 +107,31 @@ async def select_gsc_property(
         return await service.select_property(project_id, _tenant_id(current_user), payload.property_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post(
+    "/projects/{project_id}/property/manual",
+    response_model=GSCPropertyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_manual_gsc_property(
+    project_id: UUID,
+    payload: GSCPropertyManualCreateRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Register a manual GSC property for CSV fallback and onboarding context."""
+    service = SearchConsoleService(db)
+    try:
+        return await service.register_manual_property(
+            project_id=project_id,
+            tenant_id=_tenant_id(current_user),
+            site_url=payload.site_url,
+            property_type=payload.property_type,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/projects/{project_id}/sync", response_model=GSCSyncJobResponse)

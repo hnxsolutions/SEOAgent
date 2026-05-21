@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import re
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -193,6 +194,36 @@ class PlannerService:
             "top_tasks": tasks[:10],
         }
 
+    async def list_duplicate_tasks(self, project_id: UUID, tenant_id: UUID) -> dict:
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        tasks = await self.repository.list_tasks_for_dedupe(project_id, tenant_id)
+        groups = self._duplicate_groups(tasks)
+        return self._dedupe_response(project_id, groups, dry_run=True, skipped_count=0)
+
+    async def dedupe_preview(self, project_id: UUID, tenant_id: UUID) -> dict:
+        return await self.list_duplicate_tasks(project_id, tenant_id)
+
+    async def dedupe_apply(self, project_id: UUID, tenant_id: UUID) -> dict:
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        tasks = await self.repository.list_tasks_for_dedupe(project_id, tenant_id)
+        groups = self._duplicate_groups(tasks)
+        duplicate_tasks = [task for group in groups for task in group["duplicates"]]
+        skipped_count = 0
+        for task in duplicate_tasks:
+            if self._enum_value(task.status) in {
+                SeoTaskStatus.todo.value,
+                SeoTaskStatus.in_progress.value,
+                SeoTaskStatus.approved.value,
+            }:
+                await self.repository.set_task_status(task, SeoTaskStatus.skipped)
+                skipped_count += 1
+        await self.db.commit()
+        return self._dedupe_response(project_id, groups, dry_run=False, skipped_count=skipped_count)
+
     async def _collect_signals(self, run: SeoPlannerRun) -> dict:
         crawl = await self.repository.latest_crawl(run.project_id, run.tenant_id)
         crawl_id = getattr(crawl, "id", None)
@@ -236,11 +267,14 @@ class PlannerService:
             "blog_topics": await self.repository.list_blog_topics(run.project_id, run.tenant_id),
             "repo_patches": await self.repository.list_repo_patches(run.project_id, run.tenant_id),
             "repo_issues": await self.repository.list_repo_issues(run.project_id, run.tenant_id),
+            "rank_summary": await self._rank_summary(run.project_id, run.tenant_id),
+            "impact_summary": await self._impact_summary(run.project_id, run.tenant_id),
         }
 
     def _task_candidates(self, signals: dict) -> List[TaskCandidate]:
         candidates: List[TaskCandidate] = []
         candidates.extend(self._tasks_from_gsc(signals["gsc_opportunities"]))
+        candidates.extend(self._tasks_from_serp_snapshots(signals["gsc_opportunities"]))
         candidates.extend(self._tasks_from_audit(signals["audit_issues"]))
         candidates.extend(self._tasks_from_content(signals["content_suggestions"]))
         candidates.extend(self._tasks_from_geo(signals["geo_recommendations"]))
@@ -260,6 +294,22 @@ class PlannerService:
                 )
             )
         return candidates
+
+    async def _rank_summary(self, project_id: UUID, tenant_id: UUID) -> dict:
+        try:
+            from app.services.rank_tracking import RankTrackingService
+
+            return await RankTrackingService(self.db).summary(project_id, tenant_id)
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    async def _impact_summary(self, project_id: UUID, tenant_id: UUID) -> dict:
+        try:
+            from app.services.impact import SeoImpactService
+
+            return await SeoImpactService(self.db).summary(project_id, tenant_id)
+        except Exception as exc:
+            return {"error": str(exc)}
 
     def _tasks_from_gsc(self, opportunities) -> List[TaskCandidate]:
         candidates = []
@@ -299,6 +349,33 @@ class PlannerService:
                     priority_score=float(getattr(opp, "priority_score", 60) or 60),
                     estimated_impact=SeoTaskImpact.high,
                     effort=effort,
+                )
+            )
+        return candidates
+
+    def _tasks_from_serp_snapshots(self, opportunities) -> List[TaskCandidate]:
+        candidates = []
+        seen_queries = set()
+        for opp in opportunities[:10]:
+            query = getattr(opp, "query", None)
+            if not query or query.lower() in seen_queries:
+                continue
+            seen_queries.add(query.lower())
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.manual_review,
+                    title=f"Capture manual SERP screenshot for keyword {query}"[:255],
+                    description=(
+                        "Capture manual SERP screenshot for keyword "
+                        f"{query}. SERP snapshots are manual evidence; official rank tracking uses GSC average position."
+                    ),
+                    source_type=SeoTaskSourceType.search_console,
+                    source_reference_id=getattr(opp, "id", None),
+                    target_page_url=getattr(opp, "page_url", None),
+                    target_keyword=query,
+                    priority_score=max(35, float(getattr(opp, "priority_score", 50) or 50) - 10),
+                    estimated_impact=SeoTaskImpact.medium,
+                    effort=SeoTaskEffort.low,
                 )
             )
         return candidates
@@ -488,6 +565,111 @@ class PlannerService:
             "due_date": run.target_week_end,
         }
 
+    def _duplicate_groups(self, tasks: List[SeoTask]) -> List[dict]:
+        exact_groups = self._groups_by_key(tasks, include_source_reference=True)
+        exact_duplicate_ids = {
+            str(task.id)
+            for group in exact_groups
+            for task in group["duplicates"]
+        }
+        near_candidates = [task for task in tasks if str(task.id) not in exact_duplicate_ids]
+        near_groups = self._groups_by_key(near_candidates, include_source_reference=False)
+        groups = exact_groups + [
+            group for group in near_groups
+            if not any(str(group["keep"].id) == str(existing["keep"].id) for existing in exact_groups)
+        ]
+        return sorted(
+            groups,
+            key=lambda group: (len(group["duplicates"]), float(getattr(group["keep"], "priority_score", 0) or 0)),
+            reverse=True,
+        )
+
+    def _groups_by_key(self, tasks: List[SeoTask], *, include_source_reference: bool) -> List[dict]:
+        buckets: Dict[tuple, List[SeoTask]] = {}
+        for task in tasks:
+            key = self._dedupe_key(task, include_source_reference=include_source_reference)
+            buckets.setdefault(key, []).append(task)
+        groups = []
+        for key, items in buckets.items():
+            if len(items) < 2:
+                continue
+            ordered = sorted(items, key=self._task_keep_sort_key, reverse=True)
+            groups.append(
+                {
+                    "key": key,
+                    "group_type": "exact" if include_source_reference else "near_duplicate",
+                    "keep": ordered[0],
+                    "duplicates": ordered[1:],
+                }
+            )
+        return groups
+
+    def _dedupe_key(self, task: SeoTask, *, include_source_reference: bool) -> tuple:
+        return (
+            str(getattr(task, "project_id", "")),
+            self._enum_value(task.task_type),
+            self._normalize_url(getattr(task, "target_page_url", None)),
+            self._normalize_text(getattr(task, "target_keyword", None)),
+            self._enum_value(task.source_type),
+            str(getattr(task, "source_reference_id", "") or "") if include_source_reference else "",
+            self._normalize_title(getattr(task, "title", "")),
+        )
+
+    def _task_keep_sort_key(self, task: SeoTask) -> tuple:
+        updated_at = getattr(task, "updated_at", None) or getattr(task, "created_at", None) or datetime.min
+        return (float(getattr(task, "priority_score", 0) or 0), updated_at)
+
+    def _dedupe_response(self, project_id: UUID, groups: List[dict], *, dry_run: bool, skipped_count: int) -> dict:
+        duplicate_task_count = sum(len(group["duplicates"]) for group in groups)
+        return {
+            "project_id": project_id,
+            "dry_run": dry_run,
+            "duplicate_groups": [self._duplicate_group_payload(group) for group in groups],
+            "duplicate_group_count": len(groups),
+            "duplicate_task_count": duplicate_task_count,
+            "skipped_task_count": skipped_count,
+        }
+
+    def _duplicate_group_payload(self, group: dict) -> dict:
+        keep = group["keep"]
+        key = group["key"]
+        return {
+            "group_key": "|".join(str(part) for part in key),
+            "group_type": group["group_type"],
+            "task_type": keep.task_type,
+            "source_type": keep.source_type,
+            "target_page_url": getattr(keep, "target_page_url", None),
+            "target_keyword": getattr(keep, "target_keyword", None),
+            "normalized_title": self._normalize_title(getattr(keep, "title", "")),
+            "keep_task": self._task_ref(keep),
+            "duplicate_tasks": [self._task_ref(task) for task in group["duplicates"]],
+        }
+
+    def _task_ref(self, task: SeoTask) -> dict:
+        return {
+            "id": task.id,
+            "title": task.title,
+            "status": task.status,
+            "priority": task.priority,
+            "priority_score": float(task.priority_score or 0),
+            "updated_at": getattr(task, "updated_at", None),
+            "source_reference_id": getattr(task, "source_reference_id", None),
+        }
+
+    def _normalize_url(self, value: Optional[str]) -> str:
+        text = (value or "").strip().lower()
+        if text.endswith("/") and text.count("/") > 2:
+            text = text.rstrip("/")
+        return text
+
+    def _normalize_title(self, value: str) -> str:
+        text = self._normalize_text(value)
+        text = re.sub(r"https?://www\.", "https://", text)
+        return text
+
+    def _normalize_text(self, value: Optional[str]) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
     def _report_values(self, run: SeoPlannerRun, signals: dict, tasks: List[SeoTask], created_count: int) -> dict:
         by_type = Counter(self._enum_value(task.task_type) for task in tasks)
         by_priority = Counter(self._enum_value(task.priority) for task in tasks)
@@ -532,6 +714,8 @@ class PlannerService:
                 "opportunities": len(signals["gsc_opportunities"]),
                 "metadata_tasks": by_type.get(SeoTaskType.metadata_rewrite.value, 0),
                 "content_refresh_tasks": by_type.get(SeoTaskType.content_refresh.value, 0),
+                "manual_serp_snapshot_tasks": by_type.get(SeoTaskType.manual_review.value, 0),
+                "rank_summary": signals.get("rank_summary") or {},
                 "latest_sync_job_id": str(signals["ids"].get("gsc_sync_job_id")) if signals["ids"].get("gsc_sync_job_id") else None,
             },
             "content_summary": {
@@ -553,6 +737,7 @@ class PlannerService:
                 "repo_connected": signals["has_repo_connection"],
                 "patches": len(signals["repo_patches"]),
                 "patch_review_tasks": by_type.get(SeoTaskType.repo_patch_review.value, 0),
+                "impact_summary": signals.get("impact_summary") or {},
             },
             "next_week_priorities": top_tasks,
         }

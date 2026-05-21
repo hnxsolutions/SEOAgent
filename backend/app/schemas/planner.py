@@ -117,3 +117,34 @@ class PlannerProjectSummaryResponse(BaseModel):
     latest_run_id: Optional[UUID] = None
     latest_run_status: Optional[SeoPlannerRunStatus] = None
     top_tasks: List[SeoTaskResponse]
+
+
+class PlannerDuplicateTaskRef(BaseModel):
+    id: UUID
+    title: str
+    status: SeoTaskStatus
+    priority: SeoTaskPriority
+    priority_score: float
+    updated_at: Optional[datetime] = None
+    source_reference_id: Optional[UUID] = None
+
+
+class PlannerDuplicateGroupResponse(BaseModel):
+    group_key: str
+    group_type: str
+    task_type: SeoTaskType
+    source_type: SeoTaskSourceType
+    target_page_url: Optional[str] = None
+    target_keyword: Optional[str] = None
+    normalized_title: str
+    keep_task: PlannerDuplicateTaskRef
+    duplicate_tasks: List[PlannerDuplicateTaskRef]
+
+
+class PlannerDedupeResponse(BaseModel):
+    project_id: UUID
+    dry_run: bool = True
+    duplicate_groups: List[PlannerDuplicateGroupResponse]
+    duplicate_group_count: int
+    duplicate_task_count: int
+    skipped_task_count: int = 0

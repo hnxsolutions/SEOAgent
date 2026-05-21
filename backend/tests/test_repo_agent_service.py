@@ -60,6 +60,7 @@ class FakeRepoAgentRepository:
         self.content_suggestions = []
         self.search_opportunities = []
         self.geo_recommendations = []
+        self.architecture_profile = None
 
     async def get_project(self, project_id, tenant_id):
         if project_id == self.project_id and tenant_id == self.tenant_id:
@@ -168,6 +169,24 @@ class FakeRepoAgentRepository:
     async def update_scan_patch_count(self, run, patches_created):
         run.patches_created = patches_created
         return run
+
+    async def create_architecture_profile(self, run, values):
+        now = datetime.utcnow()
+        self.architecture_profile = SimpleNamespace(
+            id=uuid4(),
+            tenant_id=run.tenant_id,
+            project_id=run.project_id,
+            repo_connection_id=run.repo_connection_id,
+            scan_run_id=run.id,
+            created_at=now,
+            **values,
+        )
+        return self.architecture_profile
+
+    async def get_architecture_profile(self, scan_id, tenant_id):
+        if self.architecture_profile and self.architecture_profile.scan_run_id == scan_id:
+            return self.architecture_profile
+        return None
 
     async def list_content_suggestions(self, tenant_id, project_id):
         return self.content_suggestions

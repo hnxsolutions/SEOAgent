@@ -249,7 +249,23 @@ CSV import remains available as a fallback/testing mode, and both sources write
 to the same normalized Search Console tables and deterministic opportunity
 engine.
 
-Set Google OAuth credentials only when you want live GSC syncing:
+Google OAuth is optional. Manual property registration and CSV imports work
+without Google credentials. Live automatic GSC syncing requires a Google account
+that can access at least one verified Search Console property.
+
+Create Google OAuth credentials:
+
+1. In Google Cloud Console, create or select a project.
+2. Enable the **Google Search Console API** for that project.
+3. Configure the OAuth consent screen and add your test Google account if the
+   app is still in testing mode.
+4. Create an OAuth 2.0 **Web application** client.
+5. Add this authorized redirect URI for local development:
+   `http://localhost:8000/api/v1/search-console/connections/google/callback`
+6. Use the read-only Search Console scope:
+   `https://www.googleapis.com/auth/webmasters.readonly`
+
+Set these backend environment variables only when you want live GSC syncing:
 
 ```env
 GOOGLE_CLIENT_ID=
@@ -257,13 +273,25 @@ GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://localhost:8000/api/v1/search-console/connections/google/callback
 ```
 
+`SECRET_KEY` must also be set to a strong non-default value. The backend uses it
+for JWT signing and to derive the local encryption key for stored Google refresh
+tokens.
+
 Then run migrations and connect a property:
 
-```bash
+```powershell
 cd backend
-alembic upgrade head
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+cd ..\frontend
+npm run dev
 ```
+
+From the dashboard, open `/dashboard/setup` or `/dashboard/search-console`, click
+**Connect Google Search Console**, complete Google consent, refresh the property
+list, select a verified property, then run a manual sync. If OAuth is not
+configured, use the manual property + CSV fallback path instead.
 
 Search Console endpoints:
 
@@ -271,6 +299,7 @@ Search Console endpoints:
 - `GET /api/v1/search-console/connections/google/callback`
 - `GET /api/v1/search-console/properties?refresh=true`
 - `POST /api/v1/search-console/projects/{project_id}/property`
+- `POST /api/v1/search-console/projects/{project_id}/property/manual`
 - `POST /api/v1/search-console/projects/{project_id}/sync`
 - `GET /api/v1/search-console/projects/{project_id}/summary`
 - `POST /api/v1/search-console/imports` for CSV fallback
@@ -279,6 +308,58 @@ Search Console endpoints:
 - `POST /api/v1/search-console/opportunities/{id}/approve`
 - `POST /api/v1/search-console/opportunities/{id}/reject`
 - `POST /api/v1/search-console/opportunities/{id}/mark-completed`
+
+#### Production Scheduler / Cron Layer
+
+The scheduler is self-hosted and uses the existing backend modules only. It does
+not publish content, apply code patches, create pull requests, merge code, or
+deploy sites. It creates analysis runs, recommendations, tasks, and reports for
+human review.
+
+Supported schedule types:
+
+- `daily_gsc_sync`
+- `weekly_full_seo`
+- `weekly_blog_planning`
+- `weekly_repo_scan`
+- `monthly_deep_audit`
+
+Create a schedule, then run one scheduler tick manually:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Call the tick endpoint from a cron job, Windows Task Scheduler, or a lightweight
+worker process:
+
+```powershell
+curl -X POST http://localhost:8000/api/v1/schedules/tick `
+  -H "Authorization: Bearer <token>" `
+  -H "Content-Type: application/json" `
+  -d "50"
+```
+
+For Windows Task Scheduler, create a task that runs every 5-15 minutes and calls
+the same authenticated `POST /api/v1/schedules/tick` command. For Linux cron,
+run the equivalent `curl` command on the same cadence. A tick is idempotent for
+active schedules: if a schedule already has a queued/running execution, the
+scheduler records a skipped run instead of starting duplicate work.
+
+Scheduler endpoints:
+
+- `POST /api/v1/schedules`
+- `GET /api/v1/schedules/projects/{project_id}`
+- `GET /api/v1/schedules/{schedule_id}`
+- `PATCH /api/v1/schedules/{schedule_id}`
+- `POST /api/v1/schedules/{schedule_id}/enable`
+- `POST /api/v1/schedules/{schedule_id}/disable`
+- `POST /api/v1/schedules/{schedule_id}/run-now`
+- `GET /api/v1/schedules/{schedule_id}/runs`
+- `GET /api/v1/scheduled-runs/{run_id}/status`
+- `POST /api/v1/schedules/tick`
 
 #### SEO Code Agent Foundation
 

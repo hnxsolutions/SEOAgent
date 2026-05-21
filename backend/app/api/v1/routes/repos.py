@@ -15,16 +15,20 @@ from app.schemas.repo_agent import (
     PatchApplyRunResponse,
     PullRequestCreateRequest,
     PullRequestRecordResponse,
+    RepoArchitectureProfileResponse,
     RepoConnectionCreate,
     RepoConnectionListResponse,
     RepoConnectionResponse,
     RepoFileListResponse,
+    RepoPatchCopyReviewResponse,
     RepoScanRunResponse,
+    RepoPatchSafetySummaryResponse,
     SeoCodeIssueListResponse,
     SeoCodePatchGenerateResponse,
     SeoCodePatchListResponse,
     SeoCodePatchResponse,
 )
+from app.services.copy_review import SeoCopyReviewService
 from app.services.repo_agent import RepoAgentError, RepoAgentService
 
 router = APIRouter()
@@ -133,6 +137,34 @@ async def list_repo_scan_files(
     return RepoFileListResponse(files=files, limit=limit, offset=offset, has_more=len(files) == limit)
 
 
+@router.get("/scans/{scan_id}/architecture", response_model=RepoArchitectureProfileResponse)
+async def get_repo_scan_architecture(
+    scan_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Get the detected repository architecture profile for a scan."""
+    service = RepoAgentService(db)
+    profile = await service.get_architecture_profile(scan_id, _tenant_id(current_user))
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository architecture profile not found")
+    return profile
+
+
+@router.get("/scans/{scan_id}/patch-safety-summary", response_model=RepoPatchSafetySummaryResponse)
+async def get_repo_scan_patch_safety_summary(
+    scan_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Get patch-safety counts and reasons for a scan."""
+    service = RepoAgentService(db)
+    try:
+        return await service.get_patch_safety_summary(scan_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 @router.get("/scans/{scan_id}/issues", response_model=SeoCodeIssueListResponse)
 async def list_repo_scan_issues(
     scan_id: UUID,
@@ -190,6 +222,20 @@ async def list_repo_scan_patches(
         offset=offset,
     )
     return SeoCodePatchListResponse(patches=patches, limit=limit, offset=offset, has_more=len(patches) == limit)
+
+
+@router.post("/scans/{scan_id}/review-patch-copy", response_model=RepoPatchCopyReviewResponse)
+async def review_repo_scan_patch_copy(
+    scan_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Review and refine proposed repo patch copy before approval."""
+    service = SeoCopyReviewService(db)
+    try:
+        return await service.review_scan_patches(scan_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.get("/patches/{patch_id}", response_model=SeoCodePatchResponse)

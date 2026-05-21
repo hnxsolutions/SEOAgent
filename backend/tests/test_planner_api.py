@@ -128,6 +128,29 @@ def test_planner_api_smoke_flow(monkeypatch):
                 "top_tasks": [task],
             }
 
+        async def list_duplicate_tasks(self, project_id, tenant_id):
+            return {
+                "project_id": project_id,
+                "dry_run": True,
+                "duplicate_groups": [],
+                "duplicate_group_count": 0,
+                "duplicate_task_count": 0,
+                "skipped_task_count": 0,
+            }
+
+        async def dedupe_preview(self, project_id, tenant_id):
+            return await self.list_duplicate_tasks(project_id, tenant_id)
+
+        async def dedupe_apply(self, project_id, tenant_id):
+            return {
+                "project_id": project_id,
+                "dry_run": False,
+                "duplicate_groups": [],
+                "duplicate_group_count": 0,
+                "duplicate_task_count": 0,
+                "skipped_task_count": 0,
+            }
+
     monkeypatch.setattr(planner_routes, "PlannerService", FakePlannerService)
 
     app = FastAPI()
@@ -180,3 +203,15 @@ def test_planner_api_smoke_flow(monkeypatch):
     summary_response = client.get(f"/planner/projects/{project_id}/summary")
     assert summary_response.status_code == 200
     assert summary_response.json()["open_tasks"] == 1
+
+    duplicates_response = client.get(f"/planner/projects/{project_id}/duplicates")
+    assert duplicates_response.status_code == 200
+    assert duplicates_response.json()["duplicate_group_count"] == 0
+
+    preview_response = client.post(f"/planner/projects/{project_id}/dedupe-preview")
+    assert preview_response.status_code == 200
+    assert preview_response.json()["dry_run"] is True
+
+    apply_response = client.post(f"/planner/projects/{project_id}/dedupe-apply")
+    assert apply_response.status_code == 200
+    assert apply_response.json()["dry_run"] is False

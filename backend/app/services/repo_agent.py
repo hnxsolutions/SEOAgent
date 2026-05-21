@@ -38,13 +38,20 @@ from app.models.repo_agent import (
 )
 from app.repo_agent.git_ops import GitCommandRunner, GitHubClient, GitHubClientError, GitCommandError, ValidationRunner
 from app.models.search_console import SearchConsoleOpportunityType
+from app.repo_agent.architecture import (
+    ArchitectureProfileData,
+    RepoArchitectureDetector,
+    html_metadata_patch_content,
+)
 from app.repo_agent.scanner import (
     IGNORE_DIRS,
+    MAX_FILE_SIZE_BYTES,
     NextJsRepoScanner,
     PathSafetyError,
     RepoIssueCandidate,
     build_unified_diff,
     content_hash,
+    is_client_component,
     label_from_route,
     metadata_patch_content,
     read_repo_text,
@@ -78,6 +85,7 @@ class RepoAgentService:
         self.db = db
         self.repository = RepoAgentRepository(db)
         self.scanner = scanner or NextJsRepoScanner()
+        self.architecture_detector = RepoArchitectureDetector()
         self.git_runner = git_runner or GitCommandRunner(settings.REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS)
         self.validation_runner = validation_runner or ValidationRunner(settings.REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS)
         self.github_client = github_client or GitHubClient()
@@ -155,8 +163,12 @@ class RepoAgentService:
             if not connection.local_path:
                 raise RepoAgentError("Local path scanning is required in this phase. GitHub API scanning is scaffolded only.")
             root = resolve_repo_root(connection.local_path)
-            framework = self.scanner.detect_framework(root)
-            scanned_files = self.scanner.discover_files(root)
+            architecture_data = self.architecture_detector.detect(root)
+            framework = architecture_data.detected_stack or self.scanner.detect_framework(root)
+            scanned_files = self._merge_scanned_files(
+                self.scanner.discover_files(root),
+                self._architecture_scanned_files(root, architecture_data),
+            )
             files = await self.repository.add_files(
                 [
                     {
@@ -179,8 +191,11 @@ class RepoAgentService:
                     for file in scanned_files
                 ]
             )
+            await self.repository.create_architecture_profile(run, architecture_data.as_record())
             file_by_path = {file.file_path: file for file in files}
+            scanned_by_path = {file.file_path: file for file in scanned_files}
             candidates = self.scanner.analyze(scanned_files)
+            candidates.extend(self._architecture_issue_candidates(architecture_data, scanned_by_path, file_by_path))
             candidates.extend(await self._signal_issue_candidates(run, scanned_files, file_by_path))
             issues = await self.repository.add_issues(
                 [self._issue_record(run, candidate, file_by_path) for candidate in candidates]
@@ -218,6 +233,123 @@ class RepoAgentService:
     ):
         return await self.repository.list_issues(scan_id, tenant_id, status=status, limit=limit, offset=offset)
 
+    async def get_architecture_profile(self, scan_id: UUID, tenant_id: UUID):
+        run = await self.repository.get_scan_run(scan_id, tenant_id)
+        if not run:
+            return None
+        return await self._ensure_architecture_profile(run, tenant_id)
+
+    async def get_patch_safety_summary(self, scan_id: UUID, tenant_id: UUID) -> dict:
+        run = await self.repository.get_scan_run(scan_id, tenant_id)
+        if not run:
+            raise ValueError("Repository scan not found")
+        profile = await self._ensure_architecture_profile(run, tenant_id)
+        return self.architecture_detector.patch_safety_summary(profile)
+
+    async def _ensure_architecture_profile(self, run: RepoScanRun, tenant_id: UUID):
+        existing = await self.repository.get_architecture_profile(run.id, tenant_id)
+        if existing:
+            return existing
+        connection = await self.repository.get_connection(run.repo_connection_id, tenant_id)
+        if not connection or not connection.local_path:
+            raise ValueError("Repository connection local path not found")
+        root = resolve_repo_root(connection.local_path)
+        data = self.architecture_detector.detect(root)
+        profile = await self.repository.create_architecture_profile(run, data.as_record())
+        await self.db.commit()
+        await self.db.refresh(profile)
+        return profile
+
+    def _merge_scanned_files(self, primary, additional):
+        merged = []
+        seen = set()
+        for file in list(primary) + list(additional):
+            if file.file_path in seen:
+                continue
+            seen.add(file.file_path)
+            merged.append(file)
+        return merged
+
+    def _architecture_scanned_files(self, root: Path, profile: ArchitectureProfileData):
+        scanned = []
+        for file_path in self.architecture_detector.architecture_file_paths(profile):
+            try:
+                path = safe_child_path(root, file_path)
+            except PathSafetyError:
+                continue
+            if not path.exists() or not path.is_file() or self.scanner._ignored(path, root):
+                continue
+            try:
+                if path.stat().st_size > MAX_FILE_SIZE_BYTES:
+                    continue
+            except OSError:
+                continue
+            scanned.append(self.scanner._scan_file(path, root))
+        return scanned
+
+    def _architecture_issue_candidates(
+        self,
+        profile: ArchitectureProfileData,
+        scanned_by_path: Dict[str, object],
+        file_by_path: Dict[str, object],
+    ) -> List[RepoIssueCandidate]:
+        candidates: List[RepoIssueCandidate] = []
+        data = profile.as_record()
+        for zone in data.get("manual_review_zones") or []:
+            file_path = zone.get("file_path") or None
+            if not file_path:
+                continue
+            scanned = scanned_by_path.get(file_path)
+            candidates.append(
+                RepoIssueCandidate(
+                    file_path=file_path if file_path in file_by_path else None,
+                    file_content_hash=getattr(scanned, "content_hash", "0" * 64),
+                    issue_type=self._architecture_issue_type(zone),
+                    severity=SeoCodeIssueSeverity.medium,
+                    title=f"Manual review required: {zone.get('zone_type', 'repo architecture')}",
+                    description=zone.get("reason") or "Architecture detection marked this area as manual-review only.",
+                    recommended_fix="Review this repo architecture area manually before creating SEO code patches.",
+                    source_reference_type=SeoCodeIssueSource.repo_scan,
+                )
+            )
+        if data.get("detected_stack") in {"plain_static", "react_vite"}:
+            for zone in data.get("safe_patch_zones") or []:
+                file_path = zone.get("file_path")
+                scanned = scanned_by_path.get(file_path or "")
+                if not scanned or zone.get("zone_type") != "html_head":
+                    continue
+                content = getattr(scanned, "content", "")
+                if not re.search(r"<title>.*?</title>", content, flags=re.I | re.S) or not re.search(
+                    r"<meta\s+name=[\"']description[\"']",
+                    content,
+                    flags=re.I,
+                ):
+                    candidates.append(
+                        RepoIssueCandidate(
+                            file_path=file_path,
+                            file_content_hash=getattr(scanned, "content_hash", "0" * 64),
+                            issue_type=SeoCodeIssueType.weak_metadata,
+                            severity=SeoCodeIssueSeverity.medium,
+                            title="Weak HTML metadata",
+                            description=f"{file_path} is missing a complete title or meta description in the HTML head.",
+                            recommended_fix="Update title, meta description, and canonical tags in the HTML head only.",
+                            source_reference_type=SeoCodeIssueSource.repo_scan,
+                        )
+                    )
+        return candidates
+
+    def _architecture_issue_type(self, zone: dict) -> SeoCodeIssueType:
+        zone_type = str(zone.get("zone_type") or "")
+        if "schema" in zone_type:
+            return SeoCodeIssueType.missing_schema
+        if "sitemap" in zone_type:
+            return SeoCodeIssueType.route_not_in_sitemap
+        if "robots" in zone_type:
+            return SeoCodeIssueType.missing_robots
+        if "metadata" in zone_type or "template" in zone_type:
+            return SeoCodeIssueType.weak_metadata
+        return SeoCodeIssueType.heading_semantics_risk
+
     async def generate_patches(self, scan_id: UUID, tenant_id: UUID) -> List[SeoCodePatch]:
         run = await self.repository.get_scan_run(scan_id, tenant_id)
         if not run:
@@ -226,6 +358,7 @@ class RepoAgentService:
         if not connection or not connection.local_path:
             raise ValueError("Repository connection local path not found")
         root = resolve_repo_root(connection.local_path)
+        architecture_profile = await self._ensure_architecture_profile(run, tenant_id)
         files = await self.repository.list_files(scan_id, tenant_id, limit=1000)
         file_by_id = {file.id: file for file in files}
         scanned_for_routes = self.scanner.discover_files(root)
@@ -234,7 +367,7 @@ class RepoAgentService:
         site_url = await self._site_url(run.project_id, run.tenant_id, fallback=connection.repo_url)
         records = []
         for issue in issues:
-            patch_values = await self._patch_for_issue(issue, root, file_by_id, static_routes, site_url)
+            patch_values = await self._patch_for_issue(issue, root, file_by_id, static_routes, site_url, architecture_profile)
             if not patch_values:
                 continue
             existing = await self.repository.existing_patch(
@@ -250,6 +383,22 @@ class RepoAgentService:
         await self.db.commit()
         for patch in patches:
             await self.db.refresh(patch)
+        if patches:
+            from app.services.copy_review import SeoCopyReviewService
+
+            copy_review = SeoCopyReviewService(self.db)
+            for patch in patches:
+                if patch.patch_type in {SeoCodePatchType.metadata_update, SeoCodePatchType.og_twitter_addition}:
+                    try:
+                        await copy_review.review_repo_patch(patch.id, tenant_id, apply_revision=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Repo patch copy review failed",
+                            patch_id=str(patch.id),
+                            error=str(exc),
+                        )
+            for patch in patches:
+                await self.db.refresh(patch)
         return patches
 
     async def list_patches(
@@ -810,6 +959,7 @@ class RepoAgentService:
         file_by_id: Dict[UUID, object],
         static_routes: List[str],
         site_url: str,
+        architecture_profile,
     ) -> Optional[dict]:
         target_file = file_by_id.get(issue.file_id) if issue.file_id else None
         file_path = getattr(target_file, "file_path", None)
@@ -826,19 +976,30 @@ class RepoAgentService:
             SeoCodeIssueType.missing_open_graph,
             SeoCodeIssueType.missing_twitter_meta,
         } and file_path:
+            file_path = self._metadata_patch_target_file(root, file_path)
+            if not file_path:
+                return None
             path = safe_child_path(root, file_path)
             original = read_repo_text(path)
             original_hash = content_hash(original)
             route_label = label_from_route(file_path, fallback="Website Page")
-            proposed = metadata_patch_content(original, route_label, self._canonical_for_file(file_path, site_url))
+            canonical = self._canonical_for_file(file_path, site_url)
+            if file_path.endswith(".html"):
+                proposed = html_metadata_patch_content(original, route_label, canonical)
+            else:
+                proposed = metadata_patch_content(original, route_label, canonical)
             patch_type = (
                 SeoCodePatchType.metadata_update
                 if issue.issue_type in {SeoCodeIssueType.missing_metadata, SeoCodeIssueType.weak_metadata}
                 else SeoCodePatchType.og_twitter_addition
             )
         elif issue.issue_type == SeoCodeIssueType.missing_schema and file_path:
+            if self._is_internal_patch_path(file_path):
+                return None
             path = safe_child_path(root, file_path)
             original = read_repo_text(path)
+            if is_client_component(original):
+                return None
             original_hash = content_hash(original)
             route_label = label_from_route(file_path, fallback="Website Page")
             proposed = schema_patch_content(original, route_label, self._canonical_for_file(file_path, site_url))
@@ -847,7 +1008,9 @@ class RepoAgentService:
         elif issue.issue_type == SeoCodeIssueType.missing_robots:
             file_path = "app/robots.ts"
             path = safe_child_path(root, file_path)
-            original = read_repo_text(path) if path.exists() else ""
+            if path.exists():
+                return None
+            original = ""
             original_hash = content_hash(original)
             proposed = robots_patch_content(site_url)
             patch_type = SeoCodePatchType.robots_update
@@ -856,12 +1019,29 @@ class RepoAgentService:
             path = safe_child_path(root, file_path)
             original = read_repo_text(path) if path.exists() else ""
             original_hash = content_hash(original)
-            proposed = sitemap_patch_content(static_routes or ["/"], site_url)
+            proposed = sitemap_patch_content(static_routes or ["/"], site_url, original=original)
             patch_type = SeoCodePatchType.sitemap_update
         elif issue.issue_type in {SeoCodeIssueType.heading_semantics_risk, SeoCodeIssueType.missing_alt_pattern}:
             return None
 
         if not patch_type or proposed is None or proposed == original:
+            return None
+        safety = self.architecture_detector.classify_patch(
+            architecture_profile,
+            file_path=file_path,
+            patch_type=patch_type,
+            issue_type=issue.issue_type,
+            original_content=original,
+        )
+        if not safety.is_safe:
+            logger.info(
+                "Skipped repo patch by safety classifier",
+                scan_id=str(issue.scan_run_id),
+                file_path=file_path,
+                patch_type=patch_type.value,
+                classification=safety.classification,
+                reason=safety.reason,
+            )
             return None
         diff = build_unified_diff(file_path, original, proposed)
         return {
@@ -875,16 +1055,37 @@ class RepoAgentService:
             "original_content_hash": original_hash,
             "diff_text": diff,
             "proposed_content": proposed,
-            "explanation": self._patch_explanation(issue, patch_type),
+            "explanation": self._patch_explanation(issue, patch_type, safety.reason),
             "risk_level": risk,
             "status": SeoCodePatchStatus.proposed,
         }
 
-    def _patch_explanation(self, issue: SeoCodeIssue, patch_type: SeoCodePatchType) -> str:
+    def _patch_explanation(self, issue: SeoCodeIssue, patch_type: SeoCodePatchType, safety_reason: Optional[str] = None) -> str:
+        safety = f" Safety reason: {safety_reason}" if safety_reason else ""
         return (
             f"Proposes a {patch_type.value} patch for {issue.issue_type.value}. "
             "The patch is review-only and avoids Tailwind class, visible layout, commit, push, deploy, or publishing changes."
+            f"{safety}"
         )
+
+    def _metadata_patch_target_file(self, root: Path, file_path: str) -> Optional[str]:
+        if self._is_internal_patch_path(file_path):
+            return None
+        path = safe_child_path(root, file_path)
+        original = read_repo_text(path) if path.exists() else ""
+        if not is_client_component(original):
+            return file_path
+        if file_path.endswith("/page.tsx"):
+            layout_path = file_path.removesuffix("/page.tsx") + "/layout.tsx"
+            layout = safe_child_path(root, layout_path)
+            if layout.exists():
+                return layout_path
+        return None
+
+    def _is_internal_patch_path(self, file_path: str) -> bool:
+        clean = file_path.replace("\\", "/").removeprefix("app/").strip("/")
+        first = clean.split("/", 1)[0]
+        return first in {"admin", "api", "_components", "dashboard"}
 
     async def _site_url(self, project_id: Optional[UUID], tenant_id: UUID, fallback: Optional[str] = None) -> str:
         if project_id:
@@ -899,6 +1100,13 @@ class RepoAgentService:
         return "https://example.com"
 
     def _canonical_for_file(self, file_path: str, site_url: str) -> str:
+        if file_path.endswith(".html"):
+            route = file_path.removeprefix("public/").removesuffix(".html")
+            route = route.removesuffix("/index")
+            if route == "index":
+                route = ""
+            route = "/" + route.strip("/") if route else "/"
+            return site_url.rstrip("/") + ("" if route == "/" else route)
         route = file_path.removeprefix("app/").removesuffix("/page.tsx").removesuffix("page.tsx")
         route = "/" + route.strip("/")
         if file_path.endswith("layout.tsx") or route == "/":

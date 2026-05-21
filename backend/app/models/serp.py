@@ -70,3 +70,86 @@ class SERPResult(Base):
     
     def __repr__(self):
         return f"<SERPResult {self.keyword} - Position {self.position}>"
+
+
+class SerpSnapshotSearchEngine(str, enum.Enum):
+    google = "google"
+
+
+class SerpSnapshotDevice(str, enum.Enum):
+    desktop = "desktop"
+    mobile = "mobile"
+
+
+class SerpSnapshotCaptureMode(str, enum.Enum):
+    manual = "manual"
+    screenshot_upload = "screenshot_upload"
+    browser_assisted_manual = "browser_assisted_manual"
+
+
+class SerpSnapshotStatus(str, enum.Enum):
+    captured = "captured"
+    missing_target = "missing_target"
+    failed = "failed"
+
+
+class SerpSnapshotAssetType(str, enum.Enum):
+    screenshot = "screenshot"
+    html_note = "html_note"
+
+
+class SerpSnapshot(Base):
+    """Manual-assisted SERP snapshot evidence. No automated Google scraping."""
+
+    __tablename__ = "serp_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    keyword = Column(String(1000), nullable=False, index=True)
+    target_url = Column(String(2048), nullable=True, index=True)
+    target_domain = Column(String(255), nullable=False, index=True)
+    search_engine = Column(SQLEnum(SerpSnapshotSearchEngine), default=SerpSnapshotSearchEngine.google, nullable=False, index=True)
+    country = Column(String(100), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
+    device = Column(SQLEnum(SerpSnapshotDevice), default=SerpSnapshotDevice.desktop, nullable=False, index=True)
+    language = Column(String(50), nullable=True)
+    capture_mode = Column(SQLEnum(SerpSnapshotCaptureMode), default=SerpSnapshotCaptureMode.manual, nullable=False, index=True)
+    observed_target_rank = Column(Integer, nullable=True, index=True)
+    status = Column(SQLEnum(SerpSnapshotStatus), default=SerpSnapshotStatus.captured, nullable=False, index=True)
+    captured_at = Column(DateTime, default=datetime.utcnow, index=True)
+    notes = Column(Text, nullable=True)
+
+
+class SerpSnapshotResult(Base):
+    """Manually entered visible SERP result."""
+
+    __tablename__ = "serp_snapshot_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    snapshot_id = Column(UUID(as_uuid=True), ForeignKey("serp_snapshots.id"), nullable=False, index=True)
+    position = Column(Integer, nullable=False, index=True)
+    title = Column(String(1000), nullable=False)
+    url = Column(String(2048), nullable=False, index=True)
+    domain = Column(String(255), nullable=False, index=True)
+    snippet = Column(Text, nullable=True)
+    is_target_domain = Column(Boolean, default=False, nullable=False, index=True)
+    is_target_url = Column(Boolean, default=False, nullable=False, index=True)
+
+
+class SerpSnapshotAsset(Base):
+    """Uploaded screenshot or note metadata for a manual SERP snapshot."""
+
+    __tablename__ = "serp_snapshot_assets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    snapshot_id = Column(UUID(as_uuid=True), ForeignKey("serp_snapshots.id"), nullable=False, index=True)
+    asset_type = Column(SQLEnum(SerpSnapshotAssetType), nullable=False, index=True)
+    file_path = Column(String(2048), nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

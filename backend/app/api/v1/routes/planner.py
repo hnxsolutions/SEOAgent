@@ -10,6 +10,7 @@ from app.core.security import get_current_user
 from app.models.planner import SeoTaskStatus
 from app.schemas.planner import (
     PlannerProjectSummaryResponse,
+    PlannerDedupeResponse,
     PlannerRunRequest,
     SeoPlannerRunListResponse,
     SeoPlannerRunResponse,
@@ -160,6 +161,45 @@ async def get_project_planner_summary(
 ):
     service = PlannerService(db)
     return await service.project_summary(project_id, _tenant_id(current_user))
+
+
+@router.get("/projects/{project_id}/duplicates", response_model=PlannerDedupeResponse)
+async def list_project_planner_duplicates(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    service = PlannerService(db)
+    try:
+        return await service.list_duplicate_tasks(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/dedupe-preview", response_model=PlannerDedupeResponse)
+async def preview_project_planner_dedupe(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    service = PlannerService(db)
+    try:
+        return await service.dedupe_preview(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/dedupe-apply", response_model=PlannerDedupeResponse)
+async def apply_project_planner_dedupe(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    service = PlannerService(db)
+    try:
+        return await service.dedupe_apply(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 async def _set_task_status(task_id: UUID, current_user: dict, db: AsyncSession, task_status: SeoTaskStatus):

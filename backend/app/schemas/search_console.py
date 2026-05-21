@@ -9,6 +9,8 @@ from app.models.search_console import (
     GSCComparisonWindow,
     GSCSyncJobStatus,
     GSCSyncType,
+    GSCPropertySourceType,
+    GSCPropertyType,
     SearchConsoleImportStatus,
     SearchConsoleOpportunityStatus,
     SearchConsoleOpportunityType,
@@ -37,9 +39,12 @@ class GSCPropertyResponse(BaseModel):
     id: UUID
     tenant_id: UUID
     project_id: Optional[UUID] = None
-    connection_id: UUID
+    connection_id: Optional[UUID] = None
     site_url: str
+    source_type: GSCPropertySourceType = GSCPropertySourceType.oauth
+    property_type: GSCPropertyType = GSCPropertyType.url_prefix
     permission_level: Optional[str] = None
+    notes: Optional[str] = None
     is_selected: bool
     last_synced_at: Optional[datetime] = None
     created_at: datetime
@@ -55,6 +60,12 @@ class GSCPropertySelectRequest(BaseModel):
     property_id: UUID
 
 
+class GSCPropertyManualCreateRequest(BaseModel):
+    site_url: str = Field(..., min_length=1, max_length=2048)
+    property_type: GSCPropertyType
+    notes: Optional[str] = None
+
+
 class GSCSyncRequest(BaseModel):
     comparison_window: GSCComparisonWindow = GSCComparisonWindow.last_28_days
     sync_type: GSCSyncType = GSCSyncType.manual
@@ -68,7 +79,7 @@ class GSCSyncJobResponse(BaseModel):
     id: UUID
     tenant_id: UUID
     project_id: Optional[UUID] = None
-    connection_id: UUID
+    connection_id: Optional[UUID] = None
     property_id: UUID
     import_id: Optional[UUID] = None
     sync_type: GSCSyncType
@@ -137,6 +148,9 @@ class SearchConsoleRowResponse(BaseModel):
     position: float = 0
     date_start: datetime
     date_end: datetime
+    country: Optional[str] = None
+    device: Optional[str] = None
+    search_appearance: Optional[str] = None
     comparison_window: Optional[GSCComparisonWindow] = None
     period: SearchConsolePeriod
     source_type: SearchConsoleSourceType
@@ -208,4 +222,5 @@ class SearchConsoleSummaryResponse(BaseModel):
     opportunities_by_type: Dict[str, int]
     latest_sync_job_id: Optional[UUID] = None
     latest_sync_status: Optional[str] = None
+    selected_property: Optional[GSCPropertyResponse] = None
     top_opportunities: List[SearchConsoleOpportunityResponse] = Field(default_factory=list)

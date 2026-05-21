@@ -1,6 +1,6 @@
 """Schemas for the review-only SEO code repository agent."""
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +22,7 @@ from app.models.repo_agent import (
     SeoCodePatchStatus,
     SeoCodePatchType,
 )
+from app.schemas.copy_review import SeoCopyReviewResponse
 
 
 class RepoConnectionCreate(BaseModel):
@@ -73,6 +74,51 @@ class RepoScanRunResponse(BaseModel):
     completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+
+
+class RepoArchitectureProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    tenant_id: UUID
+    project_id: Optional[UUID] = None
+    repo_connection_id: UUID
+    scan_run_id: UUID
+    detected_stack: str
+    framework: Optional[str] = None
+    router_type: Optional[str] = None
+    package_manager: Optional[str] = None
+    languages: Dict[str, Any] = Field(default_factory=dict)
+    route_map: List[Dict[str, Any]] = Field(default_factory=list)
+    content_sources: List[Dict[str, Any]] = Field(default_factory=list)
+    blog_system: Dict[str, Any] = Field(default_factory=dict)
+    metadata_strategy: Dict[str, Any] = Field(default_factory=dict)
+    schema_strategy: Dict[str, Any] = Field(default_factory=dict)
+    sitemap_strategy: Dict[str, Any] = Field(default_factory=dict)
+    robots_strategy: Dict[str, Any] = Field(default_factory=dict)
+    cms_strategy: Dict[str, Any] = Field(default_factory=dict)
+    client_server_boundaries: Dict[str, Any] = Field(default_factory=dict)
+    safe_patch_zones: List[Dict[str, Any]] = Field(default_factory=list)
+    manual_review_zones: List[Dict[str, Any]] = Field(default_factory=list)
+    unsafe_patch_zones: List[Dict[str, Any]] = Field(default_factory=list)
+    confidence_score: float = 0.0
+    detection_notes: List[Dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime
+
+
+class RepoPatchSafetySummaryResponse(BaseModel):
+    detected_stack: Optional[str] = None
+    framework: Optional[str] = None
+    confidence_score: float = 0.0
+    blog_system: Dict[str, Any] = Field(default_factory=dict)
+    metadata_strategy: Dict[str, Any] = Field(default_factory=dict)
+    schema_strategy: Dict[str, Any] = Field(default_factory=dict)
+    sitemap_strategy: Dict[str, Any] = Field(default_factory=dict)
+    robots_strategy: Dict[str, Any] = Field(default_factory=dict)
+    safe_patch_count: int = 0
+    manual_review_count: int = 0
+    unsafe_skipped_count: int = 0
+    top_safety_reasons: List[str] = Field(default_factory=list)
 
 
 class RepoFileResponse(BaseModel):
@@ -164,6 +210,17 @@ class SeoCodePatchGenerateResponse(BaseModel):
     scan_id: UUID
     patches_created: int = Field(ge=0)
     patches: List[SeoCodePatchResponse]
+
+
+class RepoPatchCopyReviewResponse(BaseModel):
+    scan_id: UUID
+    patches_reviewed: int
+    patches_updated: int
+    ready: int
+    needs_revision: int
+    manual_review: int
+    rejected: int
+    reviews: List[SeoCopyReviewResponse]
 
 
 class PatchApplyRequest(BaseModel):

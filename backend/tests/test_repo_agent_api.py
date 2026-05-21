@@ -82,6 +82,47 @@ def test_repo_agent_api_smoke_flow(monkeypatch):
         has_robots=False,
         created_at=now,
     )
+    architecture_profile = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        repo_connection_id=connection_id,
+        scan_run_id=scan_id,
+        detected_stack="nextjs_app_router",
+        framework="nextjs",
+        router_type="app_router",
+        package_manager="npm",
+        languages={"primary": "TypeScript", "counts": {"TypeScript": 2}},
+        route_map=[{"route_path": "/", "file_path": "app/page.tsx", "route_type": "page", "dynamic": False, "confidence": 0.9}],
+        content_sources=[],
+        blog_system={"exists": False, "insertion_strategy": "unknown_manual_review"},
+        metadata_strategy={"strategy": "next_metadata_export", "files": ["app/page.tsx"], "confidence": 0.9},
+        schema_strategy={"strategy": "unknown", "files": [], "duplicate_risk": False},
+        sitemap_strategy={"exists": False, "strategy": "missing", "rich_dynamic": False},
+        robots_strategy={"exists": False, "strategy": "missing", "rich_dynamic": False},
+        cms_strategy={"strategy": "none_detected"},
+        client_server_boundaries={"client_components": [], "server_or_static_files": ["app/page.tsx"]},
+        safe_patch_zones=[{"zone_type": "metadata", "file_path": "app/page.tsx", "patch_types": ["metadata_update"], "reason": "safe", "confidence": 0.9}],
+        manual_review_zones=[],
+        unsafe_patch_zones=[],
+        confidence_score=0.94,
+        detection_notes=[{"kind": "stack", "value": "Next.js App Router markers found."}],
+        created_at=now,
+    )
+    safety_summary = {
+        "detected_stack": "nextjs_app_router",
+        "framework": "nextjs",
+        "confidence_score": 0.94,
+        "blog_system": architecture_profile.blog_system,
+        "metadata_strategy": architecture_profile.metadata_strategy,
+        "schema_strategy": architecture_profile.schema_strategy,
+        "sitemap_strategy": architecture_profile.sitemap_strategy,
+        "robots_strategy": architecture_profile.robots_strategy,
+        "safe_patch_count": 1,
+        "manual_review_count": 0,
+        "unsafe_skipped_count": 0,
+        "top_safety_reasons": [],
+    }
     issue = SimpleNamespace(
         id=issue_id,
         tenant_id=tenant_id,
@@ -199,6 +240,12 @@ def test_repo_agent_api_smoke_flow(monkeypatch):
         async def list_files(self, scan_id, tenant_id, limit=500, offset=0):
             return [repo_file]
 
+        async def get_architecture_profile(self, scan_id, tenant_id):
+            return architecture_profile
+
+        async def get_patch_safety_summary(self, scan_id, tenant_id):
+            return safety_summary
+
         async def list_issues(self, scan_id, tenant_id, status=None, limit=500, offset=0):
             return [issue]
 
@@ -281,6 +328,14 @@ def test_repo_agent_api_smoke_flow(monkeypatch):
     files_response = client.get(f"/repos/scans/{scan_id}/files")
     assert files_response.status_code == 200
     assert files_response.json()["files"][0]["file_path"] == "app/page.tsx"
+
+    architecture_response = client.get(f"/repos/scans/{scan_id}/architecture")
+    assert architecture_response.status_code == 200
+    assert architecture_response.json()["detected_stack"] == "nextjs_app_router"
+
+    safety_response = client.get(f"/repos/scans/{scan_id}/patch-safety-summary")
+    assert safety_response.status_code == 200
+    assert safety_response.json()["safe_patch_count"] == 1
 
     issues_response = client.get(f"/repos/scans/{scan_id}/issues")
     assert issues_response.status_code == 200

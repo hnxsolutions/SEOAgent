@@ -1,11 +1,15 @@
 'use client';
 
 import {
+  Activity,
   Bot,
+  Camera,
   FileText,
   GitBranch,
   LayoutDashboard,
+  LineChart,
   Newspaper,
+  Rocket,
   Search,
   Target,
 } from 'lucide-react';
@@ -154,6 +158,13 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                     </option>
                   ))}
                 </select>
+                <Link
+                  href="/dashboard/setup"
+                  className="inline-flex h-10 items-center justify-center rounded-md border bg-white px-3 text-sm font-medium shadow-sm transition-colors hover:bg-slate-50"
+                >
+                  <Rocket className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Setup
+                </Link>
               </div>
             </div>
           </header>
@@ -182,8 +193,12 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
+  { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
   { label: 'Weekly Planner', href: '/dashboard/planner', icon: Bot },
   { label: 'Search Console', href: '/dashboard/search-console', icon: Search },
+  { label: 'Rank Tracking', href: '/dashboard/rank-tracking', icon: LineChart },
+  { label: 'Impact', href: '/dashboard/impact', icon: Activity },
+  { label: 'SERP Snapshots', href: '/dashboard/serp-snapshots', icon: Camera },
   { label: 'Content', href: '/dashboard/content', icon: FileText },
   { label: 'GEO/AEO', href: '/dashboard/geo-aeo', icon: Target },
   { label: 'Blogs', href: '/dashboard/blogs', icon: Newspaper },

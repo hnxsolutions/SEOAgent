@@ -9,9 +9,17 @@ from app.models.audit import SEOAuditRun, SEOIssue, SEOPageScore
 from app.models.semantic import SemanticIndexedContent, SemanticIndexRun
 from app.models.internal_linking import InternalLinkRecommendation
 from app.models.content_optimization import ContentOptimizationRun, ContentOptimizationSuggestion
+from app.models.copy_review import SeoCopyPolicy, SeoCopyReview, SeoCopyRevision
 from app.models.geo_aeo import GeoAeoPageScore, GeoAeoRecommendation, GeoAeoRun
+from app.models.impact import SeoImpactExperiment, SeoImpactResult, SeoImpactSnapshot
 from app.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeIndexRun, KnowledgeSource
 from app.models.blog import BlogDraft, BlogPlan, BlogTopic
+from app.models.blog_publishing import (
+    BlogInfrastructureCheck,
+    BlogPublishConnection,
+    BlogPublishResult,
+    BlogPublishRun,
+)
 from app.models.search_console import (
     GSCConnection,
     GSCProperty,
@@ -21,17 +29,19 @@ from app.models.search_console import (
     SearchConsoleRow,
 )
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
+from app.models.scheduler import SeoSchedule, SeoScheduledRun
 from app.models.repo_agent import (
     PatchApplyResult,
     PatchApplyRun,
     PullRequestRecord,
+    RepoArchitectureProfile,
     RepoConnection,
     RepoFile,
     RepoScanRun,
     SeoCodeIssue,
     SeoCodePatch,
 )
-from app.models.serp import SERPAnalysis, SERPResult
+from app.models.serp import SERPAnalysis, SERPResult, SerpSnapshot, SerpSnapshotAsset, SerpSnapshotResult
 from app.models.agent import AgentRun
 
 __all__ = [
@@ -48,9 +58,15 @@ __all__ = [
     "InternalLinkRecommendation",
     "ContentOptimizationRun",
     "ContentOptimizationSuggestion",
+    "SeoCopyPolicy",
+    "SeoCopyReview",
+    "SeoCopyRevision",
     "GeoAeoRun",
     "GeoAeoPageScore",
     "GeoAeoRecommendation",
+    "SeoImpactExperiment",
+    "SeoImpactSnapshot",
+    "SeoImpactResult",
     "KnowledgeSource",
     "KnowledgeDocument",
     "KnowledgeChunk",
@@ -58,6 +74,10 @@ __all__ = [
     "BlogPlan",
     "BlogTopic",
     "BlogDraft",
+    "BlogPublishConnection",
+    "BlogInfrastructureCheck",
+    "BlogPublishRun",
+    "BlogPublishResult",
     "SearchConsoleImport",
     "SearchConsoleRow",
     "SearchConsoleOpportunity",
@@ -68,7 +88,10 @@ __all__ = [
     "SeoTask",
     "SeoTaskDependency",
     "SeoWeeklyReport",
+    "SeoSchedule",
+    "SeoScheduledRun",
     "RepoConnection",
+    "RepoArchitectureProfile",
     "RepoScanRun",
     "RepoFile",
     "SeoCodeIssue",
@@ -78,5 +101,8 @@ __all__ = [
     "PullRequestRecord",
     "SERPAnalysis",
     "SERPResult",
+    "SerpSnapshot",
+    "SerpSnapshotResult",
+    "SerpSnapshotAsset",
     "AgentRun",
 ]

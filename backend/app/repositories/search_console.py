@@ -20,6 +20,8 @@ from app.models.search_console import (
     GSCConnection,
     GSCConnectionStatus,
     GSCProperty,
+    GSCPropertySourceType,
+    GSCPropertyType,
     GSCSyncJob,
     GSCSyncJobStatus,
     GSCSyncType,
@@ -143,12 +145,16 @@ class SearchConsoleRepository:
             prop = result.scalar_one_or_none()
             if prop:
                 prop.permission_level = item.get("permission_level") or item.get("permissionLevel")
+                prop.source_type = GSCPropertySourceType.oauth
+                prop.property_type = infer_gsc_property_type(site_url)
                 prop.updated_at = datetime.utcnow()
             else:
                 prop = GSCProperty(
                     tenant_id=connection.tenant_id,
                     connection_id=connection.id,
                     site_url=site_url,
+                    source_type=GSCPropertySourceType.oauth,
+                    property_type=infer_gsc_property_type(site_url),
                     permission_level=item.get("permission_level") or item.get("permissionLevel"),
                     is_selected=False,
                 )
@@ -157,6 +163,49 @@ class SearchConsoleRepository:
             await self.db.refresh(prop)
             upserted.append(prop)
         return upserted
+
+    async def upsert_manual_property(
+        self,
+        tenant_id: UUID,
+        project_id: UUID,
+        site_url: str,
+        property_type: GSCPropertyType,
+        notes: Optional[str] = None,
+    ) -> GSCProperty:
+        result = await self.db.execute(
+            select(GSCProperty).where(
+                GSCProperty.tenant_id == tenant_id,
+                GSCProperty.project_id == project_id,
+                GSCProperty.source_type == GSCPropertySourceType.manual,
+                GSCProperty.site_url == site_url,
+            )
+        )
+        prop = result.scalar_one_or_none()
+        selected = await self.selected_property(project_id, tenant_id)
+        should_select = selected is None
+        if prop:
+            prop.property_type = property_type
+            prop.notes = notes
+            prop.permission_level = None
+            if should_select:
+                prop.is_selected = True
+            prop.updated_at = datetime.utcnow()
+        else:
+            prop = GSCProperty(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                connection_id=None,
+                site_url=site_url,
+                source_type=GSCPropertySourceType.manual,
+                property_type=property_type,
+                permission_level=None,
+                notes=notes,
+                is_selected=should_select,
+            )
+            self.db.add(prop)
+        await self.db.flush()
+        await self.db.refresh(prop)
+        return prop
 
     async def list_properties(
         self,
@@ -185,6 +234,8 @@ class SearchConsoleRepository:
         prop = await self.get_property(property_id, tenant_id)
         if not prop:
             raise ValueError("GSC property not found")
+        if prop.project_id and prop.project_id != project_id:
+            raise ValueError("GSC property belongs to a different project")
         await self.db.execute(
             select(GSCProperty).where(GSCProperty.tenant_id == tenant_id, GSCProperty.project_id == project_id)
         )
@@ -316,12 +367,14 @@ class SearchConsoleRepository:
         self,
         tenant_id: UUID,
         project_id: UUID,
-        connection_id: UUID,
+        connection_id: Optional[UUID],
         property_id: UUID,
         sync_type: GSCSyncType,
         date_start: datetime,
         date_end: datetime,
         comparison_window: GSCComparisonWindow,
+        status: GSCSyncJobStatus = GSCSyncJobStatus.queued,
+        error_message: Optional[str] = None,
     ) -> GSCSyncJob:
         job = GSCSyncJob(
             tenant_id=tenant_id,
@@ -332,8 +385,12 @@ class SearchConsoleRepository:
             date_start=date_start,
             date_end=date_end,
             comparison_window=comparison_window,
-            status=GSCSyncJobStatus.queued,
+            status=status,
+            error_message=error_message,
         )
+        if status in {GSCSyncJobStatus.completed, GSCSyncJobStatus.failed}:
+            job.started_at = datetime.utcnow()
+            job.completed_at = datetime.utcnow()
         self.db.add(job)
         await self.db.flush()
         await self.db.refresh(job)
@@ -583,6 +640,7 @@ class SearchConsoleRepository:
             .limit(1)
         )
         latest_job = latest_job_result.scalar_one_or_none()
+        selected_property = await self.selected_property(project_id, tenant_id)
         return {
             "project_id": project_id,
             "imports_count": int(imports_count or 0),
@@ -592,7 +650,12 @@ class SearchConsoleRepository:
             "opportunities_by_type": by_type,
             "latest_sync_job_id": latest_job.id if latest_job else None,
             "latest_sync_status": latest_job.status if latest_job else None,
+            "selected_property": selected_property,
         }
 
     def _url_key(self, url: str) -> str:
         return (url or "").split("#", 1)[0].rstrip("/").lower()
+
+
+def infer_gsc_property_type(site_url: str) -> GSCPropertyType:
+    return GSCPropertyType.domain if str(site_url or "").startswith("sc-domain:") else GSCPropertyType.url_prefix

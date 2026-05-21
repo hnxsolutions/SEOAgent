@@ -21,6 +21,8 @@ from app.core.encryption import decrypt_secret, encrypt_secret
 from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnectionStatus,
+    GSCPropertySourceType,
+    GSCPropertyType,
     GSCSyncJob,
     GSCSyncJobStatus,
     GSCSyncType,
@@ -153,17 +155,19 @@ class GoogleSearchConsoleClient:
         date_start: datetime,
         date_end: datetime,
         row_limit: int,
+        dimensions: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Fetch Search Analytics rows by query and page dimensions."""
+        """Fetch Search Analytics rows with quota-safe pagination."""
         all_rows: List[Dict[str, Any]] = []
         start_row = 0
         encoded_site = quote(site_url, safe="")
+        dimensions = dimensions or ["query", "page", "date", "country", "device", "searchAppearance"]
         while len(all_rows) < row_limit:
             batch_limit = min(25000, row_limit - len(all_rows))
             body = {
                 "startDate": date_start.date().isoformat(),
                 "endDate": date_end.date().isoformat(),
-                "dimensions": ["query", "page"],
+                "dimensions": dimensions,
                 "rowLimit": batch_limit,
                 "startRow": start_row,
             }
@@ -174,6 +178,8 @@ class GoogleSearchConsoleClient:
                 json=body,
             )
             rows = list(payload.get("rows") or [])
+            for row in rows:
+                row["_dimensions"] = dimensions
             all_rows.extend(rows)
             if len(rows) < batch_limit:
                 break
@@ -628,6 +634,29 @@ class SearchConsoleService:
         await self.db.refresh(prop)
         return prop
 
+    async def register_manual_property(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        site_url: str,
+        property_type: GSCPropertyType,
+        notes: Optional[str] = None,
+    ):
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        normalized_url = normalize_gsc_property_url(site_url, property_type)
+        prop = await self.repository.upsert_manual_property(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            site_url=normalized_url,
+            property_type=property_type,
+            notes=notes,
+        )
+        await self.db.commit()
+        await self.db.refresh(prop)
+        return prop
+
     async def import_csv(
         self,
         tenant_id: UUID,
@@ -640,15 +669,22 @@ class SearchConsoleService:
     ) -> SearchConsoleImport:
         if project_id and not await self.repository.get_project(project_id, tenant_id):
             raise ValueError("Project not found")
+        selected_property = await self.repository.selected_property(project_id, tenant_id) if project_id else None
         import_record = await self.repository.create_import(
             tenant_id=tenant_id,
             project_id=project_id,
+            property_id=selected_property.id if selected_property else None,
             source_type=SearchConsoleSourceType.csv_upload,
             filename=filename,
             date_start=date_start,
             date_end=date_end,
             comparison_window=comparison_window,
-            metadata={"mode": "csv_fallback"},
+            metadata={
+                "mode": "csv_fallback",
+                "property_source_type": (
+                    selected_property.source_type.value if selected_property and selected_property.source_type else None
+                ),
+            },
         )
         await self.repository.set_import_status(import_record, SearchConsoleImportStatus.processing)
         try:
@@ -657,7 +693,7 @@ class SearchConsoleService:
                 tenant_id=tenant_id,
                 project_id=project_id,
                 import_id=import_record.id,
-                property_id=None,
+                property_id=selected_property.id if selected_property else None,
                 date_start=date_start,
                 date_end=date_end,
                 comparison_window=comparison_window,
@@ -688,12 +724,42 @@ class SearchConsoleService:
         prop = await self.repository.selected_property(project_id, tenant_id)
         if not prop:
             raise ValueError("No selected Search Console property for this project")
-        connection = await self.repository.get_connection(prop.connection_id, tenant_id)
-        if not connection:
-            raise ValueError("Connected Google Search Console account not found")
         current_start, current_end, _, _ = comparison_dates(comparison_window)
         current_start = date_start or current_start
         current_end = date_end or current_end
+        if prop.source_type == GSCPropertySourceType.manual or not prop.connection_id:
+            job = await self.repository.create_sync_job(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                connection_id=None,
+                property_id=prop.id,
+                sync_type=sync_type,
+                date_start=current_start,
+                date_end=current_end,
+                comparison_window=comparison_window,
+                status=GSCSyncJobStatus.failed,
+                error_message="OAuth connection required for automatic Google Search Console sync. Use CSV fallback for manual properties.",
+            )
+            await self.db.commit()
+            await self.db.refresh(job)
+            return job
+        connection = await self.repository.get_connection(prop.connection_id, tenant_id)
+        if not connection:
+            job = await self.repository.create_sync_job(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                connection_id=prop.connection_id,
+                property_id=prop.id,
+                sync_type=sync_type,
+                date_start=current_start,
+                date_end=current_end,
+                comparison_window=comparison_window,
+                status=GSCSyncJobStatus.failed,
+                error_message="OAuth connection required for automatic Google Search Console sync.",
+            )
+            await self.db.commit()
+            await self.db.refresh(job)
+            return job
         job = await self.repository.create_sync_job(
             tenant_id=tenant_id,
             project_id=project_id,
@@ -719,6 +785,15 @@ class SearchConsoleService:
             prop = await self.repository.get_property(job.property_id, job.tenant_id)
             if not prop:
                 raise ValueError("GSC property not found")
+            if prop.source_type == GSCPropertySourceType.manual or not job.connection_id:
+                message = (
+                    "OAuth connection required for automatic Google Search Console sync. "
+                    "Use CSV fallback for manual properties."
+                )
+                await self.repository.set_sync_job_status(job, GSCSyncJobStatus.failed, message)
+                await self.db.commit()
+                await self.db.refresh(job)
+                return job
             connection = await self.repository.get_connection(job.connection_id, job.tenant_id)
             if not connection:
                 raise ValueError("Connected Google Search Console account not found")
@@ -751,6 +826,7 @@ class SearchConsoleService:
                 current_start,
                 current_end,
                 settings.GSC_SYNC_ROW_LIMIT,
+                dimensions=["query", "page", "date", "country", "device", "searchAppearance"],
             )
             previous_api_rows = await self.google_client.fetch_search_analytics(
                 access_token,
@@ -758,6 +834,7 @@ class SearchConsoleService:
                 previous_start,
                 previous_end,
                 settings.GSC_SYNC_ROW_LIMIT,
+                dimensions=["query", "page", "date", "country", "device", "searchAppearance"],
             )
             rows = normalize_gsc_api_rows(
                 current_api_rows,
@@ -822,6 +899,10 @@ class SearchConsoleService:
             date_start=date_start,
             date_end=date_end,
         )
+        if job.status == GSCSyncJobStatus.failed:
+            await self.db.commit()
+            await self.db.refresh(job)
+            return job
         return await self.run_sync_job(job.id, tenant_id=tenant_id)
 
     async def analyze_import(
@@ -990,6 +1071,33 @@ def normalize_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, parsed.query, ""))
 
 
+def normalize_gsc_property_url(site_url: str, property_type: GSCPropertyType) -> str:
+    """Normalize manually registered GSC property identifiers."""
+    raw = (site_url or "").strip()
+    if not raw:
+        raise ValueError("GSC property URL is required")
+    property_type = GSCPropertyType(property_type)
+    if property_type == GSCPropertyType.domain:
+        domain = raw
+        if domain.startswith("sc-domain:"):
+            domain = domain.removeprefix("sc-domain:")
+        else:
+            parsed = urlsplit(domain if re.match(r"^https?://", domain, re.IGNORECASE) else f"https://{domain}")
+            domain = parsed.netloc or parsed.path
+        domain = domain.strip().strip("/").lower()
+        if "/" in domain:
+            domain = domain.split("/", 1)[0]
+        if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", domain):
+            raise ValueError("Domain GSC property must be a valid domain, for example sc-domain:example.com")
+        return f"sc-domain:{domain}"
+
+    normalized = normalize_url(raw)
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL-prefix GSC property must be a valid http or https URL")
+    return normalized
+
+
 def metric_content_hash(
     query: str,
     page_url: str,
@@ -1001,6 +1109,9 @@ def metric_content_hash(
     date_end: datetime,
     source_type: SearchConsoleSourceType,
     period: SearchConsolePeriod,
+    country: Optional[str] = None,
+    device: Optional[str] = None,
+    search_appearance: Optional[str] = None,
 ) -> str:
     seed = "|".join(
         [
@@ -1014,6 +1125,9 @@ def metric_content_hash(
             date_end.date().isoformat(),
             source_type.value,
             period.value,
+            (country or "").lower(),
+            (device or "").lower(),
+            (search_appearance or "").lower(),
         ]
     )
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
@@ -1042,6 +1156,9 @@ def parse_search_console_csv(
         impressions = _int(_pick(raw, "impressions"))
         ctr = _ctr(_pick(raw, "ctr", "average ctr"))
         position = _float(_pick(raw, "position", "average position"))
+        country = _clean_optional(_pick(raw, "country"))
+        device = _clean_optional(_pick(raw, "device"))
+        search_appearance = _clean_optional(_pick(raw, "search_appearance", "search appearance", "searchAppearance"))
         period = _period(_pick(raw, "period", "comparison_period", "comparison window period"))
         row_start = _date(_pick(raw, "date_start", "start date"), default=date_start)
         row_end = _date(_pick(raw, "date_end", "end date"), default=date_end)
@@ -1062,6 +1179,9 @@ def parse_search_console_csv(
                 comparison_window=comparison_window,
                 period=period,
                 source_type=SearchConsoleSourceType.csv_upload,
+                country=country,
+                device=device,
+                search_appearance=search_appearance,
             )
         )
     return rows
@@ -1082,9 +1202,20 @@ def normalize_gsc_api_rows(
     rows: List[dict] = []
     for item in api_rows:
         keys = item.get("keys") or []
+        dimensions = item.get("_dimensions") or ["query", "page"]
         if len(keys) < 2:
             continue
-        query, page_url = str(keys[0]), str(keys[1])
+        keyed = {str(dimension): str(keys[index]) for index, dimension in enumerate(dimensions) if index < len(keys)}
+        query = keyed.get("query") or str(keys[0])
+        page_url = keyed.get("page") or str(keys[1])
+        row_start = date_start
+        row_end = date_end
+        if keyed.get("date"):
+            try:
+                row_start = row_end = datetime.strptime(keyed["date"], "%Y-%m-%d")
+            except ValueError:
+                row_start = date_start
+                row_end = date_end
         rows.append(
             _row_values(
                 tenant_id=tenant_id,
@@ -1097,11 +1228,14 @@ def normalize_gsc_api_rows(
                 impressions=_int(item.get("impressions")),
                 ctr=_ctr(item.get("ctr")),
                 position=_float(item.get("position")),
-                date_start=date_start,
-                date_end=date_end,
+                date_start=row_start,
+                date_end=row_end,
                 comparison_window=comparison_window,
                 period=period,
                 source_type=SearchConsoleSourceType.gsc_api,
+                country=_clean_optional(keyed.get("country")),
+                device=_clean_optional(keyed.get("device")),
+                search_appearance=_clean_optional(keyed.get("searchAppearance")),
             )
         )
     return rows
@@ -1150,6 +1284,9 @@ def _row_values(
     comparison_window: Optional[GSCComparisonWindow],
     period: SearchConsolePeriod,
     source_type: SearchConsoleSourceType,
+    country: Optional[str] = None,
+    device: Optional[str] = None,
+    search_appearance: Optional[str] = None,
 ) -> dict:
     normalized_url = normalize_url(page_url)
     clean_query = re.sub(r"\s+", " ", (query or "").strip())
@@ -1167,6 +1304,9 @@ def _row_values(
         "position": max(0.0, position),
         "date_start": date_start,
         "date_end": date_end,
+        "country": country,
+        "device": device,
+        "search_appearance": search_appearance,
         "comparison_window": comparison_window,
         "period": period,
         "source_type": source_type,
@@ -1181,6 +1321,9 @@ def _row_values(
             date_end,
             source_type,
             period,
+            country=country,
+            device=device,
+            search_appearance=search_appearance,
         ),
     }
 
@@ -1237,3 +1380,8 @@ def _date(value: Any, default: datetime) -> datetime:
             except ValueError:
                 continue
     return default
+
+
+def _clean_optional(value: Any) -> Optional[str]:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return text or None

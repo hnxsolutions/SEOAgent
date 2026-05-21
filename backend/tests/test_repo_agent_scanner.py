@@ -11,7 +11,9 @@ from app.repo_agent.scanner import (
     read_repo_text,
     resolve_repo_root,
     safe_child_path,
+    metadata_patch_content,
     schema_patch_content,
+    sitemap_patch_content,
 )
 
 
@@ -107,3 +109,52 @@ def test_schema_patch_wraps_jsonld_in_fragment_without_visible_dom():
     assert "type=\"application/ld+json\"" in proposed
     assert "    <>" in proposed
     assert "    </>" in proposed
+
+
+def test_schema_patch_skips_client_components():
+    original = '"use client";\n\nexport default function Page() {\n  return <main><h1>Home</h1></main>;\n}\n'
+
+    assert schema_patch_content(original, "Home", "https://example.com") == original
+
+
+def test_metadata_patch_skips_client_components_and_respects_multiline_imports():
+    client = '"use client";\n\nimport {\n  A,\n  B,\n} from "x";\n\nexport default function Page() { return null; }\n'
+    assert metadata_patch_content(client, "Bulk Order", "https://example.com/bulk-order") == client
+
+    server = 'import {\n  A,\n  B,\n} from "x";\n\nexport default function Page() { return null; }\n'
+    proposed = metadata_patch_content(server, "Services", "https://example.com/services")
+
+    assert 'from "x";\n\nexport const metadata' in proposed
+    assert "export const metadata" in proposed
+
+
+def test_metadata_patch_adds_missing_fields_to_existing_metadata():
+    original = 'import type { Metadata } from "next";\n\nexport const metadata: Metadata = {\n  title: "Services",\n};\n'
+
+    proposed = metadata_patch_content(original, "Services", "https://example.com/services")
+
+    assert 'description: "Learn about services' in proposed
+    assert "alternates:" in proposed
+    assert "openGraph:" in proposed
+    assert "twitter:" in proposed
+
+
+def test_sitemap_patch_extends_static_routes_without_replacing_rich_logic():
+    original = (
+        'import { blogs } from "@/lib/blogs";\n'
+        "export default function sitemap() {\n"
+        '  const baseUrl = "https://example.com";\n'
+        "  const now = new Date();\n"
+        "  const staticRoutes: MetadataRoute.Sitemap = [\n"
+        "    { url: baseUrl, lastModified: now },\n"
+        "  ];\n"
+        "  const blogRoutes = blogs.map((blog) => ({ url: `${baseUrl}/blogs/${blog.slug}` }));\n"
+        "  return [...staticRoutes, ...blogRoutes];\n"
+        "}\n"
+    )
+
+    proposed = sitemap_patch_content(["/", "/services"], "https://example.com", original=original)
+
+    assert 'import { blogs } from "@/lib/blogs";' in proposed
+    assert "...blogRoutes" in proposed
+    assert "`${baseUrl}/services`" in proposed

@@ -143,6 +143,12 @@ class FakePlannerRepository:
         tasks = [task for task in self.tasks if not status or task.status == status]
         return tasks[offset : offset + limit]
 
+    async def list_tasks_for_dedupe(self, project_id, tenant_id, limit=5000):
+        return [
+            task for task in self.tasks[:limit]
+            if task.status in {SeoTaskStatus.todo, SeoTaskStatus.in_progress, SeoTaskStatus.approved}
+        ]
+
     async def get_task(self, task_id, tenant_id):
         return next((task for task in self.tasks if task.id == task_id), None)
 
@@ -367,6 +373,38 @@ async def test_planner_task_approval_rejection_completion_flow():
     assert (await service.update_task_status(task.id, tenant_id, SeoTaskStatus.in_progress)).status == SeoTaskStatus.in_progress
     assert (await service.update_task_status(task.id, tenant_id, SeoTaskStatus.completed)).status == SeoTaskStatus.completed
     assert (await service.update_task_status(task.id, tenant_id, SeoTaskStatus.rejected)).status == SeoTaskStatus.rejected
+
+
+@pytest.mark.asyncio
+async def test_planner_dedupe_preview_and_apply_skips_duplicates():
+    repo, tenant_id, project_id = seeded_repository()
+    service = PlannerService(FakeDB())
+    service.repository = repo
+    await service.run_project(project_id, tenant_id)
+    task = repo.tasks[0]
+    duplicate = obj(
+        **{
+            **task.__dict__,
+            "id": uuid4(),
+            "source_reference_id": uuid4(),
+            "priority_score": max(float(task.priority_score or 0) - 5, 1),
+            "updated_at": datetime.utcnow(),
+        }
+    )
+    repo.tasks.append(duplicate)
+
+    preview = await service.dedupe_preview(project_id, tenant_id)
+
+    assert preview["dry_run"] is True
+    assert preview["duplicate_group_count"] >= 1
+    assert preview["duplicate_task_count"] >= 1
+    assert duplicate.status == SeoTaskStatus.todo
+
+    applied = await service.dedupe_apply(project_id, tenant_id)
+
+    assert applied["dry_run"] is False
+    assert applied["skipped_task_count"] >= 1
+    assert duplicate.status == SeoTaskStatus.skipped
 
 
 @pytest.mark.asyncio

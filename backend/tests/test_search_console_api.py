@@ -9,6 +9,8 @@ from app.api.v1.routes import search_console as search_console_routes
 from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnectionStatus,
+    GSCPropertySourceType,
+    GSCPropertyType,
     GSCSyncJobStatus,
     GSCSyncType,
     SearchConsoleImportStatus,
@@ -27,7 +29,10 @@ def make_property(tenant_id, project_id, connection_id, property_id=None):
         project_id=project_id,
         connection_id=connection_id,
         site_url="https://example.com/",
+        source_type=GSCPropertySourceType.oauth,
+        property_type=GSCPropertyType.url_prefix,
         permission_level="siteOwner",
+        notes=None,
         is_selected=True,
         last_synced_at=now,
         created_at=now,
@@ -186,6 +191,16 @@ def test_search_console_api_smoke_flow(monkeypatch):
             prop.id = property_id
             return prop
 
+        async def register_manual_property(self, project_id, tenant_id, site_url, property_type, notes=None):
+            prop.project_id = project_id
+            prop.connection_id = None
+            prop.site_url = "sc-domain:example.com"
+            prop.source_type = GSCPropertySourceType.manual
+            prop.property_type = GSCPropertyType.domain
+            prop.notes = notes
+            prop.is_selected = True
+            return prop
+
         async def sync_project(self, **kwargs):
             return sync_job
 
@@ -257,6 +272,14 @@ def test_search_console_api_smoke_flow(monkeypatch):
     )
     assert select_response.status_code == 200
     assert select_response.json()["is_selected"] is True
+
+    manual_response = client.post(
+        f"/search-console/projects/{project_id}/property/manual",
+        json={"site_url": "example.com", "property_type": "domain", "notes": "CSV fallback"},
+    )
+    assert manual_response.status_code == 201
+    assert manual_response.json()["source_type"] == "manual"
+    assert manual_response.json()["connection_id"] is None
 
     sync_response = client.post(
         f"/search-console/projects/{project_id}/sync",

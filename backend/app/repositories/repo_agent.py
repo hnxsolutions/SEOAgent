@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Iterable, List, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.content_optimization import ContentOptimizationSuggestion, ContentOptimizationSuggestionStatus
@@ -20,6 +20,7 @@ from app.models.repo_agent import (
     PullRequestProvider,
     PullRequestRecord,
     PullRequestStatus,
+    RepoArchitectureProfile,
     RepoConnection,
     RepoConnectionStatus,
     RepoFile,
@@ -32,6 +33,13 @@ from app.models.repo_agent import (
     SeoCodePatchStatus,
 )
 from app.models.search_console import SearchConsoleOpportunity, SearchConsoleOpportunityStatus
+
+POSTGRES_TEXT_CODECS = {
+    "UTF8": "utf-8",
+    "UNICODE": "utf-8",
+    "WIN1252": "cp1252",
+    "LATIN1": "latin1",
+}
 
 
 class RepoAgentRepository:
@@ -57,14 +65,15 @@ class RepoAgentRepository:
         framework: Optional[str],
         status: RepoConnectionStatus,
     ) -> RepoConnection:
+        encoding = await self._server_encoding()
         connection = RepoConnection(
             tenant_id=tenant_id,
             project_id=project_id,
             provider=provider,
-            repo_url=repo_url,
-            local_path=local_path,
-            default_branch=default_branch,
-            framework=framework,
+            repo_url=self._sanitize_text(repo_url, encoding),
+            local_path=self._sanitize_text(local_path, encoding),
+            default_branch=self._sanitize_text(default_branch, encoding),
+            framework=self._sanitize_text(framework, encoding),
             status=status,
         )
         self.db.add(connection)
@@ -172,8 +181,9 @@ class RepoAgentRepository:
 
     async def add_files(self, records: Iterable[dict]) -> List[RepoFile]:
         files = []
+        encoding = await self._server_encoding()
         for values in records:
-            file = RepoFile(**values)
+            file = RepoFile(**self._sanitize_value(values, encoding))
             self.db.add(file)
             files.append(file)
         await self.db.flush()
@@ -193,8 +203,9 @@ class RepoAgentRepository:
 
     async def add_issues(self, records: Iterable[dict]) -> List[SeoCodeIssue]:
         issues = []
+        encoding = await self._server_encoding()
         for values in records:
-            issue = SeoCodeIssue(**values)
+            issue = SeoCodeIssue(**self._sanitize_value(values, encoding))
             self.db.add(issue)
             issues.append(issue)
         await self.db.flush()
@@ -242,14 +253,42 @@ class RepoAgentRepository:
 
     async def add_patches(self, records: Iterable[dict]) -> List[SeoCodePatch]:
         patches = []
+        encoding = await self._server_encoding()
         for values in records:
-            patch = SeoCodePatch(**values)
+            patch = SeoCodePatch(**self._sanitize_value(values, encoding))
             self.db.add(patch)
             patches.append(patch)
         await self.db.flush()
         for patch in patches:
             await self.db.refresh(patch)
         return patches
+
+    async def create_architecture_profile(self, run: RepoScanRun, values: dict) -> RepoArchitectureProfile:
+        encoding = await self._server_encoding()
+        profile = RepoArchitectureProfile(
+            tenant_id=run.tenant_id,
+            project_id=run.project_id,
+            repo_connection_id=run.repo_connection_id,
+            scan_run_id=run.id,
+            **self._sanitize_value(values, encoding),
+        )
+        self.db.add(profile)
+        await self.db.flush()
+        await self.db.refresh(profile)
+        return profile
+
+    async def get_architecture_profile(
+        self,
+        scan_id: UUID,
+        tenant_id: UUID,
+    ) -> Optional[RepoArchitectureProfile]:
+        result = await self.db.execute(
+            select(RepoArchitectureProfile)
+            .where(RepoArchitectureProfile.scan_run_id == scan_id, RepoArchitectureProfile.tenant_id == tenant_id)
+            .order_by(RepoArchitectureProfile.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def list_patches(
         self,
@@ -285,6 +324,42 @@ class RepoAgentRepository:
         await self.db.flush()
         await self.db.refresh(run)
         return run
+
+    async def _server_encoding(self) -> str:
+        encoding = self.db.info.get("server_encoding")
+        if encoding:
+            return str(encoding)
+        result = await self.db.execute(text("select current_setting('server_encoding')"))
+        encoding = str(result.scalar_one_or_none() or "UTF8").upper()
+        self.db.info["server_encoding"] = encoding
+        return encoding
+
+    def _sanitize_value(self, value, encoding: str):
+        if isinstance(value, str):
+            return self._sanitize_text(value, encoding)
+        if isinstance(value, list):
+            return [self._sanitize_value(item, encoding) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._sanitize_value(item, encoding) for item in value)
+        if isinstance(value, dict):
+            return {
+                self._sanitize_value(key, encoding) if isinstance(key, str) else key:
+                self._sanitize_value(item, encoding)
+                for key, item in value.items()
+            }
+        return value
+
+    def _sanitize_text(self, value: Optional[str], encoding: str) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.replace("\x00", "")
+        if encoding.upper() in {"UTF8", "UNICODE"}:
+            return cleaned
+        codec = POSTGRES_TEXT_CODECS.get(encoding.upper(), encoding.lower())
+        try:
+            return cleaned.encode(codec, errors="ignore").decode(codec, errors="ignore")
+        except LookupError:
+            return cleaned.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
 
     async def create_apply_run(self, run: RepoScanRun, branch_name: str, patches_requested: int) -> PatchApplyRun:
         apply_run = PatchApplyRun(

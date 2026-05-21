@@ -214,6 +214,24 @@ class PlannerRepository:
         await self.db.refresh(task)
         return task
 
+    async def list_tasks_for_dedupe(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        limit: int = 5000,
+    ) -> List[SeoTask]:
+        result = await self.db.execute(
+            select(SeoTask)
+            .where(
+                SeoTask.project_id == project_id,
+                SeoTask.tenant_id == tenant_id,
+                SeoTask.status.in_(list(OPEN_TASK_STATUSES)),
+            )
+            .order_by(SeoTask.updated_at.desc(), SeoTask.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def create_report(self, values: dict) -> SeoWeeklyReport:
         existing = await self.get_report(values["planner_run_id"], values["tenant_id"])
         if existing:

@@ -61,6 +61,16 @@ class GSCConnectionStatus(str, enum.Enum):
     failed = "failed"
 
 
+class GSCPropertySourceType(str, enum.Enum):
+    oauth = "oauth"
+    manual = "manual"
+
+
+class GSCPropertyType(str, enum.Enum):
+    domain = "domain"
+    url_prefix = "url_prefix"
+
+
 class GSCSyncType(str, enum.Enum):
     manual = "manual"
     scheduled = "scheduled"
@@ -130,6 +140,9 @@ class SearchConsoleRow(Base):
     position = Column(Float, default=0)
     date_start = Column(DateTime, nullable=False, index=True)
     date_end = Column(DateTime, nullable=False, index=True)
+    country = Column(String(16), nullable=True, index=True)
+    device = Column(String(32), nullable=True, index=True)
+    search_appearance = Column(String(255), nullable=True, index=True)
     comparison_window = Column(SQLEnum(GSCComparisonWindow), nullable=True, index=True)
     period = Column(SQLEnum(SearchConsolePeriod), default=SearchConsolePeriod.current, nullable=False, index=True)
     source_type = Column(SQLEnum(SearchConsoleSourceType), nullable=False, index=True)
@@ -143,6 +156,7 @@ class SearchConsoleRow(Base):
     __table_args__ = (
         Index("ix_sc_rows_import_period", "import_id", "period"),
         Index("ix_sc_rows_tenant_project", "tenant_id", "project_id"),
+        Index("ix_sc_rows_project_dimensions", "project_id", "country", "device", "search_appearance"),
         Index("ix_sc_rows_dedupe", "import_id", "query", "page_url", "period", "content_hash", unique=True),
     )
 
@@ -241,9 +255,12 @@ class GSCProperty(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True)
-    connection_id = Column(UUID(as_uuid=True), ForeignKey("gsc_connections.id"), nullable=False, index=True)
+    connection_id = Column(UUID(as_uuid=True), ForeignKey("gsc_connections.id"), nullable=True, index=True)
     site_url = Column(String(2048), nullable=False, index=True)
+    source_type = Column(SQLEnum(GSCPropertySourceType), default=GSCPropertySourceType.oauth, nullable=False, index=True)
+    property_type = Column(SQLEnum(GSCPropertyType), default=GSCPropertyType.url_prefix, nullable=False, index=True)
     permission_level = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
     is_selected = Column(Boolean, default=False, nullable=False, index=True)
     last_synced_at = Column(DateTime, nullable=True)
 
@@ -255,6 +272,7 @@ class GSCProperty(Base):
     __table_args__ = (
         Index("ix_gsc_properties_tenant_project", "tenant_id", "project_id"),
         Index("ix_gsc_properties_site", "tenant_id", "connection_id", "site_url", unique=True),
+        Index("ix_gsc_properties_manual_site", "tenant_id", "project_id", "site_url", "source_type", unique=True),
     )
 
 
@@ -266,7 +284,7 @@ class GSCSyncJob(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True)
-    connection_id = Column(UUID(as_uuid=True), ForeignKey("gsc_connections.id"), nullable=False, index=True)
+    connection_id = Column(UUID(as_uuid=True), ForeignKey("gsc_connections.id"), nullable=True, index=True)
     property_id = Column(UUID(as_uuid=True), ForeignKey("gsc_properties.id"), nullable=False, index=True)
     import_id = Column(UUID(as_uuid=True), ForeignKey("search_console_imports.id"), nullable=True, index=True)
 

@@ -9,6 +9,10 @@ from app.core.encryption import decrypt_secret, encrypt_secret
 from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnectionStatus,
+    GSCPropertySourceType,
+    GSCPropertyType,
+    GSCSyncJobStatus,
+    GSCSyncType,
     SearchConsoleOpportunityType,
     SearchConsolePeriod,
     SearchConsoleSourceType,
@@ -19,6 +23,7 @@ from app.services.search_console import (
     SearchConsoleService,
     comparison_dates,
     normalize_gsc_api_rows,
+    normalize_gsc_property_url,
     normalize_url,
     parse_search_console_csv,
 )
@@ -30,6 +35,25 @@ class FakeDB:
 
     async def refresh(self, _obj):
         return None
+
+
+def make_manual_property(tenant_id, project_id, site_url="sc-domain:example.com", selected=True):
+    now = datetime.utcnow()
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        connection_id=None,
+        site_url=site_url,
+        source_type=GSCPropertySourceType.manual,
+        property_type=GSCPropertyType.domain if site_url.startswith("sc-domain:") else GSCPropertyType.url_prefix,
+        permission_level=None,
+        notes="CSV fallback",
+        is_selected=selected,
+        last_synced_at=None,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 def metric_row(
@@ -219,6 +243,211 @@ def test_gsc_data_normalization_and_csv_fallback_share_row_shape():
     assert csv_rows[0]["ctr"] == 0.008
     assert api_rows[0]["page_url"] == "https://example.com/Services"
     assert len(api_rows[0]["content_hash"]) == 64
+
+
+def test_manual_property_url_normalization():
+    assert normalize_gsc_property_url("example.com", GSCPropertyType.domain) == "sc-domain:example.com"
+    assert normalize_gsc_property_url("https://Example.com/path/", GSCPropertyType.url_prefix) == "https://example.com/path"
+
+
+@pytest.mark.asyncio
+async def test_manual_property_creation_and_duplicate_update():
+    tenant_id = uuid4()
+    project_id = uuid4()
+
+    class FakeRepository:
+        def __init__(self):
+            self.property = None
+
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            assert project_id_arg == project_id
+            assert tenant_id_arg == tenant_id
+            return SimpleNamespace(id=project_id, tenant_id=tenant_id)
+
+        async def upsert_manual_property(self, **kwargs):
+            if self.property:
+                self.property.notes = kwargs["notes"]
+                self.property.property_type = kwargs["property_type"]
+                self.property.site_url = kwargs["site_url"]
+                return self.property
+            self.property = make_manual_property(
+                kwargs["tenant_id"],
+                kwargs["project_id"],
+                site_url=kwargs["site_url"],
+                selected=True,
+            )
+            self.property.notes = kwargs["notes"]
+            self.property.property_type = kwargs["property_type"]
+            return self.property
+
+    repository = FakeRepository()
+    service = SearchConsoleService(FakeDB())
+    service.repository = repository
+
+    created = await service.register_manual_property(
+        project_id=project_id,
+        tenant_id=tenant_id,
+        site_url="example.com",
+        property_type=GSCPropertyType.domain,
+        notes="Initial",
+    )
+    updated = await service.register_manual_property(
+        project_id=project_id,
+        tenant_id=tenant_id,
+        site_url="sc-domain:example.com",
+        property_type=GSCPropertyType.domain,
+        notes="Updated",
+    )
+
+    assert created.id == updated.id
+    assert updated.source_type == GSCPropertySourceType.manual
+    assert updated.connection_id is None
+    assert updated.is_selected is True
+    assert updated.notes == "Updated"
+
+
+@pytest.mark.asyncio
+async def test_csv_import_uses_selected_manual_property():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    prop = make_manual_property(tenant_id, project_id)
+    captured = {}
+    start = datetime(2026, 5, 1)
+    end = datetime(2026, 5, 7)
+
+    class FakeRepository:
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def selected_property(self, project_id_arg, tenant_id_arg):
+            return prop
+
+        async def create_import(self, **kwargs):
+            captured["property_id"] = kwargs["property_id"]
+            record = SimpleNamespace(
+                id=uuid4(),
+                tenant_id=kwargs["tenant_id"],
+                project_id=kwargs["project_id"],
+                property_id=kwargs["property_id"],
+                source_type=kwargs["source_type"],
+                status=None,
+                rows_imported=0,
+            )
+            return record
+
+        async def set_import_status(self, import_record, status, error_message=None):
+            import_record.status = status
+            import_record.error_message = error_message
+            return import_record
+
+        async def add_rows(self, rows):
+            captured["rows"] = rows
+            return len(rows)
+
+        async def finish_import(self, import_record, rows_imported):
+            import_record.rows_imported = rows_imported
+            import_record.status = "completed"
+            return import_record
+
+        async def match_pages_by_urls(self, tenant_id_arg, project_id_arg, urls):
+            return {}
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    record = await service.import_csv(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        filename="gsc.csv",
+        content=b"query,page,clicks,impressions,ctr,position\nseo,https://example.com,1,10,10%,5\n",
+        date_start=start,
+        date_end=end,
+    )
+
+    assert record.property_id == prop.id
+    assert captured["property_id"] == prop.id
+    assert captured["rows"][0]["property_id"] == prop.id
+
+
+@pytest.mark.asyncio
+async def test_sync_request_on_manual_property_returns_failed_job():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    prop = make_manual_property(tenant_id, project_id)
+
+    class FakeRepository:
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def selected_property(self, project_id_arg, tenant_id_arg):
+            return prop
+
+        async def create_sync_job(self, **kwargs):
+            return SimpleNamespace(
+                id=uuid4(),
+                tenant_id=kwargs["tenant_id"],
+                project_id=kwargs["project_id"],
+                connection_id=kwargs["connection_id"],
+                property_id=kwargs["property_id"],
+                sync_type=kwargs["sync_type"],
+                date_start=kwargs["date_start"],
+                date_end=kwargs["date_end"],
+                comparison_window=kwargs["comparison_window"],
+                status=kwargs["status"],
+                rows_fetched=0,
+                opportunities_created=0,
+                opportunities_updated=0,
+                error_message=kwargs["error_message"],
+            )
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    job = await service.sync_project(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        sync_type=GSCSyncType.manual,
+        comparison_window=GSCComparisonWindow.last_28_days,
+    )
+
+    assert job.status == GSCSyncJobStatus.failed
+    assert job.connection_id is None
+    assert "OAuth connection required" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_summary_includes_selected_manual_property():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    prop = make_manual_property(tenant_id, project_id)
+
+    class FakeRepository:
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def summary(self, project_id_arg, tenant_id_arg):
+            return {
+                "project_id": project_id_arg,
+                "imports_count": 1,
+                "rows_count": 10,
+                "opportunities_count": 0,
+                "opportunities_by_status": {},
+                "opportunities_by_type": {},
+                "latest_sync_job_id": None,
+                "latest_sync_status": None,
+                "selected_property": prop,
+            }
+
+        async def list_opportunities(self, **kwargs):
+            return []
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    summary = await service.summary(project_id, tenant_id)
+
+    assert summary["selected_property"].source_type == GSCPropertySourceType.manual
+    assert summary["selected_property"].connection_id is None
 
 
 def test_opportunity_detection_and_comparison_window_analysis():

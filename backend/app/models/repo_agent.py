@@ -3,8 +3,8 @@ from datetime import datetime
 import enum
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, Enum as SQLEnum, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Column, DateTime, Enum as SQLEnum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -183,6 +183,7 @@ class RepoScanRun(Base):
     files = relationship("RepoFile", back_populates="scan_run", cascade="all, delete-orphan")
     issues = relationship("SeoCodeIssue", back_populates="scan_run", cascade="all, delete-orphan")
     patches = relationship("SeoCodePatch", back_populates="scan_run", cascade="all, delete-orphan")
+    architecture_profiles = relationship("RepoArchitectureProfile", back_populates="scan_run", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_repo_scan_runs_tenant_project", "tenant_id", "project_id"),
@@ -283,6 +284,46 @@ class SeoCodePatch(Base):
         Index("ix_seo_code_patches_scan_status", "scan_run_id", "status"),
         Index("ix_seo_code_patches_tenant_project", "tenant_id", "project_id"),
         Index("ix_seo_code_patches_dedupe", "issue_id", "file_path", "patch_type", "original_content_hash", unique=True),
+    )
+
+
+class RepoArchitectureProfile(Base):
+    """Detected website repository architecture and patch-safety map for a scan."""
+
+    __tablename__ = "repo_architecture_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True)
+    repo_connection_id = Column(UUID(as_uuid=True), ForeignKey("repo_connections.id"), nullable=False, index=True)
+    scan_run_id = Column(UUID(as_uuid=True), ForeignKey("repo_scan_runs.id"), nullable=False, index=True)
+    detected_stack = Column(String(255), nullable=False, index=True)
+    framework = Column(String(255), nullable=True, index=True)
+    router_type = Column(String(255), nullable=True)
+    package_manager = Column(String(100), nullable=True)
+    languages = Column(JSONB, nullable=True)
+    route_map = Column(JSONB, nullable=True)
+    content_sources = Column(JSONB, nullable=True)
+    blog_system = Column(JSONB, nullable=True)
+    metadata_strategy = Column(JSONB, nullable=True)
+    schema_strategy = Column(JSONB, nullable=True)
+    sitemap_strategy = Column(JSONB, nullable=True)
+    robots_strategy = Column(JSONB, nullable=True)
+    cms_strategy = Column(JSONB, nullable=True)
+    client_server_boundaries = Column(JSONB, nullable=True)
+    safe_patch_zones = Column(JSONB, nullable=True)
+    manual_review_zones = Column(JSONB, nullable=True)
+    unsafe_patch_zones = Column(JSONB, nullable=True)
+    confidence_score = Column(Float, default=0.0, nullable=False)
+    detection_notes = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    scan_run = relationship("RepoScanRun", back_populates="architecture_profiles")
+
+    __table_args__ = (
+        Index("ix_repo_arch_profiles_scan_created", "scan_run_id", "created_at"),
+        Index("ix_repo_arch_profiles_tenant_project", "tenant_id", "project_id"),
+        Index("ix_repo_arch_profiles_connection", "repo_connection_id", "created_at"),
     )
 
 
