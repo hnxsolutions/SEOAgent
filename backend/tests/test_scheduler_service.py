@@ -403,6 +403,50 @@ async def test_weekly_repo_scan_uses_repo_scan_service(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_weekly_indexing_monitor_manual_run(monkeypatch):
+    repo = FakeSchedulerRepository()
+    schedule = make_schedule(
+        tenant_id=repo.tenant_id,
+        project_id=repo.project_id,
+        schedule_type=SeoScheduleType.weekly_indexing_monitor,
+        frequency=SeoScheduleFrequency.weekly,
+    )
+    service = make_service(repo)
+    inspection_run_id = uuid4()
+
+    class FakeIndexingService:
+        def __init__(self, db):
+            pass
+
+        async def run_weekly_monitor(self, project_id, tenant_id):
+            assert project_id == repo.project_id
+            assert tenant_id == repo.tenant_id
+            return {
+                "gsc_sync": {"status": "completed", "rows_fetched": 10},
+                "inspection_run_id": inspection_run_id,
+                "inspection_status": "completed",
+                "inspected_url_count": 4,
+                "failed_url_count": 0,
+                "issues_count": 1,
+                "issues_by_type": {"sitemap_missing": 1},
+                "weekly_indexing_report": {
+                    "indexed_urls": 3,
+                    "not_indexed_urls": 1,
+                    "top_issues": [],
+                },
+            }
+
+    monkeypatch.setattr(service, "indexing_service_class", FakeIndexingService)
+
+    run = await service.execute_schedule(schedule, manual_trigger=True)
+
+    assert run.status == SeoScheduledRunStatus.completed
+    assert run.summary["schedule_type"] == SeoScheduleType.weekly_indexing_monitor.value
+    assert run.summary["inspected_url_count"] == 4
+    assert run.summary["redis_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_run_failure_is_recorded(monkeypatch):
     repo = FakeSchedulerRepository()
     schedule = make_schedule(tenant_id=repo.tenant_id, project_id=repo.project_id)

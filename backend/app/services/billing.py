@@ -33,15 +33,16 @@ class BillingService:
         price_id: str
     ) -> Dict[str, Any]:
         """Create Stripe checkout session"""
-        # TODO: Implement Stripe checkout session creation
-        return {
-            "url": "https://checkout.stripe.com/sample-session"
-        }
+        raise NotImplementedError(
+            "Stripe checkout is not implemented in the local MVP. "
+            "Configure a real Stripe integration before enabling checkout."
+        )
     
     def process_webhook(self, payload: bytes, sig_header: str) -> Dict[str, Any]:
         """Process Stripe webhook event"""
-        # TODO: Implement Stripe webhook processing
-        return {"type": "payment_intent.succeeded"}
+        raise NotImplementedError(
+            "Stripe webhooks are not implemented in the local MVP."
+        )
     
     async def handle_webhook_event(self, event: Dict[str, Any]) -> None:
         """Handle Stripe webhook event"""
@@ -50,5 +51,6 @@ class BillingService:
     
     async def cancel_subscription(self, user_id: UUID) -> bool:
         """Cancel user's subscription"""
-        # TODO: Implement subscription cancellation
-        return True
+        raise NotImplementedError(
+            "Stripe subscription cancellation is not implemented in the local MVP."
+        )

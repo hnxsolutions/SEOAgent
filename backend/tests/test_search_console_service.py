@@ -20,6 +20,8 @@ from app.models.search_console import (
 from app.services.search_console import (
     GoogleSearchConsoleClient,
     SearchConsoleOpportunityAnalyzer,
+    SearchConsoleGoogleAPIError,
+    SearchConsoleOAuthError,
     SearchConsoleService,
     comparison_dates,
     normalize_gsc_api_rows,
@@ -30,11 +32,17 @@ from app.services.search_console import (
 
 
 class FakeDB:
+    def __init__(self):
+        self.rolled_back = False
+
     async def commit(self):
         return None
 
     async def refresh(self, _obj):
         return None
+
+    async def rollback(self):
+        self.rolled_back = True
 
 
 def make_manual_property(tenant_id, project_id, site_url="sc-domain:example.com", selected=True):
@@ -100,6 +108,43 @@ def test_oauth_start_url_generation_uses_gsc_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gsc_fetch_falls_back_when_search_appearance_dimension_is_rejected(monkeypatch):
+    client = GoogleSearchConsoleClient()
+    requested_dimensions = []
+
+    async def fake_request_json(method, url, access_token, json=None):
+        requested_dimensions.append(json["dimensions"])
+        if "searchAppearance" in json["dimensions"]:
+            raise SearchConsoleGoogleAPIError("Google Search Console request failed with status 400.")
+        return {
+            "rows": [
+                {
+                    "keys": ["seo", "https://example.com/", "2026-05-01", "usa", "DESKTOP"],
+                    "clicks": 1,
+                    "impressions": 10,
+                    "ctr": 0.1,
+                    "position": 3.2,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(client, "_request_json", fake_request_json)
+
+    rows = await client.fetch_search_analytics(
+        access_token="access-token",
+        site_url="sc-domain:example.com",
+        date_start=datetime(2026, 5, 1),
+        date_end=datetime(2026, 5, 7),
+        row_limit=100,
+        dimensions=["query", "page", "date", "country", "device", "searchAppearance"],
+    )
+
+    assert rows[0]["_dimensions"] == ["query", "page", "date", "country", "device"]
+    assert requested_dimensions[0][-1] == "searchAppearance"
+    assert requested_dimensions[1] == ["query", "page", "date", "country", "device"]
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_encrypts_refresh_token(monkeypatch):
     tenant_id = uuid4()
     user_id = uuid4()
@@ -119,6 +164,11 @@ async def test_oauth_callback_encrypts_refresh_token(monkeypatch):
             }
 
     class FakeRepository:
+        async def get_user_in_tenant(self, user_id_arg, tenant_id_arg):
+            assert user_id_arg == user_id
+            assert tenant_id_arg == tenant_id
+            return SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True)
+
         async def upsert_connection(self, **kwargs):
             stored.update(kwargs)
             return SimpleNamespace(
@@ -140,6 +190,31 @@ async def test_oauth_callback_encrypts_refresh_token(monkeypatch):
     assert stored["user_id"] == user_id
     assert stored["encrypted_refresh_token"] != "refresh-token"
     assert decrypt_secret(stored["encrypted_refresh_token"]) == "refresh-token"
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_rejects_state_for_unknown_user_before_token_exchange():
+    tenant_id = uuid4()
+    user_id = uuid4()
+
+    class FakeGoogleClient:
+        credentials_configured = True
+
+        async def exchange_code(self, code):
+            raise AssertionError("Token exchange should not run for an invalid local OAuth state user")
+
+    class FakeRepository:
+        async def get_user_in_tenant(self, user_id_arg, tenant_id_arg):
+            assert user_id_arg == user_id
+            assert tenant_id_arg == tenant_id
+            return None
+
+    service = SearchConsoleService(FakeDB(), google_client=FakeGoogleClient())
+    service.repository = FakeRepository()
+    state = service._encode_oauth_state(tenant_id, user_id)
+
+    with pytest.raises(SearchConsoleOAuthError, match="not active in this tenant"):
+        await service.handle_oauth_callback("auth-code", state)
 
 
 @pytest.mark.asyncio

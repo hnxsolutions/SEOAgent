@@ -43,10 +43,16 @@ async def create_checkout_session(
         )
     
     billing_service = BillingService(db)
-    session = await billing_service.create_checkout_session(
-        user_id=current_user["user_id"],
-        price_id=checkout_request.price_id
-    )
+    try:
+        session = await billing_service.create_checkout_session(
+            user_id=current_user["user_id"],
+            price_id=checkout_request.price_id
+        )
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=str(exc),
+        )
     
     return {"checkout_url": session["url"]}
 
@@ -68,6 +74,11 @@ async def stripe_webhook(request: Request, db: Annotated[AsyncSession, Depends(g
         event = billing_service.process_webhook(payload, sig_header)
         # Process event asynchronously
         await billing_service.handle_webhook_event(event)
+    except NotImplementedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=str(e),
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -84,5 +95,11 @@ async def cancel_subscription(
 ):
     """Cancel current subscription"""
     billing_service = BillingService(db)
-    await billing_service.cancel_subscription(current_user["user_id"])
+    try:
+        await billing_service.cancel_subscription(current_user["user_id"])
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=str(exc),
+        )
     return {"status": "subscription cancelled"}

@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.crawl import CrawlPriority, CrawlStatus
+from app.core.redis import REDIS_UNAVAILABLE_MESSAGE, RedisUnavailableError
 from app.services.crawl import CrawlService
 
 
@@ -103,3 +104,65 @@ async def test_enqueue_crawl_job_creates_redis_task(monkeypatch):
     assert len(queued_tasks) == 1
     assert queued_tasks[0].url == "https://example.com"
     assert queued_tasks[0].metadata["max_pages"] == 10
+
+
+@pytest.mark.asyncio
+async def test_enqueue_crawl_job_fails_gracefully_when_redis_missing_in_dev(monkeypatch):
+    class FailingQueue:
+        def __init__(self, redis_url, queue_name):
+            self.redis_url = redis_url
+            self.queue_name = queue_name
+
+        async def connect(self):
+            raise ConnectionError("localhost:6379 connection refused")
+
+        async def disconnect(self):
+            return None
+
+    monkeypatch.setattr("app.services.crawl.CrawlQueueManager", FailingQueue)
+    monkeypatch.setattr("app.services.crawl.settings.REDIS_REQUIRED", False)
+
+    tenant_id = uuid4()
+    job = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=None,
+        url="https://example.com",
+        status=CrawlStatus.pending,
+        priority=CrawlPriority.normal,
+        max_pages=10,
+        max_depth=2,
+        allowed_domains=["example.com"],
+        excluded_paths=[],
+        follow_subdomains=False,
+        respect_robots_txt=True,
+        sitemap_urls=[],
+        render_javascript=True,
+        request_timeout=30,
+        crawl_delay=1.0,
+        user_agent=None,
+        max_retries=2,
+        queue_name=None,
+        total_pages_discovered=0,
+    )
+
+    service = CrawlService(DummyDB())
+
+    async def fake_get_crawl_job(job_id, tenant_id=None):
+        return job
+
+    class FakeRepository:
+        async def set_job_status(self, job, status, error_message=None, worker_id=None):
+            job.status = status
+            job.error_message = error_message
+            return job
+
+    service.get_crawl_job = fake_get_crawl_job
+    service.repository = FakeRepository()
+
+    with pytest.raises(RedisUnavailableError) as exc:
+        await service.enqueue_crawl_job(job.id, tenant_id=tenant_id)
+
+    assert str(exc.value) == REDIS_UNAVAILABLE_MESSAGE
+    assert job.status == CrawlStatus.failed
+    assert job.error_message == REDIS_UNAVAILABLE_MESSAGE

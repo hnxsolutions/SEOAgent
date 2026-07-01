@@ -175,6 +175,9 @@ async def run_content_optimization_background(run_id: UUID) -> None:
         service = ContentOptimizationService(db)
         await service.execute_generation(run_id)
     except LocalLLMError:
-        raise
+        # execute_generation persists the failed run and error message. Ollama is
+        # optional in local development, so avoid surfacing this as an unhandled
+        # FastAPI background-task exception.
+        return
     finally:
         await db.close()

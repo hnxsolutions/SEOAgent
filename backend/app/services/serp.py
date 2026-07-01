@@ -7,10 +7,9 @@ from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-import asyncio
 import structlog
 
-from app.models.serp import SERPAnalysis, SERPStatus, SERPResult
+from app.models.serp import SERPAnalysis, SERPStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -79,7 +78,12 @@ class SERPService:
         analysis_id: UUID,
         keywords: List[str]
     ):
-        """Execute SERP analysis (to be implemented)"""
+        """Mark automated SERP analysis as unavailable.
+
+        The previous MVP path wrote sample SERP rows. That made the dashboard
+        look successful with non-real ranking data, so keep the job record but
+        fail it explicitly until a real provider-backed implementation exists.
+        """
         # Update status to running
         analysis = await self.db.get(SERPAnalysis, analysis_id)
         if not analysis:
@@ -90,43 +94,13 @@ class SERPService:
         analysis.started_at = datetime.utcnow()
         await self.db.commit()
         
-        try:
-            logger.info(f"Starting SERP analysis for {len(keywords)} keywords")
-            
-            # TODO: Implement actual SERP analysis logic
-            # This would involve querying search engines and analyzing results
-            
-            # Simulate analysis progress
-            for i, keyword in enumerate(keywords):
-                await asyncio.sleep(0.5)
-                
-                # Create sample SERP results
-                result = SERPResult(
-                    analysis_id=analysis_id,
-                    keyword=keyword,
-                    position=(i % 10) + 1,
-                    url=f"https://example.com/{keyword.replace(' ', '-')}",
-                    title=f"Result for {keyword}",
-                    description=f"This is a sample description for {keyword}",
-                )
-                self.db.add(result)
-                
-                analysis.analyzed_keywords = i + 1
-                analysis.progress = int((i + 1) / len(keywords) * 100)
-                
-                if (i + 1) % 5 == 0:
-                    await self.db.commit()
-            
-            # Mark as completed
-            analysis.status = SERPStatus.completed
-            analysis.completed_at = datetime.utcnow()
-            await self.db.commit()
-            
-            logger.info(f"SERP analysis completed for {len(keywords)} keywords")
-            
-        except Exception as e:
-            logger.error(f"SERP analysis failed: {e}")
-            analysis.status = SERPStatus.failed
-            analysis.error_message = str(e)
-            analysis.completed_at = datetime.utcnow()
-            await self.db.commit()
+        message = (
+            "Automated SERP analysis is not implemented in the local MVP. "
+            "Use manual SERP snapshots or Search Console rank tracking for real data."
+        )
+        logger.warning(message, analysis_id=str(analysis_id), keyword_count=len(keywords))
+        analysis.status = SERPStatus.failed
+        analysis.error_message = message
+        analysis.progress = 100
+        analysis.completed_at = datetime.utcnow()
+        await self.db.commit()
