@@ -15,6 +15,8 @@ from app.models.crawl import CrawlJob, CrawlPage
 from app.models.geo_aeo import GeoAeoPageScore
 from app.models.internal_linking import InternalLinkRecommendation
 from app.models.project import Project
+from app.models.tenant import tenant_members
+from app.models.user import User
 from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnection,
@@ -45,6 +47,18 @@ class SearchConsoleRepository:
     async def get_project(self, project_id: UUID, tenant_id: UUID) -> Optional[Project]:
         result = await self.db.execute(
             select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_user_in_tenant(self, user_id: UUID, tenant_id: UUID) -> Optional[User]:
+        result = await self.db.execute(
+            select(User)
+            .join(tenant_members, tenant_members.c.user_id == User.id)
+            .where(
+                User.id == user_id,
+                User.is_active.is_(True),
+                tenant_members.c.tenant_id == tenant_id,
+            )
         )
         return result.scalar_one_or_none()
 

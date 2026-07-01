@@ -132,6 +132,10 @@ class PlannerService:
             )
             return run
         except Exception as exc:
+            await self.db.rollback()
+            run = await self.repository.get_run(run_id, tenant_id)
+            if not run:
+                raise
             await self.repository.set_run_status(run, SeoPlannerRunStatus.failed, error_message=str(exc))
             await self.db.commit()
             logger.error("Weekly SEO planner run failed", run_id=str(run.id), error=str(exc), exc_info=True)
@@ -694,7 +698,7 @@ class PlannerService:
             }
             for task in sorted(tasks, key=lambda item: item.priority_score or 0, reverse=True)[:8]
         ]
-        return {
+        report = {
             "tenant_id": run.tenant_id,
             "project_id": run.project_id,
             "planner_run_id": run.id,
@@ -741,6 +745,19 @@ class PlannerService:
             },
             "next_week_priorities": top_tasks,
         }
+        for key in (
+            "wins",
+            "risks",
+            "technical_seo_summary",
+            "search_console_summary",
+            "content_summary",
+            "geo_aeo_summary",
+            "blog_summary",
+            "repo_patch_summary",
+            "next_week_priorities",
+        ):
+            report[key] = self._json_safe(report[key])
+        return report
 
     def _report_risks(self, signals: dict) -> list[dict]:
         risks = []
@@ -787,3 +804,18 @@ class PlannerService:
 
     def _enum_value(self, value) -> str:
         return getattr(value, "value", value)
+
+    def _json_safe(self, value):
+        if isinstance(value, UUID):
+            return str(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if hasattr(value, "model_dump"):
+            return self._json_safe(value.model_dump(mode="json"))
+        if isinstance(value, dict):
+            return {str(key): self._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._json_safe(item) for item in value]
+        if hasattr(value, "value"):
+            return value.value
+        return value

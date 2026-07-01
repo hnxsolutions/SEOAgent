@@ -13,6 +13,7 @@ from uuid import UUID
 
 import httpx
 from jose import JWTError, jwt
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -43,6 +44,7 @@ GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GSC_API_BASE_URL = "https://www.googleapis.com/webmasters/v3"
+GSC_URL_INSPECTION_ENDPOINT = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 
 
 class SearchConsoleError(RuntimeError):
@@ -158,10 +160,62 @@ class GoogleSearchConsoleClient:
         dimensions: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch Search Analytics rows with quota-safe pagination."""
+        dimensions = dimensions or ["query", "page", "date", "country", "device", "searchAppearance"]
+        try:
+            return await self._fetch_search_analytics_page_set(
+                access_token=access_token,
+                site_url=site_url,
+                date_start=date_start,
+                date_end=date_end,
+                row_limit=row_limit,
+                dimensions=dimensions,
+            )
+        except SearchConsoleGoogleAPIError as exc:
+            if "searchAppearance" not in dimensions or "status 400" not in str(exc):
+                raise
+            fallback_dimensions = [dimension for dimension in dimensions if dimension != "searchAppearance"]
+            logger.warning(
+                "GSC searchAppearance dimension unavailable; retrying without it",
+                site_url=site_url,
+                dimensions=fallback_dimensions,
+            )
+            return await self._fetch_search_analytics_page_set(
+                access_token=access_token,
+                site_url=site_url,
+                date_start=date_start,
+                date_end=date_end,
+                row_limit=row_limit,
+                dimensions=fallback_dimensions,
+            )
+
+    async def inspect_url(
+        self,
+        access_token: str,
+        site_url: str,
+        inspection_url: str,
+        language_code: str = "en-US",
+    ) -> Dict[str, Any]:
+        """Fetch indexed URL Inspection data for one URL using the official API."""
+        body = {
+            "inspectionUrl": inspection_url,
+            "siteUrl": site_url,
+            "languageCode": language_code,
+        }
+        payload = await self._request_json("POST", GSC_URL_INSPECTION_ENDPOINT, access_token, json=body)
+        return dict(payload.get("inspectionResult") or {})
+
+    async def _fetch_search_analytics_page_set(
+        self,
+        access_token: str,
+        site_url: str,
+        date_start: datetime,
+        date_end: datetime,
+        row_limit: int,
+        dimensions: List[str],
+    ) -> List[Dict[str, Any]]:
         all_rows: List[Dict[str, Any]] = []
         start_row = 0
         encoded_site = quote(site_url, safe="")
-        dimensions = dimensions or ["query", "page", "date", "country", "device", "searchAppearance"]
         while len(all_rows) < row_limit:
             batch_limit = min(25000, row_limit - len(all_rows))
             body = {
@@ -582,6 +636,9 @@ class SearchConsoleService:
 
     async def handle_oauth_callback(self, code: str, state: str) -> dict:
         tenant_id, user_id = self._decode_oauth_state(state)
+        user = await self.repository.get_user_in_tenant(user_id, tenant_id)
+        if not user:
+            raise SearchConsoleOAuthError("OAuth state references a user that is not active in this tenant. Start the Google connection again while signed in.")
         tokens = await self.google_client.exchange_code(code)
         refresh_token = tokens.get("refresh_token")
         if not refresh_token:
@@ -590,16 +647,26 @@ class SearchConsoleService:
             )
         expires_at = self._expires_at(tokens)
         scopes = str(tokens.get("scope") or GSC_SCOPE).split()
-        connection = await self.repository.upsert_connection(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            encrypted_refresh_token=encrypt_secret(refresh_token),
-            access_token_expires_at=expires_at,
-            scopes=scopes,
-            metadata={"token_type": tokens.get("token_type", "Bearer")},
-        )
-        await self.db.commit()
-        await self.db.refresh(connection)
+        try:
+            connection = await self.repository.upsert_connection(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                encrypted_refresh_token=encrypt_secret(refresh_token),
+                access_token_expires_at=expires_at,
+                scopes=scopes,
+                metadata={"token_type": tokens.get("token_type", "Bearer")},
+            )
+            await self.db.commit()
+            await self.db.refresh(connection)
+        except SQLAlchemyError as exc:
+            await self.db.rollback()
+            logger.warning(
+                "Failed to store Google Search Console connection",
+                tenant_id=str(tenant_id),
+                user_id=str(user_id),
+                error=exc.__class__.__name__,
+            )
+            raise SearchConsoleOAuthError("Google OAuth succeeded, but the connection could not be stored. Check the local user and tenant records.") from exc
         logger.info("Connected Google Search Console", tenant_id=str(tenant_id), user_id=str(user_id))
         return {
             "connection_id": connection.id,

@@ -289,6 +289,119 @@ export type SearchConsoleOpportunity = {
   updated_at?: string | null;
 };
 
+export type IndexingRun = {
+  id: UUID;
+  project_id: UUID;
+  gsc_property_id: UUID;
+  status: string;
+  requested_url_count: number;
+  inspected_url_count: number;
+  failed_url_count: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+  created_at: string;
+};
+
+export type IndexingResult = {
+  id: UUID;
+  project_id: UUID;
+  inspection_run_id: UUID;
+  page_url: string;
+  inspection_result_link?: string | null;
+  verdict?: string | null;
+  coverage_state?: string | null;
+  indexing_state?: string | null;
+  robots_txt_state?: string | null;
+  page_fetch_state?: string | null;
+  google_canonical?: string | null;
+  user_canonical?: string | null;
+  sitemap_urls?: string[] | null;
+  referring_urls?: string[] | null;
+  last_crawl_time?: string | null;
+  crawled_as?: string | null;
+  mobile_usability_verdict?: string | null;
+  rich_results_verdict?: string | null;
+  created_at: string;
+};
+
+export type IndexingIssue = {
+  id: UUID;
+  project_id: UUID;
+  inspection_result_id: UUID;
+  page_url: string;
+  issue_type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical' | string;
+  likely_cause: string;
+  recommended_fix: string;
+  linked_repo_issue_id?: UUID | null;
+  linked_patch_id?: UUID | null;
+  status: string;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type IndexingSummary = {
+  project_id: UUID;
+  url_inspection_connected: boolean;
+  indexed_urls: number;
+  not_indexed_urls: number;
+  issues_count: number;
+  issues_by_type: Record<string, number>;
+  issues_by_status: Record<string, number>;
+  latest_run?: IndexingRun | null;
+  top_issues: IndexingIssue[];
+  next_validation_date: string;
+};
+
+export type IndexingRunDetail = {
+  run: IndexingRun;
+  results: IndexingResult[];
+  issues: IndexingIssue[];
+};
+
+export type IndexingValidationRun = {
+  id: UUID;
+  project_id: UUID;
+  issue_id?: UUID | null;
+  patch_id?: UUID | null;
+  pull_request_id?: UUID | null;
+  status: string;
+  validation_after_days: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+};
+
+export type IndexingValidationResult = {
+  id: UUID;
+  project_id: UUID;
+  validation_run_id: UUID;
+  issue_id: UUID;
+  page_url: string;
+  previous_issue_type: string;
+  current_verdict?: string | null;
+  current_coverage_state?: string | null;
+  fixed: boolean;
+  still_failing: boolean;
+  notes?: string | null;
+  created_at: string;
+};
+
+export type IndexingValidationResponse = {
+  validation_run: IndexingValidationRun;
+  result?: IndexingValidationResult | null;
+  issue?: IndexingIssue | null;
+};
+
+export type IndexingFixPlan = {
+  issue: IndexingIssue;
+  planner_task?: PlannerTask | null;
+  repo_issue?: SeoCodeIssue | null;
+  patch?: SeoCodePatch | null;
+  safety: string;
+};
+
 export type RankTrackingRow = {
   query: string;
   page_url: string;

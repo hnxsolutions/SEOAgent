@@ -5,6 +5,7 @@ import pytest
 
 from app.models.crawl import CrawlPriority, CrawlStatus
 from app.core.redis import REDIS_UNAVAILABLE_MESSAGE, RedisUnavailableError
+from app.crawler.queue_manager import CrawlQueueManager
 from app.services.crawl import CrawlService
 
 
@@ -104,6 +105,18 @@ async def test_enqueue_crawl_job_creates_redis_task(monkeypatch):
     assert len(queued_tasks) == 1
     assert queued_tasks[0].url == "https://example.com"
     assert queued_tasks[0].metadata["max_pages"] == 10
+
+
+def test_crawl_queue_dedup_is_scoped_per_job():
+    queue = CrawlQueueManager(queue_name="default")
+    url_hash = queue._hash_url("https://example.com/")
+
+    first_job_key = queue._dedup_key(url_hash, "job-1")
+    second_job_key = queue._dedup_key(url_hash, "job-2")
+
+    assert first_job_key != second_job_key
+    assert first_job_key.endswith(f":job-1:{url_hash}")
+    assert second_job_key.endswith(f":job-2:{url_hash}")
 
 
 @pytest.mark.asyncio

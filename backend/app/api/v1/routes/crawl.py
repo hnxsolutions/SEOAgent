@@ -16,7 +16,7 @@ import structlog
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.redis import get_redis
+from app.core.redis import REDIS_UNAVAILABLE_MESSAGE, RedisUnavailableError, get_redis
 from app.crawler.queue_manager import CrawlQueueManager
 from app.schemas.crawl import (
     CrawlRequest,
@@ -116,6 +116,11 @@ async def start_crawl(
             detail=str(e),
         )
     except Exception as e:
+        if isinstance(e, RedisUnavailableError):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=REDIS_UNAVAILABLE_MESSAGE,
+            )
         logger.error("Failed to start crawl", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -628,6 +633,11 @@ async def get_queue_stats(
         
     except Exception as e:
         logger.error(f"Failed to get queue stats: {e}")
+        if not settings.REDIS_REQUIRED:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=REDIS_UNAVAILABLE_MESSAGE,
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),

@@ -5,7 +5,7 @@ import json
 
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict, field_validator
-from typing import List, Optional
+from typing import Any, List, Optional
 from functools import lru_cache
 
 
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_URL: Optional[str] = None
     REDIS_DB: int = 0
+    REDIS_REQUIRED: bool = False
     
     # Qdrant
     QDRANT_HOST: str = "localhost"
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     QDRANT_URL: Optional[str] = None
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_LOCAL_PATH: Optional[str] = None
+    QDRANT_REQUIRED: bool = False
 
     # Local semantic indexing
     SEMANTIC_EMBEDDING_PROVIDER: str = "sentence-transformers"
@@ -66,7 +68,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    CORS_ORIGINS: Any = ["http://localhost:3000", "http://127.0.0.1:3000"]
     
     # Local Ollama connector only; the app must stay self-hosted.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -83,6 +85,9 @@ class Settings(BaseSettings):
     GSC_POSITION_DROP_THRESHOLD: float = 2.0
     GSC_CTR_DROP_THRESHOLD: float = 0.25
     GSC_CLICK_DECLINE_THRESHOLD: float = 0.2
+    GSC_URL_INSPECTION_MAX_URLS_PER_RUN: int = 50
+    GSC_URL_INSPECTION_REQUEST_DELAY_SECONDS: float = 1.0
+    GSC_URL_INSPECTION_LANGUAGE_CODE: str = "en-US"
 
     # Optional GitHub PR creation for approved SEO code patches.
     GITHUB_TOKEN: Optional[str] = None

@@ -25,6 +25,12 @@ import type {
   ImpactExperiment,
   ImpactResult,
   ImpactSummary,
+  IndexingFixPlan,
+  IndexingIssue,
+  IndexingRun,
+  IndexingRunDetail,
+  IndexingSummary,
+  IndexingValidationResponse,
   InternalLinkGeneration,
   InternalLinkSummary,
   KnowledgeIndexRun,
@@ -273,6 +279,33 @@ export const dashboardApi = {
         api.get(`/rank-tracking/projects/${projectId}/keywords`, {
           params: { limit: 100, ...params },
         })
+      ),
+  },
+
+  indexing: {
+    summary: (projectId: UUID) =>
+      unwrap<IndexingSummary>(api.get(`/indexing/projects/${projectId}/summary`)),
+    inspect: (projectId: UUID, payload?: { urls?: string[]; limit?: number; language_code?: string }) =>
+      unwrap<IndexingRun>(api.post(`/indexing/projects/${projectId}/inspect`, payload ?? {})),
+    runs: (projectId: UUID) =>
+      unwrap<Envelope<IndexingRun, 'runs'>>(
+        api.get(`/indexing/projects/${projectId}/runs`, { params: { limit: 25 } })
+      ),
+    run: (runId: UUID) =>
+      unwrap<IndexingRunDetail>(api.get(`/indexing/runs/${runId}`)),
+    issues: (projectId: UUID, params?: { status?: string; issue_type?: string }) =>
+      unwrap<Envelope<IndexingIssue, 'issues'>>(
+        api.get(`/indexing/projects/${projectId}/issues`, {
+          params: { limit: 250, ...params },
+        })
+      ),
+    createFixPlan: (issueId: UUID) =>
+      unwrap<IndexingFixPlan>(api.post(`/indexing/issues/${issueId}/create-fix-plan`)),
+    ignore: (issueId: UUID) =>
+      unwrap<IndexingIssue>(api.post(`/indexing/issues/${issueId}/ignore`)),
+    validate: (issueId: UUID, payload?: { validation_after_days?: number; run_now?: boolean }) =>
+      unwrap<IndexingValidationResponse>(
+        api.post(`/indexing/issues/${issueId}/validate`, payload ?? { validation_after_days: 7, run_now: true })
       ),
   },
 

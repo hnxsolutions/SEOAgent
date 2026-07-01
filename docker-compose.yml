@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -53,7 +51,7 @@ services:
     networks:
       - seo-agent-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -151,6 +149,8 @@ services:
       - seo-agent-network
     command: >
       sh -c "python -m app.crawler.worker --workers 1 --queue default"
+    healthcheck:
+      disable: true
     deploy:
       replicas: ${CRAWL_WORKER_REPLICAS:-1}
 

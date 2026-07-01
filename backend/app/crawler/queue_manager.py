@@ -177,9 +177,9 @@ class CrawlQueueManager:
         """Get the job data key"""
         return f"{self.JOB_PREFIX}:{job_id}"
     
-    def _dedup_key(self, url_hash: str) -> str:
-        """Get the deduplication key"""
-        return f"{self.DEDUP_PREFIX}:{self.queue_name}:{url_hash}"
+    def _dedup_key(self, url_hash: str, job_id: str) -> str:
+        """Get the per-job deduplication key for a URL."""
+        return f"{self.DEDUP_PREFIX}:{self.queue_name}:{job_id}:{url_hash}"
     
     def _stats_key(self, job_id: str) -> str:
         """Get the stats key for a job"""
@@ -200,7 +200,7 @@ class CrawlQueueManager:
         
         # Check for duplicates using URL hash
         url_hash = self._hash_url(task.url)
-        dedup_key = self._dedup_key(url_hash)
+        dedup_key = self._dedup_key(url_hash, task.crawl_job_id)
         
         # Use SETNX for atomic duplicate check
         added = await self._redis.set(dedup_key, task.id, nx=True, ex=self.task_ttl)
@@ -249,7 +249,7 @@ class CrawlQueueManager:
         
         for task in tasks:
             url_hash = self._hash_url(task.url)
-            dedup_key = self._dedup_key(url_hash)
+            dedup_key = self._dedup_key(url_hash, task.crawl_job_id)
             
             # Check for duplicate
             exists = await self._redis.exists(dedup_key)

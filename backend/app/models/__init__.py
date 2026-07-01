@@ -28,6 +28,13 @@ from app.models.search_console import (
     SearchConsoleOpportunity,
     SearchConsoleRow,
 )
+from app.models.indexing import (
+    GSCFixValidationResult,
+    GSCFixValidationRun,
+    GSCIndexingIssue,
+    GSCUrlInspectionResult,
+    GSCUrlInspectionRun,
+)
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
 from app.models.scheduler import SeoSchedule, SeoScheduledRun
 from app.models.repo_agent import (
@@ -84,6 +91,11 @@ __all__ = [
     "GSCConnection",
     "GSCProperty",
     "GSCSyncJob",
+    "GSCUrlInspectionRun",
+    "GSCUrlInspectionResult",
+    "GSCIndexingIssue",
+    "GSCFixValidationRun",
+    "GSCFixValidationResult",
     "SeoPlannerRun",
     "SeoTask",
     "SeoTaskDependency",

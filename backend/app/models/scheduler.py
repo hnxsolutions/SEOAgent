@@ -15,6 +15,7 @@ class SeoScheduleType(str, enum.Enum):
     weekly_full_seo = "weekly_full_seo"
     weekly_blog_planning = "weekly_blog_planning"
     weekly_repo_scan = "weekly_repo_scan"
+    weekly_indexing_monitor = "weekly_indexing_monitor"
     monthly_deep_audit = "monthly_deep_audit"
 
 

@@ -35,24 +35,8 @@ class QdrantSemanticStore:
         self.collection_name = collection_name
 
     def ensure_collection(self, vector_size: int) -> None:
-        """Create the semantic collection if needed and validate dimensions."""
-        try:
-            collection = self.client.get_collection(self.collection_name)
-            existing_size = self._collection_vector_size(collection)
-            if existing_size and existing_size != vector_size:
-                raise ValueError(
-                    f"Qdrant collection {self.collection_name!r} has vector size "
-                    f"{existing_size}, expected {vector_size}."
-                )
-        except ValueError as exc:
-            if "not found" not in str(exc).lower():
-                raise
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
-            )
-            logger.info("Created semantic Qdrant collection", collection=self.collection_name, vector_size=vector_size)
-        except Exception:
+        """Create the semantic collection if needed."""
+        if not self._collection_exists():
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
@@ -234,6 +218,10 @@ class QdrantSemanticStore:
                 )
             except Exception as exc:
                 logger.debug("Qdrant payload index unavailable", field=field_name, error=str(exc))
+
+    def _collection_exists(self) -> bool:
+        collections = self.client.get_collections()
+        return self.collection_name in {collection.name for collection in collections.collections}
 
     def _collection_vector_size(self, collection: Any) -> Optional[int]:
         vectors = getattr(getattr(getattr(collection, "config", None), "params", None), "vectors", None)

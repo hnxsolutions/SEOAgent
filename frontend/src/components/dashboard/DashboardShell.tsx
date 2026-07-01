@@ -11,6 +11,7 @@ import {
   Newspaper,
   Rocket,
   Search,
+  SearchCheck,
   Target,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -196,6 +197,7 @@ const navItems = [
   { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
   { label: 'Weekly Planner', href: '/dashboard/planner', icon: Bot },
   { label: 'Search Console', href: '/dashboard/search-console', icon: Search },
+  { label: 'Indexing', href: '/dashboard/indexing', icon: SearchCheck },
   { label: 'Rank Tracking', href: '/dashboard/rank-tracking', icon: LineChart },
   { label: 'Impact', href: '/dashboard/impact', icon: Activity },
   { label: 'SERP Snapshots', href: '/dashboard/serp-snapshots', icon: Camera },

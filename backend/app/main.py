@@ -12,8 +12,9 @@ import structlog
 from app.core.config import settings
 from app.api.v1 import api_router
 from app.core.database import init_db
-from app.core.redis import init_redis
-from app.core.qdrant import init_qdrant
+from app.core.redis import get_redis_status, init_redis
+from app.core.qdrant import get_qdrant_status, init_qdrant
+from app.services.local_llm import LocalLLMService
 
 # Configure structured logging
 structlog.configure(
@@ -51,8 +52,13 @@ async def lifespan(app: FastAPI):
     logger.info("Redis initialized")
     
     # Initialize Qdrant
-    await init_qdrant()
-    logger.info("Qdrant vector database initialized")
+    try:
+        await init_qdrant()
+        logger.info("Qdrant vector database initialized")
+    except Exception as exc:
+        if settings.QDRANT_REQUIRED:
+            raise
+        logger.warning("Qdrant is unavailable. Semantic/vector features are disabled in local development.", error=str(exc))
     
     yield
     
@@ -95,11 +101,21 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    ollama = await LocalLLMService().health_check()
     return {
         "status": "healthy",
         "service": settings.APP_NAME,
         "version": "1.0.0",
-        "environment": settings.APP_ENV
+        "environment": settings.APP_ENV,
+        "database": {"status": "ok"},
+        "redis": get_redis_status(),
+        "ollama": {
+            "available": bool(ollama.get("available")),
+            "default_model": ollama.get("default_model"),
+            "default_model_available": bool(ollama.get("default_model_available")),
+            "error": ollama.get("error"),
+        },
+        "qdrant": get_qdrant_status(),
     }
 
 

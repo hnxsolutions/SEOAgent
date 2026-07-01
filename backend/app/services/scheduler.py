@@ -22,6 +22,7 @@ from app.models.search_console import GSCSyncJobStatus, GSCSyncType
 from app.repositories.scheduler import SchedulerRepository
 from app.services.blogs import BlogService
 from app.services.impact import SeoImpactService
+from app.services.indexing import IndexingService
 from app.services.planner import PlannerService
 from app.services.repo_agent import RepoAgentService
 from app.services.search_console import SearchConsoleConfigurationError, SearchConsoleError, SearchConsoleService
@@ -48,6 +49,7 @@ class SchedulerService:
     blog_service_class = BlogService
     repo_agent_service_class = RepoAgentService
     impact_service_class = SeoImpactService
+    indexing_service_class = IndexingService
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -216,6 +218,8 @@ class SchedulerService:
             return await self._run_blog_planning(schedule)
         if schedule_type == SeoScheduleType.weekly_repo_scan.value:
             return await self._run_repo_scan(schedule)
+        if schedule_type == SeoScheduleType.weekly_indexing_monitor.value:
+            return await self._run_indexing_monitor(schedule)
         raise SchedulerError(f"Unsupported schedule type: {schedule_type}")
 
     async def _run_gsc_sync(self, schedule: SeoSchedule) -> dict:
@@ -363,6 +367,33 @@ class SchedulerService:
                 "issues_found": int(getattr(scan, "issues_found", 0) or 0),
                 "patches_proposed": len(patches),
                 "safety": "Patch proposals only. No patches were applied and no PRs were created.",
+            },
+        }
+
+    async def _run_indexing_monitor(self, schedule: SeoSchedule) -> dict:
+        service = self.indexing_service_class(self.db)
+        try:
+            summary = await service.run_weekly_monitor(schedule.project_id, schedule.tenant_id)
+        except (SearchConsoleConfigurationError, SearchConsoleError, ValueError) as exc:
+            message = str(exc)
+            if "OAuth" in message or "No selected Search Console property" in message:
+                return {
+                    "status": SeoScheduledRunStatus.skipped,
+                    "summary": {
+                        "schedule_type": SeoScheduleType.weekly_indexing_monitor.value,
+                        "reason": message,
+                        "redis_required": False,
+                    },
+                    "error_message": message,
+                }
+            raise
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "summary": {
+                "schedule_type": SeoScheduleType.weekly_indexing_monitor.value,
+                **summary,
+                "safety": "GSC sync, URL inspection, issue classification, tasks, and reports only. No patches were applied and no PRs, merges, deploys, or publishing actions were run.",
+                "redis_required": False,
             },
         }
 

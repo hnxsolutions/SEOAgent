@@ -537,10 +537,12 @@ See `.env.example` for all available configuration options:
 
 #### Redis
 - `REDIS_URL` - Redis connection URL
+- `REDIS_REQUIRED` - Set `true` in production to fail startup if Redis is unavailable; defaults to `false` for local development so queued/background jobs are disabled gracefully.
 
 #### Qdrant
 - `QDRANT_URL` - Qdrant vector database URL
 - `QDRANT_LOCAL_PATH` - Optional embedded Qdrant storage path for local development without Docker
+- `QDRANT_REQUIRED` - Set `true` in production if startup must fail when Qdrant is unavailable; defaults to `false` for local development.
 
 #### Local Semantic Indexing
 - `SEMANTIC_EMBEDDING_MODEL` - Local sentence-transformers model

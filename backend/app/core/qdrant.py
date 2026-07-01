@@ -12,6 +12,7 @@ logger = structlog.get_logger(__name__)
 
 # Qdrant client instance
 qdrant_client: Optional[QdrantClient] = None
+qdrant_error: Optional[str] = None
 
 # Vector collection configurations for fully local embeddings
 VECTOR_SIZE = settings.SEMANTIC_EMBEDDING_DIMENSION
@@ -20,17 +21,19 @@ DISTANCE = models.Distance.COSINE
 
 async def init_qdrant():
     """Initialize Qdrant connection"""
-    global qdrant_client
+    global qdrant_client, qdrant_error
     try:
         qdrant_client = _create_qdrant_client()
         # Test connection
         qdrant_client.get_collections()
+        qdrant_error = None
         logger.info("Qdrant connection established successfully")
         
         # Initialize collections
         await _initialize_collections()
         
     except Exception as e:
+        qdrant_error = str(e)
         logger.error(f"Failed to connect to Qdrant: {e}")
         raise
 
@@ -51,14 +54,28 @@ def get_qdrant() -> QdrantClient:
     return qdrant_client
 
 
+def get_qdrant_status() -> dict:
+    """Return a health-friendly Qdrant status."""
+    mode = "embedded/local" if settings.QDRANT_LOCAL_PATH else "http"
+    return {
+        "available": qdrant_client is not None and qdrant_error is None,
+        "mode": mode,
+        "url": None if settings.QDRANT_LOCAL_PATH else settings.get_qdrant_url,
+        "local_path": settings.QDRANT_LOCAL_PATH,
+        "error": qdrant_error,
+    }
+
+
 def _init_qdrant_sync():
     """Synchronous initialization of Qdrant"""
-    global qdrant_client
+    global qdrant_client, qdrant_error
     try:
         qdrant_client = _create_qdrant_client()
         qdrant_client.get_collections()
+        qdrant_error = None
         logger.info("Qdrant connection established successfully (sync)")
     except Exception as e:
+        qdrant_error = str(e)
         logger.error(f"Failed to connect to Qdrant: {e}")
         raise
 

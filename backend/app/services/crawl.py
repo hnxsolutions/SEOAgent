@@ -19,6 +19,7 @@ from app.models.crawl import (
 )
 from app.crawler.queue_manager import CrawlQueueManager, CrawlTask, TaskPriority
 from app.core.config import settings
+from app.core.redis import REDIS_UNAVAILABLE_MESSAGE, RedisUnavailableError
 from app.core.url_utils import URLNormalizer
 from app.repositories.crawl import CrawlRepository
 
@@ -168,9 +169,12 @@ class CrawlService:
             await queue.connect()
             await queue.enqueue_task(task)
         except Exception as exc:
-            await self.repository.set_job_status(job, CrawlStatus.failed, error_message=str(exc))
+            error_message = REDIS_UNAVAILABLE_MESSAGE if not settings.REDIS_REQUIRED else str(exc)
+            await self.repository.set_job_status(job, CrawlStatus.failed, error_message=error_message)
             await self.db.commit()
             logger.error("Failed to enqueue crawl job", job_id=str(job.id), error=str(exc))
+            if not settings.REDIS_REQUIRED:
+                raise RedisUnavailableError(REDIS_UNAVAILABLE_MESSAGE) from exc
             raise
         finally:
             await queue.disconnect()
@@ -193,6 +197,10 @@ class CrawlService:
         try:
             await queue.connect()
             return await queue.cancel_job_tasks(str(job_id))
+        except Exception as exc:
+            if not settings.REDIS_REQUIRED:
+                raise RedisUnavailableError(REDIS_UNAVAILABLE_MESSAGE) from exc
+            raise
         finally:
             await queue.disconnect()
     
