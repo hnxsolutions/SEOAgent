@@ -269,6 +269,7 @@ class PlannerService:
             "has_knowledge": await self.repository.has_knowledge(run.project_id, run.tenant_id),
             "audit_issues": await self.repository.list_audit_issues(run.project_id, run.tenant_id),
             "gsc_opportunities": await self.repository.list_gsc_opportunities(run.project_id, run.tenant_id),
+            "keyword_baselines": await self.repository.list_keyword_baselines(run.project_id, run.tenant_id),
             "content_suggestions": await self.repository.list_content_suggestions(run.project_id, run.tenant_id),
             "geo_recommendations": await self.repository.list_geo_recommendations(run.project_id, run.tenant_id),
             "internal_link_recommendations": await self.repository.list_internal_link_recommendations(run.project_id, run.tenant_id),
@@ -283,6 +284,7 @@ class PlannerService:
         candidates: List[TaskCandidate] = []
         candidates.extend(self._tasks_from_gsc(signals["gsc_opportunities"]))
         candidates.extend(self._tasks_from_serp_snapshots(signals["gsc_opportunities"]))
+        candidates.extend(self._tasks_from_keyword_baselines(signals["keyword_baselines"]))
         candidates.extend(self._tasks_from_audit(signals["audit_issues"]))
         candidates.extend(self._tasks_from_content(signals["content_suggestions"]))
         candidates.extend(self._tasks_from_geo(signals["geo_recommendations"]))
@@ -366,6 +368,87 @@ class PlannerService:
                     effort=SeoTaskEffort.medium,
                 )
             )
+        return candidates
+
+    def _tasks_from_keyword_baselines(self, baselines) -> List[TaskCandidate]:
+        candidates: List[TaskCandidate] = []
+        for baseline in baselines[:50]:
+            keyword = self._context_text(getattr(baseline, "keyword", None))
+            if not keyword:
+                continue
+            position = getattr(baseline, "current_position", None)
+            current_url = self._context_text(getattr(baseline, "current_url", None))
+            location = self._context_text(getattr(baseline, "target_location", None))
+            device = self._enum_value(getattr(baseline, "device", "desktop"))
+            context_bits = [f"Keyword: {keyword}", f"Device: {device}"]
+            if location:
+                context_bits.append(f"Location: {location}")
+
+            if position is None:
+                description = (
+                    "Manually check the current search position for this baseline keyword. "
+                    "Do not use automated Google scraping; record the observed position or real imported data. "
+                    + " ".join(context_bits)
+                )
+                if not current_url:
+                    description += " Also map this keyword to the best target page before planning content edits."
+                candidates.append(
+                    TaskCandidate(
+                        task_type=SeoTaskType.manual_review,
+                        title=f"Manually check keyword position: {keyword}"[:255],
+                        description=description,
+                        source_type=SeoTaskSourceType.planner,
+                        source_reference_id=getattr(baseline, "id", None),
+                        target_keyword=keyword,
+                        priority_score=50,
+                        estimated_impact=SeoTaskImpact.medium,
+                        effort=SeoTaskEffort.low,
+                    )
+                )
+                continue
+
+            if int(position) > 20:
+                description = (
+                    f"Manual baseline shows position {position}, outside the top 20. "
+                    "Review the mapped page and improve the content, metadata, internal links, or page intent alignment using real crawl, content, or manually entered data only. "
+                    + " ".join(context_bits)
+                )
+                if not current_url:
+                    description += " No current URL is mapped, so choose a target page before editing."
+                candidates.append(
+                    TaskCandidate(
+                        task_type=SeoTaskType.content_refresh,
+                        title=f"Improve content for keyword outside top 20: {keyword}"[:255],
+                        description=description,
+                        source_type=SeoTaskSourceType.planner,
+                        source_reference_id=getattr(baseline, "id", None),
+                        target_page_url=current_url or None,
+                        target_keyword=keyword,
+                        priority_score=72 if int(position) > 50 else 62,
+                        estimated_impact=SeoTaskImpact.medium,
+                        effort=SeoTaskEffort.medium,
+                    )
+                )
+                continue
+
+            if not current_url:
+                candidates.append(
+                    TaskCandidate(
+                        task_type=SeoTaskType.manual_review,
+                        title=f"Map keyword to target page: {keyword}"[:255],
+                        description=(
+                            "This manual keyword baseline has a position but no current URL. "
+                            "Map it to the page that should own the query before making optimization recommendations; do not scrape search results automatically. "
+                            + " ".join(context_bits)
+                        ),
+                        source_type=SeoTaskSourceType.planner,
+                        source_reference_id=getattr(baseline, "id", None),
+                        target_keyword=keyword,
+                        priority_score=45,
+                        estimated_impact=SeoTaskImpact.medium,
+                        effort=SeoTaskEffort.low,
+                    )
+                )
         return candidates
 
     async def _rank_summary(self, project_id: UUID, tenant_id: UUID) -> dict:
@@ -746,6 +829,11 @@ class PlannerService:
     def _report_values(self, run: SeoPlannerRun, signals: dict, tasks: List[SeoTask], created_count: int) -> dict:
         by_type = Counter(self._enum_value(task.task_type) for task in tasks)
         by_priority = Counter(self._enum_value(task.priority) for task in tasks)
+        keyword_baselines = signals.get("keyword_baselines") or []
+        positioned_baselines = [
+            baseline for baseline in keyword_baselines
+            if getattr(baseline, "current_position", None) is not None
+        ]
         high = int(by_priority.get("high", 0) + by_priority.get("critical", 0))
         summary = (
             f"Weekly SEO plan created {created_count} new tasks and refreshed {max(len(tasks) - created_count, 0)} existing tasks. "
@@ -788,6 +876,18 @@ class PlannerService:
                 "metadata_tasks": by_type.get(SeoTaskType.metadata_rewrite.value, 0),
                 "content_refresh_tasks": by_type.get(SeoTaskType.content_refresh.value, 0),
                 "manual_serp_snapshot_tasks": by_type.get(SeoTaskType.manual_review.value, 0),
+                "keyword_baseline_summary": {
+                    "total_keywords": len(keyword_baselines),
+                    "top_10_count": len([
+                        baseline for baseline in positioned_baselines
+                        if int(getattr(baseline, "current_position", 101) or 101) <= 10
+                    ]),
+                    "top_20_count": len([
+                        baseline for baseline in positioned_baselines
+                        if int(getattr(baseline, "current_position", 101) or 101) <= 20
+                    ]),
+                    "missing_position_count": len(keyword_baselines) - len(positioned_baselines),
+                },
                 "rank_summary": signals.get("rank_summary") or {},
                 "latest_sync_job_id": str(signals["ids"].get("gsc_sync_job_id")) if signals["ids"].get("gsc_sync_job_id") else None,
             },

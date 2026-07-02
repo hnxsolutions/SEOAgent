@@ -53,6 +53,7 @@ class FakePlannerRepository:
         self.has_knowledge_value = True
         self.audit_issues = []
         self.gsc_opportunities = []
+        self.keyword_baselines = []
         self.content_suggestions = []
         self.geo_recommendations = []
         self.internal_link_recommendations = []
@@ -202,6 +203,9 @@ class FakePlannerRepository:
 
     async def list_gsc_opportunities(self, project_id, tenant_id, limit=200):
         return self.gsc_opportunities
+
+    async def list_keyword_baselines(self, project_id, tenant_id, limit=500):
+        return self.keyword_baselines
 
     async def list_content_suggestions(self, project_id, tenant_id, limit=200):
         return self.content_suggestions
@@ -473,3 +477,56 @@ async def test_planner_uses_project_context_for_manual_tasks():
     assert "Review SEO goal alignment" in titles
     assert "Map target keyword: custom kitchen remodel" in titles
     assert all("competitor" not in task.description.lower() for task in repo.tasks)
+
+
+@pytest.mark.asyncio
+async def test_planner_creates_tasks_from_manual_keyword_baselines():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    repo = FakePlannerRepository(tenant_id, project_id)
+    repo.audit_issues = []
+    repo.gsc_opportunities = []
+    repo.content_suggestions = []
+    repo.geo_recommendations = []
+    repo.internal_link_recommendations = []
+    repo.blog_topics = []
+    repo.repo_patches = []
+    repo.repo_issues = []
+    repo.keyword_baselines = [
+        obj(
+            id=uuid4(),
+            keyword="local seo services",
+            target_location="Phoenix",
+            device="desktop",
+            current_position=None,
+            current_url=None,
+        ),
+        obj(
+            id=uuid4(),
+            keyword="technical seo agency",
+            target_location="Phoenix",
+            device="mobile",
+            current_position=34,
+            current_url="https://example.com/services",
+        ),
+        obj(
+            id=uuid4(),
+            keyword="seo audit checklist",
+            target_location=None,
+            device="desktop",
+            current_position=8,
+            current_url=None,
+        ),
+    ]
+    service = PlannerService(FakeDB())
+    service.repository = repo
+
+    run = await service.run_project(project_id, tenant_id)
+    titles = {task.title for task in repo.tasks}
+
+    assert run.status == SeoPlannerRunStatus.completed
+    assert "Manually check keyword position: local seo services" in titles
+    assert "Improve content for keyword outside top 20: technical seo agency" in titles
+    assert "Map keyword to target page: seo audit checklist" in titles
+    assert any("do not use automated google scraping" in task.description.lower() for task in repo.tasks)
+    assert repo.reports[0].search_console_summary["keyword_baseline_summary"]["total_keywords"] == 3

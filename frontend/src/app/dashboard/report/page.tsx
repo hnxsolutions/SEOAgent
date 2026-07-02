@@ -108,6 +108,7 @@ function DashboardReportContent() {
 
 function ReportView({ report }: { report: SeoRunReportResponse }) {
   const businessSection = report.sections.find((section) => section.key === 'business_context');
+  const keywordBaselineSection = report.sections.find((section) => section.key === 'keyword_baseline');
   const contentSection = report.sections.find((section) => section.key === 'content_optimization');
   const plannerSection = report.sections.find((section) => section.key === 'weekly_planner');
   const realSearchSection = report.sections.find((section) => section.key === 'real_search_data');
@@ -181,6 +182,18 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
             ))
           ) : (
             <EmptyInline text="Business context was not provided for this project." />
+          )}
+        </div>
+      </ReportSection>
+
+      <ReportSection title="Keyword Baseline" status={keywordBaselineSection?.status} summary={keywordBaselineSection?.summary}>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {(keywordBaselineSection?.items ?? []).length ? (
+            keywordBaselineSection!.items.slice(0, 8).map((baseline) => (
+              <KeywordBaselineRow key={text(baseline.id, text(baseline.keyword))} baseline={baseline} />
+            ))
+          ) : (
+            <EmptyInline text="No manual keyword baseline provided." />
           )}
         </div>
       </ReportSection>
@@ -357,6 +370,38 @@ function ContextValue({ item }: { item: Record<string, unknown> }) {
       </p>
       {item.note ? (
         <p className="mt-2 text-xs text-muted-foreground">{text(item.note)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function KeywordBaselineRow({ baseline }: { baseline: Record<string, unknown> }) {
+  const position = baseline.current_position ? `Position ${text(baseline.current_position)}` : 'Position missing';
+  const location = text(baseline.target_location, 'Location not provided');
+  const device = formatLabel(text(baseline.device, 'desktop'));
+
+  return (
+    <div className="rounded-md border bg-slate-50 px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={text(baseline.source, 'manual')} />
+        <span className="text-xs font-medium uppercase tracking-normal text-slate-500">
+          {device}
+        </span>
+      </div>
+      <p className="mt-2 text-sm font-semibold text-slate-950">
+        {text(baseline.keyword, 'Keyword')}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {position} | {location}
+        {baseline.intent ? ` | ${formatLabel(text(baseline.intent))}` : ''}
+      </p>
+      {baseline.current_url ? (
+        <p className="mt-2 break-words text-xs text-slate-500">{text(baseline.current_url)}</p>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">No current URL mapped.</p>
+      )}
+      {baseline.notes ? (
+        <p className="mt-2 text-xs text-muted-foreground">{text(baseline.notes)}</p>
       ) : null}
     </div>
   );

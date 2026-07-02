@@ -12,6 +12,7 @@ import {
   FileEdit,
   FileText,
   GitPullRequest,
+  KeyRound,
   ListChecks,
   MapPin,
   Newspaper,
@@ -37,6 +38,7 @@ import type {
   AuditSummary,
   ContentOptimizationRun,
   CrawlJob,
+  KeywordBaseline,
   Project,
   SemanticIndexRun,
   SeoRun,
@@ -101,6 +103,13 @@ export default function DashboardOverviewPage() {
   const gscSummaryQuery = useQuery({
     queryKey: ['gsc-summary', projectId],
     queryFn: () => dashboardApi.searchConsole.summary(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const keywordBaselinesQuery = useQuery({
+    queryKey: ['keyword-baselines', projectId],
+    queryFn: () => dashboardApi.keywordBaselines.list(projectId!),
     enabled: Boolean(projectId),
     retry: false,
   });
@@ -234,6 +243,9 @@ export default function DashboardOverviewPage() {
   const pendingPatches = (repoPatchesQuery.data?.patches ?? []).filter(
     (patch) => patch.status === 'proposed' || patch.status === 'approved'
   ).length;
+  const keywordBaselineSummary = summarizeKeywordBaselines(
+    keywordBaselinesQuery.data?.baselines ?? []
+  );
 
   return (
     <div className="space-y-6">
@@ -287,6 +299,8 @@ export default function DashboardOverviewPage() {
       <DemoSafeLabels />
 
       <ProjectContextSummary project={project} />
+
+      <KeywordBaselineSummary summary={keywordBaselineSummary} />
 
       <section id="health" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <DashboardMetricCard
@@ -766,6 +780,50 @@ function ProjectContextSummary({ project }: { project?: Project }) {
   );
 }
 
+function KeywordBaselineSummary({
+  summary,
+}: {
+  summary: { total: number; top10: number; top20: number; missing: number };
+}) {
+  const rows = [
+    { label: 'Total', value: summary.total },
+    { label: 'Top 10', value: summary.top10 },
+    { label: 'Top 20', value: summary.top20 },
+    { label: 'Missing Position', value: summary.missing },
+  ];
+
+  return (
+    <section className="rounded-lg border bg-white">
+      <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Keyword Baseline</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manual keyword position context used by reports and planner tasks.
+          </p>
+        </div>
+        <Button asChild type="button" variant="outline" size="sm">
+          <Link href="/dashboard/keywords">
+            <KeyRound className="mr-2 h-4 w-4" aria-hidden="true" />
+            Manage Keywords
+          </Link>
+        </Button>
+      </div>
+      <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
+        {rows.map((row) => (
+          <div key={row.label} className="rounded-md border bg-slate-50 px-3 py-3">
+            <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">
+              {row.label}
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">
+              {row.value.toLocaleString()}
+            </p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function StageIcon({ status }: { status?: string | null }) {
   if (status === 'completed') {
     return <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />;
@@ -871,6 +929,23 @@ function contextText(value?: string | null) {
 
 function contextList(value?: string[] | null) {
   return value?.length ? value.join(', ') : 'Not provided';
+}
+
+function summarizeKeywordBaselines(baselines: KeywordBaseline[]) {
+  return baselines.reduce(
+    (acc, baseline) => {
+      acc.total += 1;
+      const position = baseline.current_position;
+      if (position === null || position === undefined) {
+        acc.missing += 1;
+      } else {
+        if (position <= 10) acc.top10 += 1;
+        if (position <= 20) acc.top20 += 1;
+      }
+      return acc;
+    },
+    { total: 0, top10: 0, top20: 0, missing: 0 }
+  );
 }
 
 async function invalidateOverview(

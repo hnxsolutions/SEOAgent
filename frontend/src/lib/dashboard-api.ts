@@ -33,6 +33,10 @@ import type {
   IndexingValidationResponse,
   InternalLinkGeneration,
   InternalLinkSummary,
+  KeywordBaseline,
+  KeywordBaselineBulkResponse,
+  KeywordBaselineListResponse,
+  KeywordBaselinePayload,
   KnowledgeIndexRun,
   KnowledgeSource,
   PatchApplyRun,
@@ -409,6 +413,23 @@ export const dashboardApi = {
         headers: { 'Content-Type': 'multipart/form-data' },
       }));
     },
+  },
+
+  keywordBaselines: {
+    list: (projectId: UUID) =>
+      unwrap<KeywordBaselineListResponse>(
+        api.get(`/projects/${projectId}/keyword-baselines`, { params: { limit: 500 } })
+      ),
+    create: (projectId: UUID, payload: KeywordBaselinePayload) =>
+      unwrap<KeywordBaseline>(api.post(`/projects/${projectId}/keyword-baselines`, payload)),
+    update: (baselineId: UUID, payload: Partial<KeywordBaselinePayload>) =>
+      unwrap<KeywordBaseline>(api.put(`/keyword-baselines/${baselineId}`, payload)),
+    delete: (baselineId: UUID) =>
+      unwrap<void>(api.delete(`/keyword-baselines/${baselineId}`)),
+    bulk: (projectId: UUID, items: KeywordBaselinePayload[]) =>
+      unwrap<KeywordBaselineBulkResponse>(
+        api.post(`/projects/${projectId}/keyword-baselines/bulk`, { items })
+      ),
   },
 
   content: {

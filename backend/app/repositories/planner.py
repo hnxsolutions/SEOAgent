@@ -14,6 +14,7 @@ from app.models.content_optimization import ContentOptimizationRun, ContentOptim
 from app.models.crawl import CrawlJob, CrawlStatus
 from app.models.geo_aeo import GeoAeoRecommendation, GeoAeoRecommendationStatus, GeoAeoRun
 from app.models.internal_linking import InternalLinkRecommendation, InternalLinkRecommendationStatus
+from app.models.keyword_baseline import KeywordBaseline
 from app.models.knowledge import KnowledgeSource
 from app.models.planner import (
     SeoPlannerRun,
@@ -372,6 +373,15 @@ class PlannerRepository:
                 ]),
             )
             .order_by(SearchConsoleOpportunity.priority_score.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_keyword_baselines(self, project_id: UUID, tenant_id: UUID, limit: int = 500) -> List[KeywordBaseline]:
+        result = await self.db.execute(
+            select(KeywordBaseline)
+            .where(KeywordBaseline.project_id == project_id, KeywordBaseline.tenant_id == tenant_id)
+            .order_by(KeywordBaseline.captured_at.desc(), KeywordBaseline.created_at.desc())
             .limit(limit)
         )
         return list(result.scalars().all())

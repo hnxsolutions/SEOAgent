@@ -30,6 +30,7 @@ def patch_report_sources(
     *,
     content_suggestions=None,
     data_availability=None,
+    keyword_baselines=None,
     project=None,
 ):
     project = project or SimpleNamespace(id=run.project_id, tenant_id=run.tenant_id, name="Acme", domain="example.com")
@@ -88,6 +89,7 @@ def patch_report_sources(
         ),
     )
     monkeypatch.setattr(service, "_list_content_suggestions", AsyncMock(return_value=content_suggestions or []))
+    monkeypatch.setattr(service, "_list_keyword_baselines", AsyncMock(return_value=keyword_baselines or []))
     monkeypatch.setattr(
         service,
         "_list_planner_tasks",
@@ -264,3 +266,72 @@ async def test_report_includes_business_context_without_competitor_analysis_clai
     assert "custom kitchen remodel" in payload
     assert "Manual context only; not crawled or analyzed" in payload
     assert "competitor analysis" not in payload.lower()
+
+
+@pytest.mark.asyncio
+async def test_report_includes_manual_keyword_baseline_section(monkeypatch):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    run = make_run(tenant_id, project_id)
+    service = SeoReportService(db=object())
+    patch_report_sources(
+        monkeypatch,
+        service,
+        run,
+        keyword_baselines=[
+            {
+                "id": str(uuid4()),
+                "keyword": "local seo services",
+                "target_location": "Phoenix",
+                "search_engine": "google",
+                "device": "desktop",
+                "current_position": 18,
+                "current_url": "https://example.com/services",
+                "search_volume": 120,
+                "difficulty": 42,
+                "intent": "commercial",
+                "notes": "Manual baseline from onboarding.",
+                "source": "manual",
+                "captured_at": datetime.utcnow(),
+            },
+            {
+                "id": str(uuid4()),
+                "keyword": "technical seo audit",
+                "target_location": "Phoenix",
+                "search_engine": "google",
+                "device": "mobile",
+                "current_position": None,
+                "current_url": None,
+                "intent": "informational",
+                "notes": "Needs manual check.",
+                "source": "csv",
+                "captured_at": datetime.utcnow(),
+            },
+        ],
+    )
+
+    report = await service.generate_report(run.id, tenant_id)
+    baseline_section = next(section for section in report.sections if section.key == "keyword_baseline")
+
+    assert baseline_section.status == "available"
+    assert baseline_section.metrics["total_keywords"] == 2
+    assert baseline_section.metrics["top_20_count"] == 1
+    assert baseline_section.metrics["missing_position_count"] == 1
+    payload = baseline_section.model_dump_json()
+    assert "local seo services" in payload
+    assert "Manual baseline" in payload
+
+
+@pytest.mark.asyncio
+async def test_report_keyword_baseline_empty_state(monkeypatch):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    run = make_run(tenant_id, project_id)
+    service = SeoReportService(db=object())
+    patch_report_sources(monkeypatch, service, run, keyword_baselines=[])
+
+    report = await service.generate_report(run.id, tenant_id)
+    baseline_section = next(section for section in report.sections if section.key == "keyword_baseline")
+
+    assert baseline_section.status == "no_data"
+    assert baseline_section.summary == "No manual keyword baseline provided."

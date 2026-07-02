@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit import SEOAuditRun, SEOIssue
 from app.models.content_optimization import ContentOptimizationRun, ContentOptimizationSuggestion
 from app.models.crawl import CrawlJob, CrawlPage
+from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask
 from app.models.project import Project
 from app.models.search_console import GSCProperty, SearchConsoleImport, SearchConsoleImportStatus
@@ -51,6 +52,7 @@ class SeoReportService:
         )
         planner_tasks = await self._list_planner_tasks(getattr(run, "planner_run_id", None), tenant_id)
         data_availability = await self._data_availability(getattr(run, "project_id"), tenant_id)
+        keyword_baselines = await self._list_keyword_baselines(getattr(run, "project_id"), tenant_id)
         business_context = project_business_context(project)
         competitor_urls = self._list_values(getattr(project, "competitor_urls", None))
 
@@ -100,6 +102,7 @@ class SeoReportService:
             content_suggestions=content_suggestions,
             planner_tasks_count=planner_tasks_count,
             planner_tasks=planner_tasks,
+            keyword_baselines=keyword_baselines,
             data_availability=data_availability,
             business_context=business_context,
             competitor_urls=competitor_urls,
@@ -302,6 +305,17 @@ class SeoReportService:
         )
         return [self._planner_task_item(task) for task in result.scalars().all()]
 
+    async def _list_keyword_baselines(self, project_id: Optional[UUID], tenant_id: UUID, limit: int = 25) -> list[dict[str, Any]]:
+        if not project_id:
+            return []
+        result = await self.db.execute(
+            select(KeywordBaseline)
+            .where(KeywordBaseline.project_id == project_id, KeywordBaseline.tenant_id == tenant_id)
+            .order_by(KeywordBaseline.captured_at.desc(), KeywordBaseline.created_at.desc())
+            .limit(limit)
+        )
+        return [self._keyword_baseline_item(baseline) for baseline in result.scalars().all()]
+
     async def _count_issues_by(self, audit_id: UUID, tenant_id: UUID, column: Any) -> dict[str, int]:
         result = await self.db.execute(
             select(column, func.count(SEOIssue.id))
@@ -365,6 +379,7 @@ class SeoReportService:
         content_suggestions: list[dict[str, Any]],
         planner_tasks_count: int,
         planner_tasks: list[dict[str, Any]],
+        keyword_baselines: list[dict[str, Any]],
         data_availability: dict[str, str],
         business_context: dict[str, Any],
         competitor_urls: list[str],
@@ -379,6 +394,22 @@ class SeoReportService:
                     "note": "Manual context only; not crawled or analyzed.",
                 }
             )
+        positioned_baselines = [
+            item for item in keyword_baselines
+            if item.get("current_position") is not None
+        ]
+        keyword_baseline_metrics = {
+            "total_keywords": len(keyword_baselines),
+            "top_10_count": len([
+                item for item in positioned_baselines
+                if int(item.get("current_position") or 101) <= 10
+            ]),
+            "top_20_count": len([
+                item for item in positioned_baselines
+                if int(item.get("current_position") or 101) <= 20
+            ]),
+            "missing_position_count": len(keyword_baselines) - len(positioned_baselines),
+        }
         return [
             SeoReportSection(
                 key="executive_summary",
@@ -465,6 +496,18 @@ class SeoReportService:
                 status="available" if planner_tasks_count else "no_data",
                 metrics={"tasks": planner_tasks_count},
                 items=planner_tasks,
+            ),
+            SeoReportSection(
+                key="keyword_baseline",
+                title="Keyword Baseline",
+                summary=(
+                    f"{len(keyword_baselines)} manual keyword baseline records are available."
+                    if keyword_baselines
+                    else "No manual keyword baseline provided."
+                ),
+                status="available" if keyword_baselines else "no_data",
+                metrics=keyword_baseline_metrics,
+                items=keyword_baselines,
             ),
             SeoReportSection(
                 key="real_search_data",
@@ -616,6 +659,23 @@ class SeoReportService:
             "page_url": page_url,
         }
 
+    def _keyword_baseline_item(self, baseline: KeywordBaseline) -> dict[str, Any]:
+        return {
+            "id": str(getattr(baseline, "id")),
+            "keyword": getattr(baseline, "keyword", ""),
+            "target_location": getattr(baseline, "target_location", None),
+            "search_engine": getattr(baseline, "search_engine", "google"),
+            "device": self._enum_value(getattr(baseline, "device", "")),
+            "current_position": getattr(baseline, "current_position", None),
+            "current_url": getattr(baseline, "current_url", None),
+            "search_volume": getattr(baseline, "search_volume", None),
+            "difficulty": getattr(baseline, "difficulty", None),
+            "intent": getattr(baseline, "intent", None),
+            "notes": getattr(baseline, "notes", None),
+            "source": self._enum_value(getattr(baseline, "source", "manual")),
+            "captured_at": getattr(baseline, "captured_at", None),
+        }
+
     def _planner_task_item(self, task: SeoTask) -> dict[str, Any]:
         return {
             "id": str(getattr(task, "id")),
@@ -661,6 +721,7 @@ class SeoReportService:
 
     def _item_text(self, item: dict[str, Any]) -> str:
         for fields in (
+            ("keyword", "target_location", "device", "current_position", "current_url"),
             ("title", "severity", "url"),
             ("title", "priority", "target_page_url"),
             ("suggestion_type", "reason", "page_url"),

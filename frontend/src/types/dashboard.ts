@@ -699,6 +699,57 @@ export type SerpSnapshotSummary = {
   message: string;
 };
 
+export type KeywordBaselineDevice = 'desktop' | 'mobile' | string;
+
+export type KeywordBaselineSource = 'manual' | 'csv' | 'imported' | string;
+
+export type KeywordBaseline = {
+  id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  keyword: string;
+  target_location?: string | null;
+  search_engine: string;
+  device: KeywordBaselineDevice;
+  current_position?: number | null;
+  current_url?: string | null;
+  search_volume?: number | null;
+  difficulty?: number | null;
+  intent?: string | null;
+  notes?: string | null;
+  source: KeywordBaselineSource;
+  captured_at: string;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type KeywordBaselinePayload = {
+  keyword: string;
+  target_location?: string | null;
+  search_engine?: string;
+  device?: 'desktop' | 'mobile';
+  current_position?: number | null;
+  current_url?: string | null;
+  search_volume?: number | null;
+  difficulty?: number | null;
+  intent?: string | null;
+  notes?: string | null;
+  source?: 'manual' | 'csv' | 'imported';
+  captured_at?: string | null;
+};
+
+export type KeywordBaselineListResponse = {
+  baselines: KeywordBaseline[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type KeywordBaselineBulkResponse = {
+  created_count: number;
+  baselines: KeywordBaseline[];
+};
+
 export type ContentSummary = {
   crawl_id: UUID;
   project_id?: UUID | null;
