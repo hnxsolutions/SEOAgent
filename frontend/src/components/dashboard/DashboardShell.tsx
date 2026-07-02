@@ -5,6 +5,7 @@ import {
   Bot,
   Camera,
   Database,
+  FileCheck2,
   FileText,
   FileWarning,
   GitBranch,
@@ -196,6 +197,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
+  { label: 'Report', href: '/dashboard/report', icon: FileCheck2 },
   { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
   { label: 'Audit Issues', href: '/dashboard/audit', icon: FileWarning },
   { label: 'Semantic Search', href: '/dashboard/semantic', icon: Database },

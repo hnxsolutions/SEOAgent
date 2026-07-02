@@ -8,6 +8,7 @@ import {
   ClipboardList,
   Clock3,
   FileEdit,
+  FileText,
   GitPullRequest,
   ListChecks,
   Newspaper,
@@ -253,6 +254,14 @@ export default function DashboardOverviewPage() {
             )}
             {isSeoRunActive ? 'Running SEO Analysis' : 'Run SEO Analysis'}
           </Button>
+          {latestSeoRun?.status === 'completed' ? (
+            <Button asChild type="button" variant="outline">
+              <Link href={`/dashboard/report?runId=${latestSeoRun.id}`}>
+                <FileText className="mr-2 h-4 w-4" aria-hidden="true" />
+                View Report
+              </Link>
+            </Button>
+          ) : null}
           <Link
             href="/dashboard/planner"
             className="text-sm font-medium text-blue-700 hover:text-blue-800"
@@ -626,10 +635,10 @@ function SeoRunProgress({
 
         {run?.status === 'completed' ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <ResultShortcut href={`/dashboard/report?runId=${run.id}`} label="View Report" />
             <ResultShortcut href={`/dashboard/audit${crawlParam}`} label="View Audit Issues" />
             <ResultShortcut href={`/dashboard/content${crawlParam}`} label="View Content Suggestions" />
             <ResultShortcut href="/dashboard/planner" label="View Planner Tasks" />
-            <ResultShortcut href="/dashboard/semantic?query=SEO%20recommendations" label="Try Semantic Search" />
           </div>
         ) : null}
       </div>

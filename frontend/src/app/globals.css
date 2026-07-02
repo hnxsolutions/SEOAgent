@@ -57,3 +57,18 @@
     @apply bg-background text-foreground;
   }
 }
+
+@media print {
+  aside,
+  header {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+  }
+
+  body {
+    background: #fff !important;
+  }
+}

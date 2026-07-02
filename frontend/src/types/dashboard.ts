@@ -93,6 +93,52 @@ export type SeoRunListResponse = {
   has_more: boolean;
 };
 
+export type SeoReportSection = {
+  key: string;
+  title: string;
+  summary: string;
+  status: string;
+  metrics: Record<string, unknown>;
+  items: Array<Record<string, unknown>>;
+};
+
+export type SeoReportActionItem = {
+  title: string;
+  description: string;
+  priority: string;
+  source_section: string;
+  target_url?: string | null;
+  status?: string | null;
+  due_date?: string | null;
+};
+
+export type SeoRunReportResponse = {
+  run_id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  project_name: string;
+  website_url: string;
+  run_status: string;
+  completed_at?: string | null;
+  generated_at: string;
+  crawl_pages_processed: number;
+  audit_score?: number | null;
+  total_issues: number;
+  issue_counts_by_severity: Record<string, number>;
+  issue_counts_by_category: Record<string, number>;
+  semantic_vector_count: number;
+  content_suggestions_count: number;
+  planner_tasks_count: number;
+  data_availability: Record<string, string>;
+  executive_summary: string;
+  sections: SeoReportSection[];
+  top_audit_issues: Array<Record<string, unknown>>;
+  semantic_summaries: Array<Record<string, unknown>>;
+  content_suggestions: Array<Record<string, unknown>>;
+  weekly_planner_tasks: Array<Record<string, unknown>>;
+  next_actions: SeoReportActionItem[];
+};
+
 export type WeeklyReport = {
   id: UUID;
   project_id: UUID;

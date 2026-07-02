@@ -58,6 +58,7 @@ import type {
   SeoCodePatch,
   SeoRun,
   SeoRunListResponse,
+  SeoRunReportResponse,
   SEOIssueListResponse,
   UUID,
   WeeklyReport,
@@ -92,6 +93,8 @@ export const dashboardApi = {
       ),
     status: (runId: UUID) =>
       unwrap<SeoRun>(api.get(`/seo-runs/${runId}/status`)),
+    report: (runId: UUID) =>
+      unwrap<SeoRunReportResponse>(api.get(`/seo-runs/${runId}/report`)),
   },
 
   planner: {
