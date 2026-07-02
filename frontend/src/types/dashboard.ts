@@ -66,6 +66,33 @@ export type PlannerSummary = {
   top_tasks: PlannerTask[];
 };
 
+export type SeoRun = {
+  id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  status: string;
+  current_stage: string;
+  stage_statuses: Record<string, string>;
+  stage_errors: Record<string, string>;
+  crawl_id?: UUID | null;
+  audit_id?: UUID | null;
+  semantic_index_run_id?: UUID | null;
+  content_optimization_run_id?: UUID | null;
+  planner_run_id?: UUID | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type SeoRunListResponse = {
+  runs: SeoRun[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type WeeklyReport = {
   id: UUID;
   project_id: UUID;

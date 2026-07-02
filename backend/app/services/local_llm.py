@@ -74,6 +74,35 @@ class LocalLLMService:
                 "error": str(exc),
             }
 
+    async def debug_check(self) -> Dict[str, Any]:
+        """Prove the configured Docker-to-Ollama path can list models and generate."""
+        health = await self.health_check()
+        result = {
+            "backend_can_reach_ollama": bool(health["available"]),
+            "base_url": health["base_url"],
+            "configured_model": health["default_model"],
+            "configured_model_exists": bool(health["default_model_available"]),
+            "generation_succeeds": False,
+            "generation_preview": None,
+            "error": health["error"],
+        }
+        if not result["backend_can_reach_ollama"] or not result["configured_model_exists"]:
+            return result
+
+        try:
+            generated = await self.generate(
+                "Return exactly this text: SEOAgent Ollama debug OK",
+                model=self.default_model,
+                options={"temperature": 0, "num_predict": 32},
+            )
+            preview = (generated.get("response") or "").strip()
+            result["generation_succeeds"] = bool(generated.get("done") and preview)
+            result["generation_preview"] = preview[:200] or None
+            result["error"] = None if result["generation_succeeds"] else "Ollama returned an empty generation."
+        except LocalLLMError as exc:
+            result["error"] = str(exc)
+        return result
+
     async def list_models(self, validate_default: bool = False) -> List[Dict[str, Any]]:
         """List installed Ollama models using GET /api/tags."""
         payload = await self._request("GET", "/api/tags")

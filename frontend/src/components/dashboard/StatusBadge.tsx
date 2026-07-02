@@ -15,6 +15,7 @@ const statusStyles: Record<string, string> = {
   failed: 'border-rose-200 bg-rose-50 text-rose-700',
   cancelled: 'border-rose-200 bg-rose-50 text-rose-700',
   skipped: 'border-zinc-200 bg-zinc-50 text-zinc-700',
+  skipped_or_failed: 'border-amber-200 bg-amber-50 text-amber-700',
   open: 'border-orange-200 bg-orange-50 text-orange-700',
 };
 

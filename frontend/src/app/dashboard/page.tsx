@@ -5,28 +5,68 @@ import {
   FileEdit,
   GitPullRequest,
   Newspaper,
+  PlayCircle,
+  RefreshCw,
   SearchCheck,
   ShieldCheck,
   Target,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DashboardMetricCard } from '@/components/dashboard/DashboardMetricCard';
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/dashboard/DashboardStates';
 import { PriorityBadge } from '@/components/dashboard/PriorityBadge';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
+import { Button } from '@/components/ui/button';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi, latestCrawl, latestPlannerRun } from '@/lib/dashboard-api';
 import { formatDateTime } from '@/lib/utils';
+import type { SeoRunListResponse, UUID } from '@/types/dashboard';
+
+const seoRunStages = [
+  'crawl',
+  'audit',
+  'semantic_index',
+  'content_optimization',
+  'planner',
+] as const;
+
+const seoRunStageLabels: Record<(typeof seoRunStages)[number], string> = {
+  crawl: 'Crawl',
+  audit: 'Audit',
+  semantic_index: 'Semantic Index',
+  content_optimization: 'Content',
+  planner: 'Planner',
+};
+
+function isActiveSeoRun(status?: string | null) {
+  return status === 'queued' || status === 'running';
+}
 
 export default function DashboardOverviewPage() {
   const { projectId, isLoading: projectLoading } = useDashboardProject();
+  const queryClient = useQueryClient();
+
+  const seoRunsQuery = useQuery({
+    queryKey: ['seo-runs', projectId],
+    queryFn: () => dashboardApi.seoRuns.list(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+    refetchInterval: (query) => {
+      const latest = (query.state.data as SeoRunListResponse | undefined)?.runs?.[0];
+      return isActiveSeoRun(latest?.status) ? 3000 : false;
+    },
+  });
+
+  const latestSeoRun = seoRunsQuery.data?.runs?.[0];
+  const isSeoRunPolling = isActiveSeoRun(latestSeoRun?.status);
 
   const plannerSummaryQuery = useQuery({
     queryKey: ['planner-summary', projectId],
     queryFn: () => dashboardApi.planner.summary(projectId!),
     enabled: Boolean(projectId),
     retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
   });
 
   const plannerRunsQuery = useQuery({
@@ -34,6 +74,7 @@ export default function DashboardOverviewPage() {
     queryFn: () => dashboardApi.planner.listRuns(projectId!),
     enabled: Boolean(projectId),
     retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
   });
 
   const gscSummaryQuery = useQuery({
@@ -48,6 +89,7 @@ export default function DashboardOverviewPage() {
     queryFn: () => dashboardApi.crawls.list(projectId),
     enabled: Boolean(projectId),
     retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
   });
 
   const latestRun = latestPlannerRun(plannerRunsQuery.data?.runs);
@@ -59,6 +101,7 @@ export default function DashboardOverviewPage() {
     queryFn: () => dashboardApi.crawls.auditSummary(crawlId!),
     enabled: Boolean(crawlId),
     retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
   });
 
   const contentSummaryQuery = useQuery({
@@ -66,6 +109,7 @@ export default function DashboardOverviewPage() {
     queryFn: () => dashboardApi.content.summary(crawlId!),
     enabled: Boolean(crawlId),
     retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
   });
 
   const geoSummaryQuery = useQuery({
@@ -95,6 +139,15 @@ export default function DashboardOverviewPage() {
     enabled: Boolean(latestRun?.repo_scan_run_id),
     retry: false,
   });
+
+  const runSeoMutation = useMutation({
+    mutationFn: () => dashboardApi.seoRuns.start(projectId!),
+    onSuccess: async () => {
+      await invalidateOverview(projectId, queryClient);
+    },
+  });
+
+  const isSeoRunActive = runSeoMutation.isPending || isSeoRunPolling;
 
   if (projectLoading) return <LoadingBlock label="Loading dashboard" />;
   if (!projectId) {
@@ -135,12 +188,26 @@ export default function DashboardOverviewPage() {
             Monitor the weekly SEO operating system and pending approvals.
           </p>
         </div>
-        <Link
-          href="/dashboard/planner"
-          className="text-sm font-medium text-blue-700 hover:text-blue-800"
-        >
-          Open planner
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={() => runSeoMutation.mutate()}
+            disabled={isSeoRunActive}
+          >
+            {isSeoRunActive ? (
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+            )}
+            {isSeoRunActive ? 'Running SEO Analysis' : 'Run SEO Analysis'}
+          </Button>
+          <Link
+            href="/dashboard/planner"
+            className="text-sm font-medium text-blue-700 hover:text-blue-800"
+          >
+            Open planner
+          </Link>
+        </div>
       </div>
 
       <section id="health" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -221,6 +288,18 @@ export default function DashboardOverviewPage() {
           tone="rose"
         />
       </section>
+
+      <SeoRunProgress
+        run={latestSeoRun}
+        isStarting={runSeoMutation.isPending}
+        errorMessage={
+          runSeoMutation.error instanceof Error ? runSeoMutation.error.message : undefined
+        }
+        totalPages={activeCrawl?.total_pages_crawled ?? auditSummaryQuery.data?.total_pages}
+        totalIssues={auditSummaryQuery.data?.total_issues}
+        totalSuggestions={contentSummaryQuery.data?.total_suggestions}
+        openTasks={summary?.open_tasks}
+      />
 
       <section id="pipeline" className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-lg border bg-white">
@@ -305,6 +384,76 @@ export default function DashboardOverviewPage() {
   );
 }
 
+function SeoRunProgress({
+  run,
+  isStarting,
+  errorMessage,
+  totalPages,
+  totalIssues,
+  totalSuggestions,
+  openTasks,
+}: {
+  run?: SeoRunListResponse['runs'][number];
+  isStarting: boolean;
+  errorMessage?: string;
+  totalPages?: number;
+  totalIssues?: number;
+  totalSuggestions?: number;
+  openTasks?: number;
+}) {
+  const stageErrors = run?.stage_errors ?? {};
+  const summary =
+    run?.status === 'completed'
+      ? `${totalPages ?? 0} pages, ${totalIssues ?? 0} issues, ${
+          totalSuggestions ?? 0
+        } content suggestions, ${openTasks ?? 0} open tasks`
+      : run
+        ? `Current stage: ${seoRunStageLabels[run.current_stage as (typeof seoRunStages)[number]] ?? run.current_stage.replace(/_/g, ' ')}`
+        : 'No run data yet';
+
+  return (
+    <section id="seo-run-progress" className="rounded-lg border bg-white">
+      <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">SEO Analysis Run</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {run?.created_at ? formatDateTime(run.created_at) : 'No run yet'}
+          </p>
+        </div>
+        <StatusBadge status={isStarting ? 'queued' : run?.status} />
+      </div>
+      <div className="space-y-4 p-5">
+        <div className="grid gap-3 md:grid-cols-5">
+          {seoRunStages.map((stage) => (
+            <div key={stage} className="rounded-md border bg-slate-50 px-3 py-3">
+              <p className="text-xs font-semibold uppercase tracking-normal text-slate-600">
+                {seoRunStageLabels[stage]}
+              </p>
+              <StatusBadge
+                status={run?.stage_statuses?.[stage] ?? 'pending'}
+                className="mt-2"
+              />
+              {stageErrors[stage] ? (
+                <p className="mt-2 line-clamp-2 text-xs text-amber-700">
+                  {stageErrors[stage]}
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <div className="rounded-md border bg-white px-4 py-3">
+          <p className="text-sm font-medium text-slate-950">Last result</p>
+          <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
+          {run?.error_message ? (
+            <p className="mt-2 text-sm text-rose-700">{run.error_message}</p>
+          ) : null}
+          {errorMessage ? <p className="mt-2 text-sm text-rose-700">{errorMessage}</p> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function StatusRow({
   label,
   status,
@@ -323,4 +472,17 @@ function StatusRow({
       <StatusBadge status={status} />
     </div>
   );
+}
+
+async function invalidateOverview(
+  projectId: UUID | undefined,
+  queryClient: ReturnType<typeof useQueryClient>
+) {
+  if (!projectId) return;
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['seo-runs', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['planner-summary', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['planner-runs', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['crawls', projectId] }),
+  ]);
 }

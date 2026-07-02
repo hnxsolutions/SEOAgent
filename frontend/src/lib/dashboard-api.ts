@@ -55,6 +55,8 @@ import type {
   SemanticIndexRun,
   SeoCodeIssue,
   SeoCodePatch,
+  SeoRun,
+  SeoRunListResponse,
   UUID,
   WeeklyReport,
 } from '@/types/dashboard';
@@ -78,6 +80,17 @@ export const dashboardApi = {
     description?: string;
     keywords?: string[];
   }) => unwrap<Project>(projectAPI.create(payload)),
+
+  seoRuns: {
+    start: (projectId: UUID) =>
+      unwrap<SeoRun>(api.post(`/projects/${projectId}/seo-run`)),
+    list: (projectId: UUID) =>
+      unwrap<SeoRunListResponse>(
+        api.get(`/projects/${projectId}/seo-runs`, { params: { limit: 10 } })
+      ),
+    status: (runId: UUID) =>
+      unwrap<SeoRun>(api.get(`/seo-runs/${runId}/status`)),
+  },
 
   planner: {
     run: (projectId: UUID) =>

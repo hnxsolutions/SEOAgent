@@ -56,6 +56,7 @@ from app.models import (
     GSCUrlInspectionResult,
     GSCUrlInspectionRun,
     SeoPlannerRun,
+    SeoRun,
     SeoTask,
     SeoTaskDependency,
     SeoWeeklyReport,

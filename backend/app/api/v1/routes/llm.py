@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.security import get_current_user
 from app.schemas.llm import (
+    LLMDebugResponse,
     LLMChatRequest,
     LLMChatResponse,
     LLMGenerateRequest,
@@ -28,6 +29,14 @@ async def llm_health(
 ):
     """Check local Ollama server and default model availability."""
     return await LocalLLMService().health_check()
+
+
+@router.get("/debug", response_model=LLMDebugResponse)
+async def llm_debug(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Check Ollama reachability, configured model availability, and generation."""
+    return await LocalLLMService().debug_check()
 
 
 @router.get("/models", response_model=LLMModelsResponse)

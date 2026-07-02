@@ -25,6 +25,7 @@ from app.api.v1.routes import (
     repos,
     planner,
     schedules,
+    seo_runs,
     serp_snapshots,
     serp,
     visibility,
@@ -59,6 +60,7 @@ api_router.include_router(repos.router, prefix="/repos", tags=["SEO Code Agent"]
 api_router.include_router(planner.router, prefix="/planner", tags=["Weekly SEO Planner"])
 api_router.include_router(schedules.router, prefix="/schedules", tags=["SEO Scheduler"])
 api_router.include_router(schedules.scheduled_runs_router, prefix="/scheduled-runs", tags=["SEO Scheduler"])
+api_router.include_router(seo_runs.router, tags=["One-click SEO Runs"])
 api_router.include_router(serp.router, prefix="/serp", tags=["SERP Analysis"])
 api_router.include_router(serp_snapshots.router, prefix="/serp-snapshots", tags=["Manual SERP Snapshots"])
 api_router.include_router(visibility.router, prefix="/visibility", tags=["AI Visibility"])

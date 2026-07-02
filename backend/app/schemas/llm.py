@@ -22,6 +22,16 @@ class LLMHealthResponse(BaseModel):
     error: Optional[str] = None
 
 
+class LLMDebugResponse(BaseModel):
+    backend_can_reach_ollama: bool
+    base_url: str
+    configured_model: str
+    configured_model_exists: bool
+    generation_succeeds: bool
+    generation_preview: Optional[str] = None
+    error: Optional[str] = None
+
+
 class LLMModelsResponse(BaseModel):
     models: List[LLMModelInfo]
 

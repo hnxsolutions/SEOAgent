@@ -36,6 +36,7 @@ from app.models.indexing import (
     GSCUrlInspectionRun,
 )
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
+from app.models.seo_run import SeoRun
 from app.models.scheduler import SeoSchedule, SeoScheduledRun
 from app.models.repo_agent import (
     PatchApplyResult,
@@ -100,6 +101,7 @@ __all__ = [
     "SeoTask",
     "SeoTaskDependency",
     "SeoWeeklyReport",
+    "SeoRun",
     "SeoSchedule",
     "SeoScheduledRun",
     "RepoConnection",

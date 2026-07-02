@@ -66,6 +66,24 @@ async def test_generate_uses_stream_false_and_default_model():
 
 
 @pytest.mark.asyncio
+async def test_debug_check_confirms_generation_round_trip():
+    async def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=tags_payload())
+        assert request.url.path == "/api/generate"
+        return httpx.Response(200, json={"response": "SEOAgent Ollama debug OK", "done": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://ollama.test") as client:
+        service = LocalLLMService(base_url="http://ollama.test", client=client)
+        result = await service.debug_check()
+
+    assert result["backend_can_reach_ollama"] is True
+    assert result["configured_model_exists"] is True
+    assert result["generation_succeeds"] is True
+    assert result["generation_preview"] == "SEOAgent Ollama debug OK"
+
+
+@pytest.mark.asyncio
 async def test_chat_uses_stream_false_and_messages():
     async def handler(request):
         if request.url.path == "/api/tags":

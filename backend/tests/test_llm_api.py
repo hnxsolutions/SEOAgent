@@ -18,6 +18,17 @@ def test_llm_api_smoke_flow(monkeypatch):
                 "error": None,
             }
 
+        async def debug_check(self):
+            return {
+                "backend_can_reach_ollama": True,
+                "base_url": "http://localhost:11434",
+                "configured_model": "qwen2.5:3b",
+                "configured_model_exists": True,
+                "generation_succeeds": True,
+                "generation_preview": "SEOAgent Ollama debug OK",
+                "error": None,
+            }
+
         async def list_models(self):
             return [{"name": "qwen2.5:3b", "model": "qwen2.5:3b"}]
 
@@ -45,6 +56,10 @@ def test_llm_api_smoke_flow(monkeypatch):
     health_response = client.get("/llm/health")
     assert health_response.status_code == 200
     assert health_response.json()["default_model"] == "qwen2.5:3b"
+
+    debug_response = client.get("/llm/debug")
+    assert debug_response.status_code == 200
+    assert debug_response.json()["generation_succeeds"] is True
 
     models_response = client.get("/llm/models")
     assert models_response.status_code == 200

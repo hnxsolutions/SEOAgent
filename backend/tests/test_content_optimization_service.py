@@ -11,6 +11,7 @@ from app.models.content_optimization import (
     ContentOptimizationSuggestionType,
 )
 from app.services.content_optimization import ContentOptimizationService, META_MIN_LENGTH, TITLE_MIN_LENGTH
+from app.services.local_llm import OllamaUnavailableError
 
 
 class FakeDB:
@@ -41,6 +42,11 @@ class FakeLLMService:
             }
             """,
         }
+
+
+class UnavailableLLMService:
+    async def generate(self, prompt, model=None, options=None):
+        raise OllamaUnavailableError("Ollama is not reachable at http://ollama.test.")
 
 
 class FakeContentOptimizationRepository:
@@ -192,6 +198,21 @@ async def test_duplicate_suggestion_hashes_are_skipped():
     await service.execute_generation(repository.run.id)
 
     assert all(record["suggestion_type"] != ContentOptimizationSuggestionType.seo_title for record in repository.records)
+
+
+@pytest.mark.asyncio
+async def test_content_optimization_failed_run_is_persisted_when_ollama_unavailable():
+    repository = FakeContentOptimizationRepository()
+    service = ContentOptimizationService(FakeDB(), llm_service=UnavailableLLMService())
+    service.repository = repository
+
+    with pytest.raises(OllamaUnavailableError):
+        await service.execute_generation(repository.run.id)
+
+    assert repository.run.status == ContentOptimizationRunStatus.failed
+    assert "not reachable" in repository.run.error_message
+    assert repository.run.progress == 100
+    assert repository.records == []
 
 
 def test_content_optimization_topic_skips_generic_slug_segments():
