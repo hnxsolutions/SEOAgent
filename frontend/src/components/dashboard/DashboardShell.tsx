@@ -11,6 +11,7 @@ import {
   GitBranch,
   LayoutDashboard,
   LineChart,
+  LogOut,
   Newspaper,
   Rocket,
   Search,
@@ -54,10 +55,23 @@ export function useDashboardProject() {
 export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [projectId, setProjectIdState] = useState<UUID | undefined>();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+
+  useEffect(() => {
+    const token = window.localStorage.getItem('access_token');
+    if (!token) {
+      window.location.replace('/login');
+      return;
+    }
+    setHasToken(true);
+    setAuthChecked(true);
+  }, []);
 
   const projectsQuery = useQuery({
     queryKey: ['dashboard-projects'],
     queryFn: dashboardApi.listProjects,
+    enabled: hasToken,
     retry: false,
   });
 
@@ -73,10 +87,27 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     setProjectIdState(nextProjectId);
   };
 
+  const logout = () => {
+    window.localStorage.removeItem('access_token');
+    window.localStorage.removeItem('refresh_token');
+    window.localStorage.removeItem('auth-storage');
+    window.location.replace('/login');
+  };
+
   const project = useMemo(
     () => projectsQuery.data?.find((item) => item.id === projectId),
     [projectsQuery.data, projectId]
   );
+
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <div className="rounded-lg border bg-white px-5 py-4 text-sm text-muted-foreground">
+          Redirecting to login
+        </div>
+      </div>
+    );
+  }
 
   return (
     <DashboardProjectContext.Provider
@@ -169,6 +200,14 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                   <Rocket className="mr-2 h-4 w-4" aria-hidden="true" />
                   Setup
                 </Link>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="inline-flex h-10 items-center justify-center rounded-md border bg-white px-3 text-sm font-medium shadow-sm transition-colors hover:bg-slate-50"
+                >
+                  <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Logout
+                </button>
               </div>
             </div>
           </header>
