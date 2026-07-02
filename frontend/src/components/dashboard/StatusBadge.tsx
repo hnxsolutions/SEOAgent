@@ -6,6 +6,7 @@ const statusStyles: Record<string, string> = {
   approved: 'border-blue-200 bg-blue-50 text-blue-700',
   running: 'border-sky-200 bg-sky-50 text-sky-700',
   queued: 'border-slate-200 bg-slate-50 text-slate-700',
+  pending: 'border-slate-200 bg-slate-50 text-slate-700',
   suggested: 'border-amber-200 bg-amber-50 text-amber-700',
   proposed: 'border-amber-200 bg-amber-50 text-amber-700',
   todo: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -16,6 +17,10 @@ const statusStyles: Record<string, string> = {
   cancelled: 'border-rose-200 bg-rose-50 text-rose-700',
   skipped: 'border-zinc-200 bg-zinc-50 text-zinc-700',
   skipped_or_failed: 'border-amber-200 bg-amber-50 text-amber-700',
+  critical: 'border-rose-200 bg-rose-50 text-rose-700',
+  high: 'border-orange-200 bg-orange-50 text-orange-700',
+  medium: 'border-amber-200 bg-amber-50 text-amber-700',
+  low: 'border-slate-200 bg-slate-50 text-slate-700',
   open: 'border-orange-200 bg-orange-50 text-orange-700',
 };
 

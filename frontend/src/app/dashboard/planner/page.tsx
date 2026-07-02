@@ -219,6 +219,8 @@ export default function PlannerPage() {
         <TaskTable
           tasks={tasks}
           actionLoadingId={actionLoadingId}
+          emptyTitle="No planner tasks found"
+          emptyDescription="Run SEO Analysis to create the weekly task plan, or clear filters to see existing tasks."
           onSelect={setSelectedTask}
           onApprove={(taskId) => taskActionMutation.mutate({ taskId, action: 'approve' })}
           onReject={(taskId) => taskActionMutation.mutate({ taskId, action: 'reject' })}

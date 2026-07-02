@@ -183,6 +183,34 @@ export type AuditRun = {
   updated_at?: string | null;
 };
 
+export type SEOIssue = {
+  id: UUID;
+  audit_run_id: UUID;
+  crawl_job_id: UUID;
+  crawl_page_id?: UUID | null;
+  project_id?: UUID | null;
+  tenant_id: UUID;
+  issue_type: string;
+  title: string;
+  message: string;
+  recommendation?: string | null;
+  severity: string;
+  category: string;
+  status: string;
+  url?: string | null;
+  evidence?: Record<string, unknown> | null;
+  score_impact: number;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type SEOIssueListResponse = {
+  issues: SEOIssue[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type SemanticIndexRun = {
   id: UUID;
   crawl_job_id: UUID;
@@ -202,6 +230,26 @@ export type SemanticIndexRun = {
   completed_at?: string | null;
   created_at: string;
   updated_at?: string | null;
+};
+
+export type SemanticSearchResult = {
+  point_id: string;
+  score: number;
+  tenant_id: string;
+  project_id?: string | null;
+  crawl_id: string;
+  page_id: string;
+  url: string;
+  content_type: string;
+  heading_context?: string | null;
+  chunk_index?: number | null;
+  text_preview?: string | null;
+};
+
+export type SemanticSearchResponse = {
+  query: string;
+  results: SemanticSearchResult[];
+  limit: number;
 };
 
 export type InternalLinkGeneration = {

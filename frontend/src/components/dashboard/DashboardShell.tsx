@@ -4,7 +4,9 @@ import {
   Activity,
   Bot,
   Camera,
+  Database,
   FileText,
+  FileWarning,
   GitBranch,
   LayoutDashboard,
   LineChart,
@@ -195,6 +197,8 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
+  { label: 'Audit Issues', href: '/dashboard/audit', icon: FileWarning },
+  { label: 'Semantic Search', href: '/dashboard/semantic', icon: Database },
   { label: 'Weekly Planner', href: '/dashboard/planner', icon: Bot },
   { label: 'Search Console', href: '/dashboard/search-console', icon: Search },
   { label: 'Indexing', href: '/dashboard/indexing', icon: SearchCheck },

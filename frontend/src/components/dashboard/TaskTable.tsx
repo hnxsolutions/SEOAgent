@@ -17,6 +17,8 @@ export function TaskTable({
   onProgress,
   onComplete,
   onSelect,
+  emptyTitle = 'No planner tasks found',
+  emptyDescription = 'Run SEO Analysis or adjust the filters to see planner tasks.',
 }: {
   tasks: PlannerTask[];
   isLoading?: boolean;
@@ -26,6 +28,8 @@ export function TaskTable({
   onProgress?: (_taskId: UUID) => void;
   onComplete?: (_taskId: UUID) => void;
   onSelect?: (_task: PlannerTask) => void;
+  emptyTitle?: string;
+  emptyDescription?: string;
 }) {
   if (isLoading) {
     return <TableShell rows={6} />;
@@ -33,8 +37,11 @@ export function TaskTable({
 
   if (tasks.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">
-        No SEO tasks match the current filters.
+      <div className="rounded-lg border border-dashed bg-white p-8 text-center">
+        <p className="text-sm font-semibold text-slate-900">{emptyTitle}</p>
+        <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+          {emptyDescription}
+        </p>
       </div>
     );
   }

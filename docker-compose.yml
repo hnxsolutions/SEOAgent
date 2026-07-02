@@ -202,7 +202,7 @@ services:
       - backend
     networks:
       - seo-agent-network
-    command: npm start
+    command: node server.js
 
   # Nginx Reverse Proxy (Optional - for production)
   nginx:

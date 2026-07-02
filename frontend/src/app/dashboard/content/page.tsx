@@ -1,7 +1,7 @@
 'use client';
 
 import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { ActionNotice, EmptyState, ErrorState, LoadingBlock } from '@/components/dashboard/DashboardStates';
@@ -22,6 +22,11 @@ export default function ContentSuggestionsPage() {
   const [pageFilter, setPageFilter] = useState(allFilter);
   const [notice, setNotice] = useState<string>();
   const [actionLoadingId, setActionLoadingId] = useState<UUID>();
+
+  useEffect(() => {
+    const requestedCrawlId = new URLSearchParams(window.location.search).get('crawlId');
+    if (requestedCrawlId) setCrawlId(requestedCrawlId);
+  }, []);
 
   const crawlsQuery = useQuery({
     queryKey: ['crawls', projectId],
@@ -89,8 +94,8 @@ export default function ContentSuggestionsPage() {
   if (!effectiveCrawlId) {
     return (
       <EmptyState
-        title="No crawls found"
-        description="Run a crawl before reviewing content optimization suggestions."
+        title="No crawl results found"
+        description="Run SEO Analysis first, then this page will show local AI content suggestions for the latest crawl."
       />
     );
   }
@@ -202,8 +207,12 @@ function SuggestionTable({
   if (isLoading) return <LoadingBlock label="Loading suggestions" />;
   if (suggestions.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">
-        No content suggestions match the current filters.
+      <div className="rounded-lg border border-dashed bg-white p-8 text-center">
+        <p className="text-sm font-semibold text-slate-900">No suggestions found</p>
+        <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+          The selected crawl has no matching suggestions. If content optimization was skipped,
+          check the latest SEO Analysis Run for Ollama availability.
+        </p>
       </div>
     );
   }

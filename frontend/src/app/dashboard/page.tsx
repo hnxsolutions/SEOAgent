@@ -1,9 +1,15 @@
 'use client';
 
 import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  Circle,
   ClipboardList,
+  Clock3,
   FileEdit,
   GitPullRequest,
+  ListChecks,
   Newspaper,
   PlayCircle,
   RefreshCw,
@@ -11,6 +17,7 @@ import {
   ShieldCheck,
   Target,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DashboardMetricCard } from '@/components/dashboard/DashboardMetricCard';
@@ -21,7 +28,15 @@ import { Button } from '@/components/ui/button';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi, latestCrawl, latestPlannerRun } from '@/lib/dashboard-api';
 import { formatDateTime } from '@/lib/utils';
-import type { SeoRunListResponse, UUID } from '@/types/dashboard';
+import type {
+  AuditSummary,
+  ContentOptimizationRun,
+  CrawlJob,
+  SemanticIndexRun,
+  SeoRun,
+  SeoRunListResponse,
+  UUID,
+} from '@/types/dashboard';
 
 const seoRunStages = [
   'crawl',
@@ -93,8 +108,18 @@ export default function DashboardOverviewPage() {
   });
 
   const latestRun = latestPlannerRun(plannerRunsQuery.data?.runs);
-  const activeCrawl = latestCrawl(crawlsQuery.data?.crawls);
-  const crawlId = activeCrawl?.id ?? latestRun?.crawl_id ?? undefined;
+  const fallbackCrawl = latestCrawl(crawlsQuery.data?.crawls);
+  const crawlId = latestSeoRun?.crawl_id ?? fallbackCrawl?.id ?? latestRun?.crawl_id ?? undefined;
+
+  const crawlStatusQuery = useQuery({
+    queryKey: ['crawl-status', crawlId],
+    queryFn: () => dashboardApi.crawls.status(crawlId!),
+    enabled: Boolean(crawlId),
+    retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
+  });
+
+  const activeCrawl = crawlStatusQuery.data?.job ?? fallbackCrawl;
 
   const auditSummaryQuery = useQuery({
     queryKey: ['audit-summary', crawlId],
@@ -108,6 +133,22 @@ export default function DashboardOverviewPage() {
     queryKey: ['content-summary', crawlId],
     queryFn: () => dashboardApi.content.summary(crawlId!),
     enabled: Boolean(crawlId),
+    retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
+  });
+
+  const semanticRunQuery = useQuery({
+    queryKey: ['semantic-run', latestSeoRun?.semantic_index_run_id],
+    queryFn: () => dashboardApi.semantic.status(latestSeoRun!.semantic_index_run_id!),
+    enabled: Boolean(latestSeoRun?.semantic_index_run_id),
+    retry: false,
+    refetchInterval: isSeoRunPolling ? 5000 : false,
+  });
+
+  const contentRunQuery = useQuery({
+    queryKey: ['content-run', latestSeoRun?.content_optimization_run_id],
+    queryFn: () => dashboardApi.content.runStatus(latestSeoRun!.content_optimization_run_id!),
+    enabled: Boolean(latestSeoRun?.content_optimization_run_id),
     retry: false,
     refetchInterval: isSeoRunPolling ? 5000 : false,
   });
@@ -155,6 +196,11 @@ export default function DashboardOverviewPage() {
       <EmptyState
         title="Select a project"
         description="The dashboard needs a project before it can load planner, Search Console, crawl, content, blog, and repository data."
+        action={
+          <Button asChild type="button">
+            <Link href="/dashboard/setup">Open setup</Link>
+          </Button>
+        }
       />
     );
   }
@@ -170,6 +216,12 @@ export default function DashboardOverviewPage() {
   }
 
   const summary = plannerSummaryQuery.data;
+  const latestSeoPlannerRun =
+    plannerRunsQuery.data?.runs.find((run) => run.id === latestSeoRun?.planner_run_id) ??
+    latestRun;
+  const plannerTasksCount = latestSeoPlannerRun?.tasks_created ?? summary?.total_tasks;
+  const contentSuggestionsCount =
+    contentRunQuery.data?.total_suggestions ?? contentSummaryQuery.data?.total_suggestions;
   const pendingDrafts = (draftsQuery.data?.drafts ?? []).filter(
     (draft) => draft.status === 'draft'
   ).length;
@@ -210,6 +262,16 @@ export default function DashboardOverviewPage() {
         </div>
       </div>
 
+      <OnboardingChecklist
+        projectReady={Boolean(projectId)}
+        runReady={Boolean(latestSeoRun)}
+        auditReady={Boolean(auditSummaryQuery.data)}
+        suggestionsReady={(contentSuggestionsCount ?? 0) > 0}
+        plannerReady={(plannerTasksCount ?? 0) > 0}
+      />
+
+      <DemoSafeLabels />
+
       <section id="health" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <DashboardMetricCard
           title="SEO Health"
@@ -220,7 +282,7 @@ export default function DashboardOverviewPage() {
               : 'Latest audit summary unavailable'
           }
           icon={ShieldCheck}
-          href="/dashboard/content"
+          href={crawlId ? `/dashboard/audit?crawlId=${crawlId}` : '/dashboard/audit'}
           tone="emerald"
         />
         <DashboardMetricCard
@@ -292,13 +354,18 @@ export default function DashboardOverviewPage() {
       <SeoRunProgress
         run={latestSeoRun}
         isStarting={runSeoMutation.isPending}
+        isRunActive={isSeoRunActive}
+        onRun={() => runSeoMutation.mutate()}
         errorMessage={
           runSeoMutation.error instanceof Error ? runSeoMutation.error.message : undefined
         }
-        totalPages={activeCrawl?.total_pages_crawled ?? auditSummaryQuery.data?.total_pages}
-        totalIssues={auditSummaryQuery.data?.total_issues}
-        totalSuggestions={contentSummaryQuery.data?.total_suggestions}
-        openTasks={summary?.open_tasks}
+        crawl={activeCrawl}
+        auditSummary={auditSummaryQuery.data}
+        semanticRun={semanticRunQuery.data}
+        contentRun={contentRunQuery.data}
+        plannerTasksCount={plannerTasksCount}
+        plannerOpenTasks={summary?.open_tasks}
+        contentSuggestionsCount={contentSuggestionsCount}
       />
 
       <section id="pipeline" className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
@@ -387,52 +454,122 @@ export default function DashboardOverviewPage() {
 function SeoRunProgress({
   run,
   isStarting,
+  isRunActive,
+  onRun,
   errorMessage,
-  totalPages,
-  totalIssues,
-  totalSuggestions,
-  openTasks,
+  crawl,
+  auditSummary,
+  semanticRun,
+  contentRun,
+  plannerTasksCount,
+  plannerOpenTasks,
+  contentSuggestionsCount,
 }: {
-  run?: SeoRunListResponse['runs'][number];
+  run?: SeoRun;
   isStarting: boolean;
+  isRunActive: boolean;
+  onRun: () => void;
   errorMessage?: string;
-  totalPages?: number;
-  totalIssues?: number;
-  totalSuggestions?: number;
-  openTasks?: number;
+  crawl?: CrawlJob;
+  auditSummary?: AuditSummary;
+  semanticRun?: SemanticIndexRun;
+  contentRun?: ContentOptimizationRun;
+  plannerTasksCount?: number;
+  plannerOpenTasks?: number;
+  contentSuggestionsCount?: number;
 }) {
   const stageErrors = run?.stage_errors ?? {};
-  const summary =
-    run?.status === 'completed'
-      ? `${totalPages ?? 0} pages, ${totalIssues ?? 0} issues, ${
-          totalSuggestions ?? 0
-        } content suggestions, ${openTasks ?? 0} open tasks`
-      : run
-        ? `Current stage: ${seoRunStageLabels[run.current_stage as (typeof seoRunStages)[number]] ?? run.current_stage.replace(/_/g, ' ')}`
-        : 'No run data yet';
+  const currentStage = run?.current_stage as (typeof seoRunStages)[number] | 'completed' | undefined;
+  const stageLabel =
+    currentStage === 'completed'
+      ? 'Completed'
+      : currentStage
+        ? seoRunStageLabels[currentStage as (typeof seoRunStages)[number]] ??
+          currentStage.replace(/_/g, ' ')
+        : 'Not started';
+  const crawlFailed =
+    crawl?.status === 'failed' ||
+    run?.stage_statuses?.crawl === 'failed' ||
+    Boolean(stageErrors.crawl);
+  const contentError =
+    stageErrors.content_optimization ?? contentRun?.error_message ?? undefined;
+  const ollamaUnavailable =
+    run?.stage_statuses?.content_optimization === 'skipped_or_failed' ||
+    Boolean(contentError?.toLowerCase().includes('ollama')) ||
+    Boolean(contentError?.toLowerCase().includes('not reachable'));
+  const noSuggestions =
+    run?.status === 'completed' &&
+    !ollamaUnavailable &&
+    (contentSuggestionsCount ?? contentRun?.total_suggestions ?? 0) === 0;
+  const noPlannerTasks = run?.status === 'completed' && (plannerTasksCount ?? 0) === 0;
+  const crawlParam = run?.crawl_id ? `?crawlId=${run.crawl_id}` : '';
+
+  if (!run && !isStarting) {
+    return (
+      <section id="seo-run-progress" className="rounded-lg border bg-white">
+        <div className="border-b px-5 py-4">
+          <h3 className="text-base font-semibold text-slate-950">Latest SEO Run</h3>
+          <p className="mt-1 text-sm text-muted-foreground">No SEO run yet.</p>
+        </div>
+        <div className="p-5">
+          <EmptyState
+            title="No SEO run yet"
+            description="Start the one-click analysis to create crawl, audit, semantic, content, and planner data."
+            action={
+              <Button type="button" onClick={onRun} disabled={isRunActive}>
+                <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+                Run SEO Analysis
+              </Button>
+            }
+          />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section id="seo-run-progress" className="rounded-lg border bg-white">
       <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h3 className="text-base font-semibold text-slate-950">SEO Analysis Run</h3>
+          <h3 className="text-base font-semibold text-slate-950">Latest SEO Run</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            {run?.created_at ? formatDateTime(run.created_at) : 'No run yet'}
+            {run?.status === 'completed' ? 'Final stage' : 'Current stage'}: {stageLabel}
           </p>
         </div>
-        <StatusBadge status={isStarting ? 'queued' : run?.status} />
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge status={isStarting ? 'queued' : run?.status} />
+          {run?.completed_at ? (
+            <span className="text-sm text-muted-foreground">
+              Completed {formatDateTime(run.completed_at)}
+            </span>
+          ) : null}
+        </div>
       </div>
       <div className="space-y-4 p-5">
+        <div className="grid gap-3 text-sm md:grid-cols-3">
+          <RunFact
+            icon={Clock3}
+            label="Started"
+            value={run?.started_at ? formatDateTime(run.started_at) : 'Not started'}
+          />
+          <RunFact
+            icon={Clock3}
+            label="Completed"
+            value={run?.completed_at ? formatDateTime(run.completed_at) : 'Not complete'}
+          />
+          <RunFact icon={ListChecks} label="Stage" value={stageLabel} />
+        </div>
+
         <div className="grid gap-3 md:grid-cols-5">
           {seoRunStages.map((stage) => (
             <div key={stage} className="rounded-md border bg-slate-50 px-3 py-3">
-              <p className="text-xs font-semibold uppercase tracking-normal text-slate-600">
-                {seoRunStageLabels[stage]}
-              </p>
-              <StatusBadge
-                status={run?.stage_statuses?.[stage] ?? 'pending'}
-                className="mt-2"
-              />
+              <div className="flex items-center gap-2">
+                <StageIcon status={run?.stage_statuses?.[stage] ?? 'pending'} />
+                <p className="text-xs font-semibold uppercase tracking-normal text-slate-600">
+                  {seoRunStageLabels[stage]}
+                </p>
+              </div>
+              <StatusBadge status={run?.stage_statuses?.[stage] ?? 'pending'} className="mt-2" />
               {stageErrors[stage] ? (
                 <p className="mt-2 line-clamp-2 text-xs text-amber-700">
                   {stageErrors[stage]}
@@ -441,16 +578,206 @@ function SeoRunProgress({
             </div>
           ))}
         </div>
-        <div className="rounded-md border bg-white px-4 py-3">
-          <p className="text-sm font-medium text-slate-950">Last result</p>
-          <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
-          {run?.error_message ? (
-            <p className="mt-2 text-sm text-rose-700">{run.error_message}</p>
-          ) : null}
-          {errorMessage ? <p className="mt-2 text-sm text-rose-700">{errorMessage}</p> : null}
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <RunMetric label="Crawl pages" value={crawl?.total_pages_crawled ?? auditSummary?.total_pages ?? 'N/A'} />
+          <RunMetric label="Audit score" value={auditSummary?.site_score ?? 'N/A'} />
+          <RunMetric label="Issue count" value={auditSummary?.total_issues ?? crawl?.total_issues_found ?? 'N/A'} />
+          <RunMetric label="Semantic vectors" value={semanticRun?.indexed_vectors ?? semanticRun?.total_vectors ?? 'N/A'} />
+          <RunMetric label="Content suggestions" value={contentSuggestionsCount ?? contentRun?.total_suggestions ?? 'N/A'} />
+          <RunMetric label="Planner tasks" value={plannerTasksCount ?? 'N/A'} />
+          <RunMetric label="Open tasks" value={plannerOpenTasks ?? 'N/A'} />
         </div>
+
+        <div className="space-y-2">
+          {crawlFailed ? (
+            <RunNotice
+              tone="error"
+              title="Crawl failed"
+              detail={stageErrors.crawl ?? crawl?.status ?? 'The crawl stage did not complete.'}
+            />
+          ) : null}
+          {ollamaUnavailable ? (
+            <RunNotice
+              tone="warning"
+              title="Ollama unavailable"
+              detail={contentError ?? 'Content optimization was skipped or failed, and the run continued.'}
+            />
+          ) : null}
+          {noSuggestions ? (
+            <RunNotice
+              tone="warning"
+              title="No suggestions found"
+              detail="Content optimization completed, but no suggestions were persisted for this crawl."
+            />
+          ) : null}
+          {noPlannerTasks ? (
+            <RunNotice
+              tone="warning"
+              title="No planner tasks found"
+              detail="The planner completed without creating tasks for this project."
+            />
+          ) : null}
+          {run?.error_message ? (
+            <RunNotice tone="error" title="Run failed" detail={run.error_message} />
+          ) : null}
+          {errorMessage ? <RunNotice tone="error" title="Run could not start" detail={errorMessage} /> : null}
+        </div>
+
+        {run?.status === 'completed' ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <ResultShortcut href={`/dashboard/audit${crawlParam}`} label="View Audit Issues" />
+            <ResultShortcut href={`/dashboard/content${crawlParam}`} label="View Content Suggestions" />
+            <ResultShortcut href="/dashboard/planner" label="View Planner Tasks" />
+            <ResultShortcut href="/dashboard/semantic?query=SEO%20recommendations" label="Try Semantic Search" />
+          </div>
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function OnboardingChecklist({
+  projectReady,
+  runReady,
+  auditReady,
+  suggestionsReady,
+  plannerReady,
+}: {
+  projectReady: boolean;
+  runReady: boolean;
+  auditReady: boolean;
+  suggestionsReady: boolean;
+  plannerReady: boolean;
+}) {
+  const items = [
+    { label: 'Create project', done: projectReady, href: '/dashboard/setup' },
+    { label: 'Run SEO Analysis', done: runReady, href: '/dashboard' },
+    { label: 'Review audit issues', done: auditReady, href: '/dashboard/audit' },
+    { label: 'Review AI suggestions', done: suggestionsReady, href: '/dashboard/content' },
+    { label: 'Review weekly planner tasks', done: plannerReady, href: '/dashboard/planner' },
+  ];
+
+  return (
+    <section className="rounded-lg border bg-white p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <ListChecks className="h-4 w-4 text-blue-700" aria-hidden="true" />
+        <h3 className="text-sm font-semibold text-slate-950">Onboarding checklist</h3>
+      </div>
+      <div className="grid gap-2 md:grid-cols-5">
+        {items.map((item) => (
+          <Link
+            key={item.label}
+            href={item.href}
+            className="flex min-h-12 items-center gap-2 rounded-md border bg-slate-50 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"
+          >
+            {item.done ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+            ) : (
+              <Circle className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+            )}
+            <span>{item.label}</span>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DemoSafeLabels() {
+  return (
+    <section className="grid gap-3 md:grid-cols-3">
+      <DemoLabel text="Automated SERP is disabled in local MVP" />
+      <DemoLabel text="Billing is disabled in local MVP" />
+      <DemoLabel text="GSC/manual SERP snapshots are real-data paths" />
+    </section>
+  );
+}
+
+function DemoLabel({ text }: { text: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700">
+      {text}
+    </div>
+  );
+}
+
+function StageIcon({ status }: { status?: string | null }) {
+  if (status === 'completed') {
+    return <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />;
+  }
+  if (status === 'running' || status === 'queued') {
+    return <RefreshCw className="h-4 w-4 animate-spin text-sky-600" aria-hidden="true" />;
+  }
+  if (status === 'failed' || status === 'skipped_or_failed') {
+    return <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />;
+  }
+  return <Circle className="h-4 w-4 text-slate-400" aria-hidden="true" />;
+}
+
+function RunFact({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border bg-slate-50 px-3 py-3">
+      <Icon className="h-4 w-4 text-slate-500" aria-hidden="true" />
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">{label}</p>
+        <p className="mt-1 text-sm font-medium text-slate-900">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function RunMetric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md border bg-white px-4 py-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-slate-950">
+        {typeof value === 'number' ? value.toLocaleString() : value}
+      </p>
+    </div>
+  );
+}
+
+function RunNotice({
+  title,
+  detail,
+  tone,
+}: {
+  title: string;
+  detail: string;
+  tone: 'warning' | 'error';
+}) {
+  return (
+    <div
+      className={
+        tone === 'error'
+          ? 'rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800'
+          : 'rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800'
+      }
+    >
+      <p className="font-semibold">{title}</p>
+      <p className="mt-1">{detail}</p>
+    </div>
+  );
+}
+
+function ResultShortcut({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="flex min-h-11 items-center justify-between gap-3 rounded-md border bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100"
+    >
+      <span>{label}</span>
+      <ArrowRight className="h-4 w-4 text-slate-500" aria-hidden="true" />
+    </Link>
   );
 }
 

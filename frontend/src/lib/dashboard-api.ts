@@ -53,10 +53,12 @@ import type {
   SerpSnapshot,
   SerpSnapshotSummary,
   SemanticIndexRun,
+  SemanticSearchResponse,
   SeoCodeIssue,
   SeoCodePatch,
   SeoRun,
   SeoRunListResponse,
+  SEOIssueListResponse,
   UUID,
   WeeklyReport,
 } from '@/types/dashboard';
@@ -153,6 +155,10 @@ export const dashboardApi = {
       unwrap<AuditRun>(api.post(`/audits/crawls/${crawlId}/start`)),
     status: (auditId: UUID) =>
       unwrap<AuditRun>(api.get(`/audits/${auditId}/status`)),
+    issues: (params?: { audit_id?: UUID; crawl_id?: UUID; project_id?: UUID }) =>
+      unwrap<SEOIssueListResponse>(
+        api.get('/audits/issues', { params: { limit: 250, ...params } })
+      ),
   },
 
   semantic: {
@@ -160,6 +166,12 @@ export const dashboardApi = {
       unwrap<SemanticIndexRun>(api.post(`/semantic/crawls/${crawlId}/index`)),
     status: (runId: UUID) =>
       unwrap<SemanticIndexRun>(api.get(`/semantic/index-runs/${runId}/status`)),
+    search: (query: string, projectId?: UUID) =>
+      unwrap<SemanticSearchResponse>(
+        api.get('/semantic/search', {
+          params: { query, project_id: projectId, limit: 10 },
+        })
+      ),
   },
 
   internalLinks: {
