@@ -31,6 +31,7 @@ from app.models.planner import (
 from app.models.repo_agent import SeoCodeIssueType, SeoCodePatchType
 from app.models.search_console import SearchConsoleOpportunityType
 from app.repositories.planner import PlannerRepository
+from app.services.project_context import project_business_context
 
 logger = structlog.get_logger(__name__)
 
@@ -229,6 +230,7 @@ class PlannerService:
         return self._dedupe_response(project_id, groups, dry_run=False, skipped_count=skipped_count)
 
     async def _collect_signals(self, run: SeoPlannerRun) -> dict:
+        project = await self.repository.get_project(run.project_id, run.tenant_id)
         crawl = await self.repository.latest_crawl(run.project_id, run.tenant_id)
         crawl_id = getattr(crawl, "id", None)
         audit = await self.repository.latest_audit(crawl_id, run.project_id, run.tenant_id)
@@ -261,6 +263,8 @@ class PlannerService:
             "gsc_import": gsc_import,
             "blog_plan": blog_plan,
             "repo_scan": repo_scan,
+            "project": project,
+            "project_context": project_business_context(project),
             "has_repo_connection": await self.repository.has_repo_connection(run.project_id, run.tenant_id),
             "has_knowledge": await self.repository.has_knowledge(run.project_id, run.tenant_id),
             "audit_issues": await self.repository.list_audit_issues(run.project_id, run.tenant_id),
@@ -285,16 +289,81 @@ class PlannerService:
         candidates.extend(self._tasks_from_internal_links(signals["internal_link_recommendations"]))
         candidates.extend(self._tasks_from_blogs(signals["blog_topics"], has_knowledge=signals["has_knowledge"]))
         candidates.extend(self._tasks_from_repo(signals["repo_patches"], signals["repo_issues"]))
+        candidates.extend(self._tasks_from_project_context(signals["project_context"]))
         if not candidates:
             candidates.append(
                 TaskCandidate(
                     task_type=SeoTaskType.manual_review,
-                    title="Review SEO operating system inputs",
-                    description="No active crawl, audit, GSC, content, blog, or repo signals were available. Connect data sources or run a crawl to populate the weekly planner.",
+                    title="Review project context and SEO operating system inputs",
+                    description=(
+                        "No active crawl, audit, GSC, content, blog, or repo signals were available. "
+                        "Review the project context, connect data sources, or run a crawl to populate the weekly planner."
+                    ),
                     source_type=SeoTaskSourceType.planner,
                     priority_score=30,
                     estimated_impact=SeoTaskImpact.medium,
                     effort=SeoTaskEffort.low,
+                )
+            )
+        return candidates
+
+    def _tasks_from_project_context(self, context: dict) -> List[TaskCandidate]:
+        candidates: List[TaskCandidate] = []
+        target_keywords = self._context_list(context.get("target_keywords"))
+        primary_services = self._context_list(context.get("primary_services"))
+        seo_goal = self._context_text(context.get("seo_goal"))
+        audience = self._context_text(context.get("target_audience"))
+        location = self._context_text(context.get("target_location"))
+
+        if seo_goal:
+            detail_parts = [f"SEO goal: {seo_goal}"]
+            if audience:
+                detail_parts.append(f"Audience: {audience}")
+            if location:
+                detail_parts.append(f"Location: {location}")
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.manual_review,
+                    title="Review SEO goal alignment",
+                    description="Use the onboarding context to align this week's SEO work. " + " ".join(detail_parts),
+                    source_type=SeoTaskSourceType.planner,
+                    priority_score=45,
+                    estimated_impact=SeoTaskImpact.medium,
+                    effort=SeoTaskEffort.low,
+                )
+            )
+
+        for keyword in target_keywords[:3]:
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.content_refresh,
+                    title=f"Map target keyword: {keyword}"[:255],
+                    description=(
+                        "Review crawl and content outputs against this manually provided target keyword. "
+                        "Use real page and Search Console data before claiming ranking movement."
+                    ),
+                    source_type=SeoTaskSourceType.planner,
+                    target_keyword=keyword,
+                    priority_score=42,
+                    estimated_impact=SeoTaskImpact.medium,
+                    effort=SeoTaskEffort.low,
+                )
+            )
+
+        for service in primary_services[:2]:
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.content_refresh,
+                    title=f"Review service page coverage for {service}"[:255],
+                    description=(
+                        "Use the project services from onboarding as content context. "
+                        "Verify an existing page or create a brief before adding new copy."
+                    ),
+                    source_type=SeoTaskSourceType.planner,
+                    target_keyword=service,
+                    priority_score=40,
+                    estimated_impact=SeoTaskImpact.medium,
+                    effort=SeoTaskEffort.medium,
                 )
             )
         return candidates
@@ -801,6 +870,17 @@ class PlannerService:
     def _week_start(self, now: datetime) -> datetime:
         start = now - timedelta(days=now.weekday())
         return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def _context_list(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        if isinstance(value, str) and value != "Not provided":
+            return [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
+        return []
+
+    def _context_text(self, value: Any) -> str:
+        text = str(value or "").strip()
+        return "" if text == "Not provided" else text
 
     def _enum_value(self, value) -> str:
         return getattr(value, "value", value)

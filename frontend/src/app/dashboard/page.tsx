@@ -3,6 +3,8 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Briefcase,
+  Building2,
   CheckCircle2,
   Circle,
   ClipboardList,
@@ -11,7 +13,9 @@ import {
   FileText,
   GitPullRequest,
   ListChecks,
+  MapPin,
   Newspaper,
+  Pencil,
   PlayCircle,
   RefreshCw,
   SearchCheck,
@@ -33,6 +37,7 @@ import type {
   AuditSummary,
   ContentOptimizationRun,
   CrawlJob,
+  Project,
   SemanticIndexRun,
   SeoRun,
   SeoRunListResponse,
@@ -60,7 +65,7 @@ function isActiveSeoRun(status?: string | null) {
 }
 
 export default function DashboardOverviewPage() {
-  const { projectId, isLoading: projectLoading } = useDashboardProject();
+  const { projectId, project, isLoading: projectLoading } = useDashboardProject();
   const queryClient = useQueryClient();
 
   const seoRunsQuery = useQuery({
@@ -280,6 +285,8 @@ export default function DashboardOverviewPage() {
       />
 
       <DemoSafeLabels />
+
+      <ProjectContextSummary project={project} />
 
       <section id="health" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <DashboardMetricCard
@@ -711,6 +718,54 @@ function DemoLabel({ text }: { text: string }) {
   );
 }
 
+function ProjectContextSummary({ project }: { project?: Project }) {
+  const rows = [
+    { label: 'Business', value: contextText(project?.business_name), icon: Building2 },
+    { label: 'Industry', value: contextText(project?.industry), icon: Briefcase },
+    { label: 'Location', value: contextText(project?.target_location), icon: MapPin },
+    { label: 'Audience', value: contextText(project?.target_audience), icon: Target },
+    { label: 'Services', value: contextList(project?.primary_services), icon: ListChecks },
+    { label: 'Keywords', value: contextList(project?.target_keywords ?? project?.keywords), icon: SearchCheck },
+    { label: 'SEO Goal', value: contextText(project?.seo_goal), icon: ClipboardList },
+    { label: 'Brand Tone', value: contextText(project?.brand_tone), icon: Pencil },
+  ];
+
+  return (
+    <section className="rounded-lg border bg-white">
+      <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Project Context</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Used by content suggestions, weekly planner tasks, and client reports.
+          </p>
+        </div>
+        <Button asChild type="button" variant="outline" size="sm">
+          <Link href="/dashboard/setup">
+            <Pencil className="mr-2 h-4 w-4" aria-hidden="true" />
+            Edit Context
+          </Link>
+        </Button>
+      </div>
+      <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-4">
+        {rows.map((row) => {
+          const Icon = row.icon;
+          return (
+            <div key={row.label} className="rounded-md border bg-slate-50 px-3 py-3">
+              <div className="flex items-center gap-2">
+                <Icon className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">
+                  {row.label}
+                </p>
+              </div>
+              <p className="mt-2 break-words text-sm font-medium text-slate-900">{row.value}</p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function StageIcon({ status }: { status?: string | null }) {
   if (status === 'completed') {
     return <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />;
@@ -808,6 +863,14 @@ function StatusRow({
       <StatusBadge status={status} />
     </div>
   );
+}
+
+function contextText(value?: string | null) {
+  return value?.trim() || 'Not provided';
+}
+
+function contextList(value?: string[] | null) {
+  return value?.length ? value.join(', ') : 'Not provided';
 }
 
 async function invalidateOverview(

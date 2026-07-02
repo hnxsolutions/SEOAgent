@@ -12,6 +12,15 @@ class ProjectBase(BaseModel):
     name: str
     domain: str
     description: Optional[str] = None
+    business_name: Optional[str] = None
+    industry: Optional[str] = None
+    target_location: Optional[str] = None
+    target_audience: Optional[str] = None
+    primary_services: Optional[List[str]] = None
+    target_keywords: Optional[List[str]] = None
+    competitor_urls: Optional[List[str]] = None
+    seo_goal: Optional[str] = None
+    brand_tone: Optional[str] = None
 
 
 class ProjectCreate(ProjectBase):
@@ -22,8 +31,18 @@ class ProjectCreate(ProjectBase):
 class ProjectUpdate(BaseModel):
     """Schema for updating a project"""
     name: Optional[str] = None
+    domain: Optional[str] = None
     description: Optional[str] = None
     keywords: Optional[List[str]] = None
+    business_name: Optional[str] = None
+    industry: Optional[str] = None
+    target_location: Optional[str] = None
+    target_audience: Optional[str] = None
+    primary_services: Optional[List[str]] = None
+    target_keywords: Optional[List[str]] = None
+    competitor_urls: Optional[List[str]] = None
+    seo_goal: Optional[str] = None
+    brand_tone: Optional[str] = None
 
 
 class ProjectResponse(ProjectBase):
@@ -31,6 +50,7 @@ class ProjectResponse(ProjectBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    keywords: Optional[List[str]] = None
     tenant_id: UUID
     owner_id: UUID
     is_active: bool

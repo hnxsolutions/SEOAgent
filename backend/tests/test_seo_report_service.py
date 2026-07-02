@@ -30,8 +30,9 @@ def patch_report_sources(
     *,
     content_suggestions=None,
     data_availability=None,
+    project=None,
 ):
-    project = SimpleNamespace(id=run.project_id, tenant_id=run.tenant_id, name="Acme", domain="example.com")
+    project = project or SimpleNamespace(id=run.project_id, tenant_id=run.tenant_id, name="Acme", domain="example.com")
     crawl = SimpleNamespace(id=run.crawl_id, total_pages_crawled=5, url="https://example.com")
     audit = SimpleNamespace(
         id=run.audit_id,
@@ -153,6 +154,8 @@ async def test_completed_seo_run_returns_report(monkeypatch):
     assert report.content_suggestions_count == 1
     assert report.planner_tasks_count == 1
     assert report.next_actions
+    business_section = next(section for section in report.sections if section.key == "business_context")
+    assert business_section.title == "Business Context"
 
 
 @pytest.mark.asyncio
@@ -223,3 +226,41 @@ async def test_no_fake_ranking_data_appears(monkeypatch):
     assert "current_position" not in payload
     assert "observed_target_rank" not in payload
     assert "Position 1" not in payload
+
+
+@pytest.mark.asyncio
+async def test_report_includes_business_context_without_competitor_analysis_claim(monkeypatch):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    run = make_run(tenant_id, project_id)
+    service = SeoReportService(db=object())
+    patch_report_sources(
+        monkeypatch,
+        service,
+        run,
+        project=SimpleNamespace(
+            id=project_id,
+            tenant_id=tenant_id,
+            name="Acme",
+            domain="example.com",
+            business_name="Acme Studio",
+            industry="Home services",
+            target_location="Phoenix",
+            target_audience="Homeowners",
+            primary_services=["kitchen remodeling"],
+            target_keywords=["custom kitchen remodel"],
+            competitor_urls=["https://competitor.example"],
+            seo_goal="Increase consultation requests",
+            brand_tone="Warm and expert",
+        ),
+    )
+
+    report = await service.generate_report(run.id, tenant_id)
+    business_section = next(section for section in report.sections if section.key == "business_context")
+    payload = business_section.model_dump_json()
+
+    assert business_section.status == "available"
+    assert "Acme Studio" in payload
+    assert "custom kitchen remodel" in payload
+    assert "Manual context only; not crawled or analyzed" in payload
+    assert "competitor analysis" not in payload.lower()

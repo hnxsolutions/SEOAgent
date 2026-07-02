@@ -107,6 +107,7 @@ function DashboardReportContent() {
 }
 
 function ReportView({ report }: { report: SeoRunReportResponse }) {
+  const businessSection = report.sections.find((section) => section.key === 'business_context');
   const contentSection = report.sections.find((section) => section.key === 'content_optimization');
   const plannerSection = report.sections.find((section) => section.key === 'weekly_planner');
   const realSearchSection = report.sections.find((section) => section.key === 'real_search_data');
@@ -171,6 +172,18 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
           icon={ClipboardList}
         />
       </section>
+
+      <ReportSection title="Business Context" status={businessSection?.status} summary={businessSection?.summary}>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {(businessSection?.items ?? []).length ? (
+            businessSection!.items.map((item) => (
+              <ContextValue key={text(item.label, text(item.value))} item={item} />
+            ))
+          ) : (
+            <EmptyInline text="Business context was not provided for this project." />
+          )}
+        </div>
+      </ReportSection>
 
       <section className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
         <div className="rounded-lg border bg-white p-5">
@@ -333,6 +346,22 @@ function Breakdown({ title, data }: { title: string; data: Record<string, number
   );
 }
 
+function ContextValue({ item }: { item: Record<string, unknown> }) {
+  return (
+    <div className="rounded-md border bg-slate-50 px-3 py-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">
+        {text(item.label, 'Context')}
+      </p>
+      <p className="mt-2 break-words text-sm font-medium text-slate-900">
+        {readableValue(item.value)}
+      </p>
+      {item.note ? (
+        <p className="mt-2 text-xs text-muted-foreground">{text(item.note)}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function IssueRow({ issue }: { issue: Record<string, unknown> }) {
   return (
     <div className="rounded-md border bg-slate-50 px-3 py-3">
@@ -419,6 +448,16 @@ function semanticStatus(report: SeoRunReportResponse) {
 function text(value: unknown, fallback = 'Unavailable') {
   if (value === null || value === undefined || value === '') return fallback;
   return String(value);
+}
+
+function readableValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.length ? value.map((item) => String(item)).join(', ') : 'Not provided';
+  }
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return text(value, 'Not provided');
 }
 
 function numberValue(value: unknown) {

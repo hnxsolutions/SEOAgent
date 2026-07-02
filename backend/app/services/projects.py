@@ -23,11 +23,9 @@ class ProjectService:
         user_id: UUID
     ) -> Project:
         """Create a new project"""
+        create_data = project_data.model_dump(exclude_unset=True)
         project = Project(
-            name=project_data.name,
-            domain=project_data.domain,
-            description=project_data.description,
-            keywords=project_data.keywords,
+            **create_data,
             tenant_id=tenant_id,
             owner_id=user_id,
         )

@@ -6,6 +6,15 @@ export type Project = {
   domain?: string | null;
   description?: string | null;
   keywords?: string[] | null;
+  business_name?: string | null;
+  industry?: string | null;
+  target_location?: string | null;
+  target_audience?: string | null;
+  primary_services?: string[] | null;
+  target_keywords?: string[] | null;
+  competitor_urls?: string[] | null;
+  seo_goal?: string | null;
+  brand_tone?: string | null;
   status?: string;
   created_at?: string;
   updated_at?: string | null;

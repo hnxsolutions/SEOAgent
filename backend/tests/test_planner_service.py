@@ -434,3 +434,42 @@ async def test_planner_gracefully_handles_missing_gsc_repo_and_knowledge():
     assert any(risk["type"] == "gsc_missing" for risk in report.risks)
     assert any(risk["type"] == "repo_missing" for risk in report.risks)
     assert "Knowledge base content is empty" in report.summary
+
+
+@pytest.mark.asyncio
+async def test_planner_uses_project_context_for_manual_tasks():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    repo = FakePlannerRepository(tenant_id, project_id)
+    repo.project = obj(
+        id=project_id,
+        tenant_id=tenant_id,
+        domain="example.com",
+        business_name="Acme Studio",
+        industry="Home services",
+        target_location="Phoenix",
+        target_audience="Homeowners",
+        primary_services=["kitchen remodeling"],
+        target_keywords=["custom kitchen remodel"],
+        competitor_urls=["https://competitor.example"],
+        seo_goal="Increase consultation requests",
+        brand_tone="Warm and expert",
+    )
+    repo.audit_issues = []
+    repo.gsc_opportunities = []
+    repo.content_suggestions = []
+    repo.geo_recommendations = []
+    repo.internal_link_recommendations = []
+    repo.blog_topics = []
+    repo.repo_patches = []
+    repo.repo_issues = []
+    service = PlannerService(FakeDB())
+    service.repository = repo
+
+    run = await service.run_project(project_id, tenant_id)
+    titles = {task.title for task in repo.tasks}
+
+    assert run.status == SeoPlannerRunStatus.completed
+    assert "Review SEO goal alignment" in titles
+    assert "Map target keyword: custom kitchen remodel" in titles
+    assert all("competitor" not in task.description.lower() for task in repo.tasks)

@@ -54,6 +54,19 @@ class FakeContentOptimizationRepository:
         self.tenant_id = uuid4()
         self.project_id = uuid4()
         self.crawl_id = uuid4()
+        self.project = SimpleNamespace(
+            id=self.project_id,
+            tenant_id=self.tenant_id,
+            business_name="Acme Clinic",
+            industry="Healthcare",
+            target_location="Austin, TX",
+            target_audience="Patients researching local care",
+            primary_services=["urgent care", "telehealth"],
+            target_keywords=["urgent care Austin"],
+            competitor_urls=["https://competitor.example"],
+            seo_goal="Book more appointments",
+            brand_tone="Calm and expert",
+        )
         self.page_id = uuid4()
         self.crawl = SimpleNamespace(id=self.crawl_id, tenant_id=self.tenant_id, project_id=self.project_id)
         self.page = SimpleNamespace(
@@ -92,6 +105,11 @@ class FakeContentOptimizationRepository:
     async def get_crawl(self, crawl_id, tenant_id=None):
         if crawl_id == self.crawl_id and (tenant_id is None or tenant_id == self.tenant_id):
             return self.crawl
+        return None
+
+    async def get_project(self, project_id, tenant_id):
+        if project_id == self.project_id and tenant_id == self.tenant_id:
+            return self.project
         return None
 
     async def list_crawl_pages(self, crawl_id):
@@ -225,3 +243,25 @@ def test_content_optimization_topic_skips_generic_slug_segments():
     )
 
     assert service._topic(page) == "Change"
+
+
+def test_content_optimization_prompt_includes_project_context_without_competitor_claims():
+    repository = FakeContentOptimizationRepository()
+    service = ContentOptimizationService(FakeDB(), llm_service=FakeLLMService())
+    prompt = service._build_prompt(
+        repository.page,
+        [],
+        None,
+        [],
+        (
+            "Project context for this SEO run:\n"
+            "- Business name: Acme Clinic\n"
+            "- Competitor URLs: https://competitor.example\n"
+            "- Competitor limitation: these URLs are manually provided context only. "
+            "Do not crawl them, analyze them, or claim competitor findings."
+        ),
+    )
+
+    assert "Business name: Acme Clinic" in prompt
+    assert "manually provided context only" in prompt
+    assert "claim competitor findings" in prompt

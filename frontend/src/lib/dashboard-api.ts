@@ -70,6 +70,24 @@ type Envelope<T, K extends string> = Record<K, T[]> & {
   has_more: boolean;
 };
 
+export type ProjectContextPayload = {
+  name: string;
+  domain: string;
+  description?: string | null;
+  keywords?: string[] | null;
+  business_name?: string | null;
+  industry?: string | null;
+  target_location?: string | null;
+  target_audience?: string | null;
+  primary_services?: string[] | null;
+  target_keywords?: string[] | null;
+  competitor_urls?: string[] | null;
+  seo_goal?: string | null;
+  brand_tone?: string | null;
+};
+
+export type ProjectContextUpdatePayload = Partial<ProjectContextPayload>;
+
 async function unwrap<T>(request: Promise<AxiosResponse<T>>): Promise<T> {
   const response = await request;
   return response.data;
@@ -77,12 +95,9 @@ async function unwrap<T>(request: Promise<AxiosResponse<T>>): Promise<T> {
 
 export const dashboardApi = {
   listProjects: async () => unwrap<Project[]>(projectAPI.list()),
-  createProject: (payload: {
-    name: string;
-    domain: string;
-    description?: string;
-    keywords?: string[];
-  }) => unwrap<Project>(projectAPI.create(payload)),
+  createProject: (payload: ProjectContextPayload) => unwrap<Project>(projectAPI.create(payload)),
+  updateProject: (projectId: UUID, payload: ProjectContextUpdatePayload) =>
+    unwrap<Project>(projectAPI.update(projectId, payload)),
 
   seoRuns: {
     start: (projectId: UUID) =>

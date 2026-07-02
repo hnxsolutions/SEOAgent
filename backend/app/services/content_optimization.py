@@ -22,6 +22,7 @@ from app.models.content_optimization import (
 )
 from app.repositories.content_optimization import ContentOptimizationRepository, SuggestionKey
 from app.services.local_llm import LocalLLMError, LocalLLMService, OllamaRequestError
+from app.services.project_context import project_context_prompt
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +72,10 @@ class ContentOptimizationService:
             crawl = await self.repository.get_crawl(run.crawl_id, run.tenant_id)
             if not crawl:
                 raise ValueError("Crawl not found")
+            project = None
+            if getattr(crawl, "project_id", None):
+                project = await self.repository.get_project(crawl.project_id, crawl.tenant_id)
+            project_context_text = project_context_prompt(project)
 
             pages = await self.repository.list_crawl_pages(run.crawl_id)
             audit_issues = await self.repository.list_audit_issues(run.crawl_id, run.tenant_id)
@@ -95,6 +100,7 @@ class ContentOptimizationService:
                     issues_by_page[page.id],
                     scores_by_page.get(page.id),
                     link_recs_by_page[page.id],
+                    project_context_text,
                 )
                 records = self._suggestion_records(
                     run=run,
@@ -190,8 +196,9 @@ class ContentOptimizationService:
         audit_issues: List[Any],
         page_score: Optional[Any],
         internal_link_recs: List[Any],
+        project_context_text: str,
     ) -> Dict[str, Any]:
-        prompt = self._build_prompt(page, audit_issues, page_score, internal_link_recs)
+        prompt = self._build_prompt(page, audit_issues, page_score, internal_link_recs, project_context_text)
         try:
             response = await self.llm_service.generate(
                 prompt,
@@ -287,6 +294,7 @@ class ContentOptimizationService:
         audit_issues: List[Any],
         page_score: Optional[Any],
         internal_link_recs: List[Any],
+        project_context_text: str = "",
     ) -> str:
         issue_types = [issue.issue_type for issue in audit_issues]
         text_preview = re.sub(r"\s+", " ", (page.text_content or "").strip())[:1500]
@@ -306,6 +314,7 @@ class ContentOptimizationService:
             "You are a local SEO assistant running inside a self-hosted app. "
             "Return only valid JSON. Do not rewrite the whole page. Do not create spammy or keyword-stuffed text. "
             "Make concise page-level suggestions only; no visual/UI/UX changes and no publishing instructions.\n\n"
+            f"{project_context_text}\n\n"
             "JSON shape:\n"
             "{\n"
             '  "seo_title": {"suggested_value": "30-60 char title", "reason": "...", "confidence_score": 0-100},\n'

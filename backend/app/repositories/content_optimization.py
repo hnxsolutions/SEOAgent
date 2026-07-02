@@ -18,6 +18,7 @@ from app.models.content_optimization import (
 )
 from app.models.crawl import CrawlJob, CrawlPage
 from app.models.internal_linking import InternalLinkRecommendation
+from app.models.project import Project
 
 SuggestionKey = Tuple[UUID, ContentOptimizationSuggestionType, str]
 
@@ -33,6 +34,12 @@ class ContentOptimizationRepository:
         if tenant_id:
             query = query.where(CrawlJob.tenant_id == tenant_id)
         result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_project(self, project_id: UUID, tenant_id: UUID) -> Optional[Project]:
+        result = await self.db.execute(
+            select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)
+        )
         return result.scalar_one_or_none()
 
     async def list_crawl_pages(self, crawl_id: UUID) -> List[CrawlPage]:

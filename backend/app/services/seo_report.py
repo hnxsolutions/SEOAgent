@@ -19,6 +19,7 @@ from app.models.semantic import SemanticIndexedContent, SemanticIndexRun
 from app.models.seo_run import SeoRun
 from app.models.serp import SerpSnapshot
 from app.schemas.seo_run import SeoReportActionItem, SeoReportSection, SeoRunReportResponse
+from app.services.project_context import business_context_items, has_business_context, project_business_context
 
 
 class SeoReportService:
@@ -50,6 +51,8 @@ class SeoReportService:
         )
         planner_tasks = await self._list_planner_tasks(getattr(run, "planner_run_id", None), tenant_id)
         data_availability = await self._data_availability(getattr(run, "project_id"), tenant_id)
+        business_context = project_business_context(project)
+        competitor_urls = self._list_values(getattr(project, "competitor_urls", None))
 
         issue_counts_by_severity = self._count_dict(getattr(audit, "issue_counts_by_severity", None))
         issue_counts_by_category = self._count_dict(getattr(audit, "issue_counts_by_category", None))
@@ -98,6 +101,8 @@ class SeoReportService:
             planner_tasks_count=planner_tasks_count,
             planner_tasks=planner_tasks,
             data_availability=data_availability,
+            business_context=business_context,
+            competitor_urls=competitor_urls,
             next_actions=next_actions,
         )
 
@@ -361,8 +366,19 @@ class SeoReportService:
         planner_tasks_count: int,
         planner_tasks: list[dict[str, Any]],
         data_availability: dict[str, str],
+        business_context: dict[str, Any],
+        competitor_urls: list[str],
         next_actions: list[SeoReportActionItem],
     ) -> list[SeoReportSection]:
+        business_items = business_context_items(business_context)
+        if competitor_urls:
+            business_items.append(
+                {
+                    "label": "Competitor URLs",
+                    "value": competitor_urls,
+                    "note": "Manual context only; not crawled or analyzed.",
+                }
+            )
         return [
             SeoReportSection(
                 key="executive_summary",
@@ -376,6 +392,26 @@ class SeoReportService:
                     "content_suggestions": content_suggestions_count,
                     "planner_tasks": planner_tasks_count,
                 },
+            ),
+            SeoReportSection(
+                key="business_context",
+                title="Business Context",
+                summary=(
+                    "Project onboarding context is available for this report. "
+                    "Competitor URLs, when present, are manual context only and were not crawled or analyzed."
+                    if has_business_context(business_context)
+                    else "No project onboarding context was provided. Existing projects still run normally."
+                ),
+                status="available" if has_business_context(business_context) else "no_data",
+                metrics={
+                    "fields_provided": sum(
+                        1
+                        for value in business_context.values()
+                        if (isinstance(value, list) and value) or (isinstance(value, str) and value != "Not provided")
+                    ),
+                    "competitor_context": "Manual only" if competitor_urls else "Not provided",
+                },
+                items=business_items,
             ),
             SeoReportSection(
                 key="audit",
@@ -639,6 +675,17 @@ class SeoReportService:
         if not isinstance(value, dict):
             return {}
         return {str(key): int(count or 0) for key, count in value.items()}
+
+    def _list_values(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_values = value.replace("\n", ",").split(",")
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+        return [str(item).strip() for item in raw_values if str(item or "").strip()]
 
     def _website_url(self, value: str) -> str:
         domain = (value or "").strip()

@@ -64,9 +64,37 @@ export const userAPI = {
 export const projectAPI = {
   list: () => api.get('/projects/'),
   get: (id: string) => api.get(`/projects/${id}`),
-  create: (data: { name: string; domain: string; description?: string; keywords?: string[] }) =>
+  create: (data: {
+    name: string;
+    domain: string;
+    description?: string | null;
+    keywords?: string[] | null;
+    business_name?: string | null;
+    industry?: string | null;
+    target_location?: string | null;
+    target_audience?: string | null;
+    primary_services?: string[] | null;
+    target_keywords?: string[] | null;
+    competitor_urls?: string[] | null;
+    seo_goal?: string | null;
+    brand_tone?: string | null;
+  }) =>
     api.post('/projects/', data),
-  update: (id: string, data: { name?: string; description?: string; keywords?: string[] }) =>
+  update: (id: string, data: {
+    name?: string;
+    domain?: string;
+    description?: string | null;
+    keywords?: string[] | null;
+    business_name?: string | null;
+    industry?: string | null;
+    target_location?: string | null;
+    target_audience?: string | null;
+    primary_services?: string[] | null;
+    target_keywords?: string[] | null;
+    competitor_urls?: string[] | null;
+    seo_goal?: string | null;
+    brand_tone?: string | null;
+  }) =>
     api.put(`/projects/${id}`, data),
   delete: (id: string) => api.delete(`/projects/${id}`),
 };
