@@ -126,11 +126,27 @@ class SchedulerService:
         limit: int = 50,
     ) -> List[SeoScheduledRun]:
         await self._evaluate_ready_impact_experiments(now=now)
+        await self._run_due_gsc_monitors(tenant_id=tenant_id, now=now, limit=limit)
         due = await self.repository.due_schedules(self._naive_utc(now), tenant_id=tenant_id, limit=limit)
         runs = []
         for schedule in due:
             runs.append(await self.execute_schedule(schedule, manual_trigger=False))
         return runs
+
+    async def _run_due_gsc_monitors(
+        self,
+        tenant_id: Optional[UUID] = None,
+        now: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> None:
+        try:
+            await self.search_console_service_class(self.db).run_due_monitor_syncs(
+                tenant_id=tenant_id,
+                now=self._naive_utc(now),
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("Scheduled GSC monitor check failed", error=str(exc))
 
     async def _evaluate_ready_impact_experiments(self, now: Optional[datetime] = None) -> None:
         try:

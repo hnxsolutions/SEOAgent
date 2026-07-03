@@ -109,6 +109,7 @@ function DashboardReportContent() {
 function ReportView({ report }: { report: SeoRunReportResponse }) {
   const businessSection = report.sections.find((section) => section.key === 'business_context');
   const keywordBaselineSection = report.sections.find((section) => section.key === 'keyword_baseline');
+  const automaticGscSection = report.sections.find((section) => section.key === 'automatic_search_console');
   const contentSection = report.sections.find((section) => section.key === 'content_optimization');
   const plannerSection = report.sections.find((section) => section.key === 'weekly_planner');
   const realSearchSection = report.sections.find((section) => section.key === 'real_search_data');
@@ -195,6 +196,32 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
           ) : (
             <EmptyInline text="No manual keyword baseline provided." />
           )}
+        </div>
+      </ReportSection>
+
+      <ReportSection title="Automatic Search Console Performance" status={automaticGscSection?.status} summary={automaticGscSection?.summary}>
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {Object.entries(automaticGscSection?.metrics ?? {}).slice(0, 8).map(([key, value]) => (
+              <div key={key} className="rounded-md border bg-slate-50 px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">
+                  {formatLabel(key)}
+                </p>
+                <p className="mt-2 break-words text-sm font-medium text-slate-900">
+                  {readableValue(value)}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {(automaticGscSection?.items ?? []).length ? (
+              automaticGscSection!.items.slice(0, 10).map((item) => (
+                <SearchConsolePerformanceRow key={`${text(item.item_type)}-${text(item.id, text(item.query))}`} item={item} />
+              ))
+            ) : (
+              <EmptyInline text="No Search Console rows or opportunities are available yet." />
+            )}
+          </div>
         </div>
       </ReportSection>
 
@@ -402,6 +429,29 @@ function KeywordBaselineRow({ baseline }: { baseline: Record<string, unknown> })
       )}
       {baseline.notes ? (
         <p className="mt-2 text-xs text-muted-foreground">{text(baseline.notes)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchConsolePerformanceRow({ item }: { item: Record<string, unknown> }) {
+  const isOpportunity = text(item.item_type, '') === 'opportunity';
+  return (
+    <div className="rounded-md border bg-slate-50 px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={isOpportunity ? text(item.opportunity_type, 'opportunity') : 'performance'} />
+        {item.priority_score ? <PriorityBadge score={numberValue(item.priority_score)} /> : null}
+      </div>
+      <p className="mt-2 text-sm font-semibold text-slate-950">
+        {text(item.query, 'Search Console row')}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {isOpportunity
+          ? text(item.recommended_action, text(item.reason, 'Review this Search Console opportunity.'))
+          : `${Number(item.clicks ?? 0).toLocaleString()} clicks | ${Number(item.impressions ?? 0).toLocaleString()} impressions | Position ${numberValue(item.position)?.toFixed(1) ?? 'N/A'}`}
+      </p>
+      {item.page_url ? (
+        <p className="mt-2 break-words text-xs text-slate-500">{text(item.page_url)}</p>
       ) : null}
     </div>
   );

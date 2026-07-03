@@ -1,11 +1,14 @@
 """Search Console API mode and CSV fallback routes."""
 from datetime import date, datetime
 from typing import Annotated, Optional
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.search_console import (
@@ -15,6 +18,12 @@ from app.models.search_console import (
     SearchConsolePeriod,
 )
 from app.schemas.search_console import (
+    GSCConnectionListResponse,
+    GSCConnectionResponse,
+    GSCMonitorRunResponse,
+    GSCMonitorSettingsResponse,
+    GSCMonitorSettingsUpdate,
+    GSCProjectPropertyResponse,
     GoogleOAuthCallbackResponse,
     GoogleOAuthStartResponse,
     GSCPropertyListResponse,
@@ -55,20 +64,61 @@ async def start_google_connection(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
 
-@router.get("/connections/google/callback", response_model=GoogleOAuthCallbackResponse)
+@router.get("/connections/google/callback")
 async def google_connection_callback(
     code: str,
     state: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    as_json: bool = Query(False),
 ):
     """Handle the Google OAuth callback and store the encrypted refresh token."""
     service = SearchConsoleService(db)
     try:
-        return await service.handle_oauth_callback(code, state)
+        result = await service.handle_oauth_callback(code, state)
+        if as_json:
+            return GoogleOAuthCallbackResponse(
+                connection_id=result["connection_id"],
+                tenant_id=result["tenant_id"],
+                status=_enum_value(result["status"]),
+                scopes=result["scopes"],
+            )
+        params = urlencode({"gsc": "connected", "connectionId": str(result["connection_id"])})
+        return RedirectResponse(f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/search-console?{params}")
     except SearchConsoleOAuthError as exc:
+        if not as_json:
+            params = urlencode({"gsc": "error", "message": str(exc)})
+            return RedirectResponse(f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/search-console?{params}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except SearchConsoleConfigurationError as exc:
+        if not as_json:
+            params = urlencode({"gsc": "error", "message": str(exc)})
+            return RedirectResponse(f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/search-console?{params}")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+
+
+@router.get("/connections", response_model=GSCConnectionListResponse)
+async def list_google_connections(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """List Google Search Console OAuth connections without exposing tokens."""
+    service = SearchConsoleService(db)
+    connections = await service.list_connections(_tenant_id(current_user))
+    return GSCConnectionListResponse(connections=connections)
+
+
+@router.delete("/connections/{connection_id}", response_model=GSCConnectionResponse)
+async def revoke_google_connection(
+    connection_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Revoke the local Search Console OAuth connection record."""
+    service = SearchConsoleService(db)
+    try:
+        return await service.disconnect_connection(_tenant_id(current_user), connection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.get("/properties", response_model=GSCPropertyListResponse)
@@ -76,7 +126,7 @@ async def list_gsc_properties(
     current_user: Annotated[dict, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     project_id: Optional[UUID] = Query(None),
-    refresh: bool = Query(False),
+    refresh: bool = Query(True),
 ):
     """List stored GSC properties, optionally refreshing from Google."""
     service = SearchConsoleService(db)
@@ -107,6 +157,64 @@ async def select_gsc_property(
         return await service.select_property(project_id, _tenant_id(current_user), payload.property_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/property/select", response_model=GSCPropertyResponse)
+async def select_gsc_property_alias(
+    project_id: UUID,
+    payload: GSCPropertySelectRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Select the Search Console property used by a project."""
+    return await select_gsc_property(project_id, payload, current_user, db)
+
+
+@router.get("/projects/{project_id}/property", response_model=GSCProjectPropertyResponse)
+async def get_project_gsc_property(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Return selected GSC property and monitor setting for a project."""
+    service = SearchConsoleService(db)
+    try:
+        return await service.selected_project_property(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.get("/projects/{project_id}/monitor", response_model=Optional[GSCMonitorSettingsResponse])
+async def get_project_gsc_monitor(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Return automatic Search Console monitor settings for a project."""
+    service = SearchConsoleService(db)
+    try:
+        return await service.get_monitor_setting(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.put("/projects/{project_id}/monitor", response_model=GSCMonitorSettingsResponse)
+async def update_project_gsc_monitor(
+    project_id: UUID,
+    payload: GSCMonitorSettingsUpdate,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Create or update automatic Search Console monitor settings."""
+    service = SearchConsoleService(db)
+    try:
+        return await service.update_monitor_setting(
+            project_id,
+            _tenant_id(current_user),
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post(
@@ -172,6 +280,18 @@ async def list_project_sync_jobs(
     service = SearchConsoleService(db)
     jobs = await service.list_sync_jobs(project_id, _tenant_id(current_user), limit=limit, offset=offset)
     return GSCSyncJobListResponse(sync_jobs=jobs, limit=limit, offset=offset, has_more=len(jobs) == limit)
+
+
+@router.post("/monitor/run-due", response_model=GSCMonitorRunResponse)
+async def run_due_gsc_monitors(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Run due Search Console monitor syncs for the current tenant."""
+    service = SearchConsoleService(db)
+    result = await service.run_due_monitor_syncs(tenant_id=_tenant_id(current_user), limit=limit)
+    return GSCMonitorRunResponse(due_count=result["due_count"], jobs=result["jobs"])
 
 
 @router.get("/projects/{project_id}/summary", response_model=SearchConsoleSummaryResponse)
@@ -374,3 +494,7 @@ def _date_to_datetime(value: Optional[date]) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value
     return datetime.combine(value, datetime.min.time())
+
+
+def _enum_value(value) -> str:
+    return str(getattr(value, "value", value))

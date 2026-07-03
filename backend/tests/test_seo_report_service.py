@@ -31,6 +31,7 @@ def patch_report_sources(
     content_suggestions=None,
     data_availability=None,
     keyword_baselines=None,
+    search_console_performance=None,
     project=None,
 ):
     project = project or SimpleNamespace(id=run.project_id, tenant_id=run.tenant_id, name="Acme", domain="example.com")
@@ -90,6 +91,28 @@ def patch_report_sources(
     )
     monkeypatch.setattr(service, "_list_content_suggestions", AsyncMock(return_value=content_suggestions or []))
     monkeypatch.setattr(service, "_list_keyword_baselines", AsyncMock(return_value=keyword_baselines or []))
+    monkeypatch.setattr(
+        service,
+        "_search_console_performance",
+        AsyncMock(
+            return_value=search_console_performance
+            or {
+                "status": "available",
+                "summary": "Latest Search Console sync has 10 clicks and 100 impressions from stored real Search Console data.",
+                "metrics": {"search_console": "Connected", "clicks": 10, "impressions": 100},
+                "items": [
+                    {
+                        "item_type": "performance_row",
+                        "query": "local seo services",
+                        "page_url": "https://example.com/services",
+                        "clicks": 10,
+                        "impressions": 100,
+                        "position": 9.5,
+                    }
+                ],
+            }
+        ),
+    )
     monkeypatch.setattr(
         service,
         "_list_planner_tasks",
@@ -158,6 +181,8 @@ async def test_completed_seo_run_returns_report(monkeypatch):
     assert report.next_actions
     business_section = next(section for section in report.sections if section.key == "business_context")
     assert business_section.title == "Business Context"
+    gsc_section = next(section for section in report.sections if section.key == "automatic_search_console")
+    assert gsc_section.status == "available"
 
 
 @pytest.mark.asyncio
@@ -192,6 +217,12 @@ async def test_report_gracefully_handles_missing_gsc_and_serp_data(monkeypatch):
             "ranking_data": "No real ranking data available",
             "serp": "No real ranking data available",
         },
+        search_console_performance={
+            "status": "not_connected",
+            "summary": "Search Console is not connected.",
+            "metrics": {"search_console": "Not connected"},
+            "items": [],
+        },
     )
 
     report = await service.generate_report(run.id, tenant_id)
@@ -218,6 +249,12 @@ async def test_no_fake_ranking_data_appears(monkeypatch):
             "search_console": "Not connected",
             "ranking_data": "No real ranking data available",
             "serp": "No real ranking data available",
+        },
+        search_console_performance={
+            "status": "not_connected",
+            "summary": "Search Console is not connected.",
+            "metrics": {"search_console": "Not connected"},
+            "items": [],
         },
     )
 

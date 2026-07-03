@@ -15,7 +15,15 @@ from app.models.crawl import CrawlJob, CrawlPage
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask
 from app.models.project import Project
-from app.models.search_console import GSCProperty, SearchConsoleImport, SearchConsoleImportStatus
+from app.models.search_console import (
+    GSCProperty,
+    SearchConsoleImport,
+    SearchConsoleImportStatus,
+    SearchConsoleOpportunity,
+    SearchConsoleOpportunityStatus,
+    SearchConsolePeriod,
+    SearchConsoleRow,
+)
 from app.models.semantic import SemanticIndexedContent, SemanticIndexRun
 from app.models.seo_run import SeoRun
 from app.models.serp import SerpSnapshot
@@ -53,6 +61,7 @@ class SeoReportService:
         planner_tasks = await self._list_planner_tasks(getattr(run, "planner_run_id", None), tenant_id)
         data_availability = await self._data_availability(getattr(run, "project_id"), tenant_id)
         keyword_baselines = await self._list_keyword_baselines(getattr(run, "project_id"), tenant_id)
+        search_console_performance = await self._search_console_performance(getattr(run, "project_id"), tenant_id)
         business_context = project_business_context(project)
         competitor_urls = self._list_values(getattr(project, "competitor_urls", None))
 
@@ -103,6 +112,7 @@ class SeoReportService:
             planner_tasks_count=planner_tasks_count,
             planner_tasks=planner_tasks,
             keyword_baselines=keyword_baselines,
+            search_console_performance=search_console_performance,
             data_availability=data_availability,
             business_context=business_context,
             competitor_urls=competitor_urls,
@@ -363,6 +373,109 @@ class SeoReportService:
             "serp": "Manual SERP snapshots available" if int(snapshot_count or 0) else "No real ranking data available",
         }
 
+    async def _search_console_performance(self, project_id: Optional[UUID], tenant_id: UUID) -> dict[str, Any]:
+        if not project_id:
+            return {
+                "status": "not_connected",
+                "summary": "Search Console is not connected.",
+                "metrics": {"search_console": "Not connected"},
+                "items": [],
+            }
+        property_result = await self.db.execute(
+            select(GSCProperty)
+            .where(
+                GSCProperty.project_id == project_id,
+                GSCProperty.tenant_id == tenant_id,
+                GSCProperty.is_selected.is_(True),
+            )
+            .order_by(GSCProperty.updated_at.desc())
+            .limit(1)
+        )
+        selected_property = property_result.scalar_one_or_none()
+        if not selected_property:
+            return {
+                "status": "not_connected",
+                "summary": "Search Console is not connected.",
+                "metrics": {"search_console": "Not connected"},
+                "items": [],
+            }
+
+        import_result = await self.db.execute(
+            select(SearchConsoleImport)
+            .where(
+                SearchConsoleImport.project_id == project_id,
+                SearchConsoleImport.tenant_id == tenant_id,
+                SearchConsoleImport.status == SearchConsoleImportStatus.completed,
+                SearchConsoleImport.rows_imported > 0,
+            )
+            .order_by(SearchConsoleImport.created_at.desc())
+            .limit(1)
+        )
+        latest_import = import_result.scalar_one_or_none()
+        if not latest_import:
+            return {
+                "status": "no_data",
+                "summary": "Search Console is connected, but no real ranking data has been synced yet.",
+                "metrics": {
+                    "search_console": "Connected",
+                    "property": selected_property.site_url,
+                    "ranking_data": "No real ranking data available",
+                },
+                "items": [],
+            }
+
+        rows_result = await self.db.execute(
+            select(SearchConsoleRow)
+            .where(
+                SearchConsoleRow.import_id == latest_import.id,
+                SearchConsoleRow.tenant_id == tenant_id,
+                SearchConsoleRow.period == SearchConsolePeriod.current,
+            )
+            .order_by(SearchConsoleRow.impressions.desc(), SearchConsoleRow.clicks.desc())
+            .limit(50)
+        )
+        rows = list(rows_result.scalars().all())
+        clicks = sum(int(row.clicks or 0) for row in rows)
+        impressions = sum(int(row.impressions or 0) for row in rows)
+        weighted_position = sum(float(row.position or 0) * max(int(row.impressions or 0), 1) for row in rows)
+        position_denominator = sum(max(int(row.impressions or 0), 1) for row in rows)
+
+        opp_result = await self.db.execute(
+            select(SearchConsoleOpportunity)
+            .where(
+                SearchConsoleOpportunity.project_id == project_id,
+                SearchConsoleOpportunity.tenant_id == tenant_id,
+                SearchConsoleOpportunity.status == SearchConsoleOpportunityStatus.suggested,
+            )
+            .order_by(SearchConsoleOpportunity.priority_score.desc(), SearchConsoleOpportunity.updated_at.desc())
+            .limit(5)
+        )
+        opportunities = list(opp_result.scalars().all())
+        items = [self._search_console_row_item(row) for row in rows[:8]]
+        items.extend(self._search_console_opportunity_item(opportunity) for opportunity in opportunities)
+
+        return {
+            "status": "available",
+            "summary": (
+                f"Latest Search Console sync has {clicks:,} clicks and {impressions:,} impressions "
+                "from stored real Search Console data."
+            ),
+            "metrics": {
+                "search_console": "Connected",
+                "property": selected_property.site_url,
+                "source_type": self._enum_value(getattr(latest_import, "source_type", "")),
+                "date_start": getattr(latest_import, "date_start", None),
+                "date_end": getattr(latest_import, "date_end", None),
+                "rows_imported": int(getattr(latest_import, "rows_imported", 0) or 0),
+                "clicks": clicks,
+                "impressions": impressions,
+                "average_ctr": round(clicks / impressions, 6) if impressions else None,
+                "average_position": round(weighted_position / position_denominator, 3) if rows else None,
+                "last_synced_at": getattr(selected_property, "last_synced_at", None),
+            },
+            "items": items,
+        }
+
     def _sections(
         self,
         *,
@@ -380,6 +493,7 @@ class SeoReportService:
         planner_tasks_count: int,
         planner_tasks: list[dict[str, Any]],
         keyword_baselines: list[dict[str, Any]],
+        search_console_performance: dict[str, Any],
         data_availability: dict[str, str],
         business_context: dict[str, Any],
         competitor_urls: list[str],
@@ -508,6 +622,14 @@ class SeoReportService:
                 status="available" if keyword_baselines else "no_data",
                 metrics=keyword_baseline_metrics,
                 items=keyword_baselines,
+            ),
+            SeoReportSection(
+                key="automatic_search_console",
+                title="Automatic Search Console Performance",
+                summary=search_console_performance["summary"],
+                status=search_console_performance["status"],
+                metrics=search_console_performance["metrics"],
+                items=search_console_performance["items"],
             ),
             SeoReportSection(
                 key="real_search_data",
@@ -676,6 +798,38 @@ class SeoReportService:
             "captured_at": getattr(baseline, "captured_at", None),
         }
 
+    def _search_console_row_item(self, row: SearchConsoleRow) -> dict[str, Any]:
+        return {
+            "id": str(getattr(row, "id")),
+            "item_type": "performance_row",
+            "query": getattr(row, "query", ""),
+            "page_url": getattr(row, "page_url", ""),
+            "clicks": int(getattr(row, "clicks", 0) or 0),
+            "impressions": int(getattr(row, "impressions", 0) or 0),
+            "ctr": float(getattr(row, "ctr", 0) or 0),
+            "position": float(getattr(row, "position", 0) or 0),
+            "country": getattr(row, "country", None),
+            "device": getattr(row, "device", None),
+            "date_start": getattr(row, "date_start", None),
+            "date_end": getattr(row, "date_end", None),
+        }
+
+    def _search_console_opportunity_item(self, opportunity: SearchConsoleOpportunity) -> dict[str, Any]:
+        return {
+            "id": str(getattr(opportunity, "id")),
+            "item_type": "opportunity",
+            "query": getattr(opportunity, "query", ""),
+            "page_url": getattr(opportunity, "page_url", ""),
+            "opportunity_type": self._enum_value(getattr(opportunity, "opportunity_type", "")),
+            "reason": getattr(opportunity, "reason", ""),
+            "recommended_action": getattr(opportunity, "recommended_action", ""),
+            "priority_score": float(getattr(opportunity, "priority_score", 0) or 0),
+            "current_clicks": int(getattr(opportunity, "current_clicks", 0) or 0),
+            "current_impressions": int(getattr(opportunity, "current_impressions", 0) or 0),
+            "current_ctr": float(getattr(opportunity, "current_ctr", 0) or 0),
+            "current_position": float(getattr(opportunity, "current_position", 0) or 0),
+        }
+
     def _planner_task_item(self, task: SeoTask) -> dict[str, Any]:
         return {
             "id": str(getattr(task, "id")),
@@ -721,6 +875,8 @@ class SeoReportService:
 
     def _item_text(self, item: dict[str, Any]) -> str:
         for fields in (
+            ("query", "page_url", "clicks", "impressions", "position"),
+            ("opportunity_type", "query", "recommended_action", "page_url"),
             ("keyword", "target_location", "device", "current_position", "current_url"),
             ("title", "severity", "url"),
             ("title", "priority", "target_page_url"),

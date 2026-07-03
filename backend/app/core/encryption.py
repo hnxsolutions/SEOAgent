@@ -14,7 +14,8 @@ class TokenEncryptionError(RuntimeError):
 
 
 def _fernet() -> Fernet:
-    digest = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+    seed = settings.GSC_TOKEN_ENCRYPTION_KEY or settings.SECRET_KEY
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
     key = base64.urlsafe_b64encode(digest)
     return Fernet(key)
 

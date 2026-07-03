@@ -22,6 +22,7 @@ from app.models.blog_publishing import (
 )
 from app.models.search_console import (
     GSCConnection,
+    GSCProjectMonitorSetting,
     GSCProperty,
     GSCSyncJob,
     SearchConsoleImport,
@@ -92,6 +93,7 @@ __all__ = [
     "SearchConsoleOpportunity",
     "GSCConnection",
     "GSCProperty",
+    "GSCProjectMonitorSetting",
     "GSCSyncJob",
     "GSCUrlInspectionRun",
     "GSCUrlInspectionResult",

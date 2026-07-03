@@ -1,7 +1,7 @@
 'use client';
 
-import { Play, RefreshCw } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ExternalLink, Play, RefreshCw, Save, Unplug } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { ActionNotice, EmptyState, ErrorState, LoadingBlock } from '@/components/dashboard/DashboardStates';
@@ -22,6 +22,14 @@ export default function SearchConsolePage() {
   const [priorityFilter, setPriorityFilter] = useState(allFilter);
   const [notice, setNotice] = useState<string>();
   const [actionLoadingId, setActionLoadingId] = useState<UUID>();
+  const [selectedPropertyId, setSelectedPropertyId] = useState('');
+  const [monitorEnabled, setMonitorEnabled] = useState(false);
+  const [frequencyDays, setFrequencyDays] = useState<1 | 2 | 3>(1);
+  const [lookbackDays, setLookbackDays] = useState(28);
+  const [syncQueries, setSyncQueries] = useState(true);
+  const [syncPages, setSyncPages] = useState(true);
+  const [syncPairs, setSyncPairs] = useState(true);
+  const [syncCountryDevice, setSyncCountryDevice] = useState(true);
 
   const summaryQuery = useQuery({
     queryKey: ['gsc-summary', projectId],
@@ -30,9 +38,23 @@ export default function SearchConsolePage() {
     retry: false,
   });
 
+  const connectionsQuery = useQuery({
+    queryKey: ['gsc-connections'],
+    queryFn: dashboardApi.searchConsole.connections,
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
   const propertiesQuery = useQuery({
     queryKey: ['gsc-properties', projectId],
     queryFn: () => dashboardApi.searchConsole.properties(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const selectedPropertyQuery = useQuery({
+    queryKey: ['gsc-selected-property', projectId],
+    queryFn: () => dashboardApi.searchConsole.selectedProperty(projectId!),
     enabled: Boolean(projectId),
     retry: false,
   });
@@ -57,6 +79,84 @@ export default function SearchConsolePage() {
     queryFn: () => dashboardApi.searchConsole.opportunities(latestImport!.id),
     enabled: Boolean(latestImport?.id),
     retry: false,
+  });
+
+  const selectedProperty =
+    selectedPropertyQuery.data?.selected_property ??
+    propertiesQuery.data?.properties.find((property) => property.is_selected);
+  const monitorSetting = selectedPropertyQuery.data?.monitor_setting ?? summaryQuery.data?.monitor_setting;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gscStatus = params.get('gsc');
+    if (gscStatus === 'connected') {
+      setNotice('Google Search Console connected.');
+    }
+    if (gscStatus === 'error') {
+      setNotice(params.get('message') ?? 'Google Search Console connection failed.');
+    }
+  }, []);
+
+  useEffect(() => {
+    setSelectedPropertyId(selectedProperty?.id ?? '');
+  }, [selectedProperty?.id]);
+
+  useEffect(() => {
+    if (!monitorSetting) return;
+    setMonitorEnabled(Boolean(monitorSetting.enabled));
+    setFrequencyDays((monitorSetting.frequency_days === 2 || monitorSetting.frequency_days === 3 ? monitorSetting.frequency_days : 1) as 1 | 2 | 3);
+    setLookbackDays(monitorSetting.lookback_days ?? 28);
+    setSyncQueries(Boolean(monitorSetting.sync_queries));
+    setSyncPages(Boolean(monitorSetting.sync_pages));
+    setSyncPairs(Boolean(monitorSetting.sync_query_page_pairs));
+    setSyncCountryDevice(Boolean(monitorSetting.sync_country_device));
+  }, [monitorSetting]);
+
+  const startOAuthMutation = useMutation({
+    mutationFn: dashboardApi.searchConsole.startOAuth,
+    onSuccess: (response) => {
+      window.location.href = response.authorization_url;
+    },
+    onError: (error) => {
+      setNotice(error instanceof Error ? error.message : 'Google OAuth is not configured.');
+    },
+  });
+
+  const disconnectMutation = useMutation({
+    mutationFn: dashboardApi.searchConsole.disconnect,
+    onSuccess: async () => {
+      setNotice('Search Console connection revoked locally.');
+      await invalidateSearchConsole(projectId, queryClient);
+    },
+  });
+
+  const selectPropertyMutation = useMutation({
+    mutationFn: (propertyId: UUID) => dashboardApi.searchConsole.selectProperty(projectId!, propertyId),
+    onSuccess: async () => {
+      setNotice('Search Console property selected.');
+      await invalidateSearchConsole(projectId, queryClient);
+    },
+  });
+
+  const monitorMutation = useMutation({
+    mutationFn: () =>
+      dashboardApi.searchConsole.updateMonitor(projectId!, {
+        property_id: selectedPropertyId || undefined,
+        enabled: monitorEnabled,
+        frequency_days: frequencyDays,
+        lookback_days: lookbackDays,
+        sync_queries: syncQueries,
+        sync_pages: syncPages,
+        sync_query_page_pairs: syncPairs,
+        sync_country_device: syncCountryDevice,
+      }),
+    onSuccess: async (setting) => {
+      setNotice(setting.enabled ? 'Automatic Search Console monitor saved.' : 'Search Console monitor disabled.');
+      await invalidateSearchConsole(projectId, queryClient);
+    },
+    onError: (error) => {
+      setNotice(error instanceof Error ? error.message : 'Monitor settings could not be saved.');
+    },
   });
 
   const syncMutation = useMutation({
@@ -99,7 +199,6 @@ export default function SearchConsolePage() {
   ]);
 
   const typeOptions = Object.keys(summaryQuery.data?.opportunities_by_type ?? {}).sort();
-  const selectedProperty = propertiesQuery.data?.properties.find((property) => property.is_selected);
 
   if (!projectId) {
     return <EmptyState title="Select a project" description="Search Console data is scoped to one project." />;
@@ -134,6 +233,15 @@ export default function SearchConsolePage() {
           <Button
             type="button"
             variant="outline"
+            onClick={() => startOAuthMutation.mutate()}
+            disabled={startOAuthMutation.isPending || propertiesQuery.data?.oauth_enabled === false}
+          >
+            <ExternalLink className="mr-2 h-4 w-4" />
+            Connect Google
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             onClick={() => {
               void invalidateSearchConsole(projectId, queryClient);
             }}
@@ -154,10 +262,11 @@ export default function SearchConsolePage() {
 
       <ActionNotice message={notice} />
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-5">
+        <SummaryBlock label="Clicks" value={summaryQuery.data?.clicks ?? 0} />
+        <SummaryBlock label="Impressions" value={summaryQuery.data?.impressions ?? 0} />
         <SummaryBlock label="Rows imported" value={summaryQuery.data?.rows_count ?? 0} />
         <SummaryBlock label="Opportunities" value={summaryQuery.data?.opportunities_count ?? 0} />
-        <SummaryBlock label="Open" value={summaryQuery.data?.opportunities_by_status?.open ?? 0} />
         <div className="rounded-lg border bg-white p-4">
           <p className="text-sm text-muted-foreground">Latest sync</p>
           <div className="mt-3">
@@ -172,18 +281,77 @@ export default function SearchConsolePage() {
             <h3 className="text-base font-semibold text-slate-950">Connection</h3>
           </div>
           <div className="space-y-4 p-5 text-sm">
-            <div>
-              <p className="text-muted-foreground">OAuth</p>
-              <p className="mt-1 font-medium text-slate-950">
-                {propertiesQuery.data?.oauth_enabled ? 'Enabled' : 'Not configured'}
-              </p>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-muted-foreground">OAuth</p>
+                <p className="mt-1 font-medium text-slate-950">
+                  {propertiesQuery.data?.oauth_enabled ? 'Configured' : 'Not configured'}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => startOAuthMutation.mutate()}
+                disabled={startOAuthMutation.isPending || propertiesQuery.data?.oauth_enabled === false}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Connect
+              </Button>
             </div>
-            <div>
-              <p className="text-muted-foreground">Selected property</p>
-              <p className="mt-1 break-words font-medium text-slate-950">
-                {selectedProperty?.site_url ?? 'No property selected'}
-              </p>
+
+            <div className="space-y-2">
+              {(connectionsQuery.data?.connections ?? []).map((connection) => (
+                <div key={connection.id} className="flex items-center justify-between gap-3 rounded-md border bg-slate-50 px-3 py-2">
+                  <div>
+                    <StatusBadge status={connection.status} />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {formatDateTime(connection.updated_at ?? connection.created_at)}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => disconnectMutation.mutate(connection.id)}
+                    disabled={disconnectMutation.isPending}
+                  >
+                    <Unplug className="mr-2 h-4 w-4" />
+                    Revoke
+                  </Button>
+                </div>
+              ))}
+              {!connectionsQuery.data?.connections.length ? (
+                <p className="rounded-md border border-dashed bg-white px-3 py-3 text-sm text-muted-foreground">
+                  No OAuth connection stored.
+                </p>
+              ) : null}
             </div>
+
+            <label className="block text-sm font-medium text-slate-700">
+              Selected property
+              <select
+                className="mt-1 h-10 w-full rounded-md border bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-ring"
+                value={selectedPropertyId}
+                onChange={(event) => setSelectedPropertyId(event.target.value)}
+              >
+                <option value="">Select property</option>
+                {(propertiesQuery.data?.properties ?? []).map((property) => (
+                  <option key={property.id} value={property.id}>
+                    {property.site_url}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => selectedPropertyId && selectPropertyMutation.mutate(selectedPropertyId)}
+              disabled={!selectedPropertyId || selectPropertyMutation.isPending}
+            >
+              Save selected property
+            </Button>
+
             <div>
               <p className="text-muted-foreground">Latest import</p>
               <p className="mt-1 font-medium text-slate-950">
@@ -226,6 +394,72 @@ export default function SearchConsolePage() {
         </div>
       </section>
 
+      <section className="rounded-lg border bg-white">
+        <div className="flex flex-col gap-3 border-b px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-slate-950">Automatic monitor</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Scheduled sync uses the official Search Console API and finalized data ending three days ago.
+            </p>
+          </div>
+          <StatusBadge status={monitorSetting?.enabled ? 'enabled' : 'disabled'} />
+        </div>
+        <div className="grid gap-4 p-5 lg:grid-cols-[0.85fr_1.15fr]">
+          <div className="space-y-4">
+            <label className="flex items-center gap-3 text-sm font-medium text-slate-800">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300"
+                checked={monitorEnabled}
+                onChange={(event) => setMonitorEnabled(event.target.checked)}
+              />
+              Enable automatic sync
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm font-medium text-slate-700">
+                Frequency
+                <select
+                  className="mt-1 h-10 w-full rounded-md border bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={frequencyDays}
+                  onChange={(event) => setFrequencyDays(Number(event.target.value) as 1 | 2 | 3)}
+                >
+                  <option value={1}>Every day</option>
+                  <option value={2}>Every 2 days</option>
+                  <option value={3}>Every 3 days</option>
+                </select>
+              </label>
+              <label className="text-sm font-medium text-slate-700">
+                Lookback days
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  className="mt-1 h-10 w-full rounded-md border bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={lookbackDays}
+                  onChange={(event) => setLookbackDays(Math.max(1, Math.min(90, Number(event.target.value) || 1)))}
+                />
+              </label>
+            </div>
+            <Button
+              type="button"
+              onClick={() => monitorMutation.mutate()}
+              disabled={monitorMutation.isPending || !selectedPropertyId}
+            >
+              <Save className="mr-2 h-4 w-4" />
+              Save monitor
+            </Button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <MonitorToggle label="Queries" checked={syncQueries} onChange={setSyncQueries} />
+            <MonitorToggle label="Pages" checked={syncPages} onChange={setSyncPages} />
+            <MonitorToggle label="Query + page + date" checked={syncPairs} onChange={setSyncPairs} />
+            <MonitorToggle label="Device + country" checked={syncCountryDevice} onChange={setSyncCountryDevice} />
+            <MonitorFact label="Last scheduled" value={monitorSetting?.last_scheduled_at ? formatDateTime(monitorSetting.last_scheduled_at) : 'Not scheduled'} />
+            <MonitorFact label="Next sync" value={monitorSetting?.next_sync_at ? formatDateTime(monitorSetting.next_sync_at) : 'Not scheduled'} />
+          </div>
+        </div>
+      </section>
+
       <section className="space-y-4">
         <div className="flex flex-col gap-3 rounded-lg border bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -259,6 +493,37 @@ function SummaryBlock({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg border bg-white p-4">
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className="mt-2 text-3xl font-semibold">{value.toLocaleString()}</p>
+    </div>
+  );
+}
+
+function MonitorToggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (_checked: boolean) => void;
+}) {
+  return (
+    <label className="flex min-h-11 items-center gap-3 rounded-md border bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800">
+      <input
+        type="checkbox"
+        className="h-4 w-4 rounded border-slate-300"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      {label}
+    </label>
+  );
+}
+
+function MonitorFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border bg-slate-50 px-3 py-3">
+      <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">{label}</p>
+      <p className="mt-2 text-sm font-medium text-slate-900">{value}</p>
     </div>
   );
 }
@@ -304,11 +569,13 @@ async function invalidateSearchConsole(projectId: UUID | undefined, queryClient:
   if (!projectId) return;
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ['gsc-summary', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['gsc-connections'] }),
     queryClient.invalidateQueries({ queryKey: ['gsc-properties', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['gsc-selected-property', projectId] }),
     queryClient.invalidateQueries({ queryKey: ['gsc-sync-jobs', projectId] }),
     queryClient.invalidateQueries({ queryKey: ['gsc-imports', projectId] }),
   ]);
 }
 
-const statusOptions = ['open', 'approved', 'rejected', 'completed'];
+const statusOptions = ['suggested', 'approved', 'rejected', 'completed'];
 const priorityOptions = ['critical', 'high', 'medium', 'low'];

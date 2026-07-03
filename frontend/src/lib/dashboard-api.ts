@@ -20,6 +20,9 @@ import type {
   GeoAeoRun,
   GeoAeoSummary,
   GoogleOAuthStart,
+  GSCConnection,
+  GSCMonitorPayload,
+  GSCMonitorSetting,
   GSCProperty,
   GSCSyncJob,
   ImpactExperiment,
@@ -208,14 +211,28 @@ export const dashboardApi = {
   searchConsole: {
     startOAuth: () =>
       unwrap<GoogleOAuthStart>(api.post('/search-console/connections/google/start')),
+    connections: () =>
+      unwrap<{ connections: GSCConnection[] }>(api.get('/search-console/connections')),
+    disconnect: (connectionId: UUID) =>
+      unwrap<GSCConnection>(api.delete(`/search-console/connections/${connectionId}`)),
     summary: (projectId: UUID) =>
       unwrap<SearchConsoleSummary>(
         api.get(`/search-console/projects/${projectId}/summary`)
       ),
     properties: (projectId: UUID) =>
       unwrap<{ properties: GSCProperty[]; oauth_enabled: boolean }>(
-        api.get('/search-console/properties', { params: { project_id: projectId } })
+        api.get('/search-console/properties', { params: { project_id: projectId, refresh: true } })
       ),
+    selectedProperty: (projectId: UUID) =>
+      unwrap<{ selected_property?: GSCProperty | null; monitor_setting?: GSCMonitorSetting | null }>(
+        api.get(`/search-console/projects/${projectId}/property`)
+      ),
+    monitor: (projectId: UUID) =>
+      unwrap<GSCMonitorSetting | null>(api.get(`/search-console/projects/${projectId}/monitor`)),
+    updateMonitor: (projectId: UUID, payload: GSCMonitorPayload) =>
+      unwrap<GSCMonitorSetting>(api.put(`/search-console/projects/${projectId}/monitor`, payload)),
+    runDueMonitors: () =>
+      unwrap<{ due_count: number; jobs: GSCSyncJob[] }>(api.post('/search-console/monitor/run-due')),
     sync: (projectId: UUID) =>
       unwrap<GSCSyncJob>(
         api.post(`/search-console/projects/${projectId}/sync`, {
@@ -238,7 +255,7 @@ export const dashboardApi = {
       ),
     selectProperty: (projectId: UUID, propertyId: UUID) =>
       unwrap<GSCProperty>(
-        api.post(`/search-console/projects/${projectId}/property`, {
+        api.post(`/search-console/projects/${projectId}/property/select`, {
           property_id: propertyId,
         })
       ),

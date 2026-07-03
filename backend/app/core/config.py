@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
     APP_URL: str = "http://localhost"
+    FRONTEND_URL: str = "http://localhost:3000"
     
     # Database
     POSTGRES_USER: str = "seoagent"
@@ -79,7 +80,9 @@ class Settings(BaseSettings):
     # Free Google Search Console API integration. Optional until configured.
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_OAUTH_REDIRECT_URI: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = None
+    GSC_TOKEN_ENCRYPTION_KEY: Optional[str] = None
     GSC_SYNC_ROW_LIMIT: int = 25000
     GSC_HIGH_IMPRESSIONS_THRESHOLD: int = 100
     GSC_POSITION_DROP_THRESHOLD: float = 2.0
@@ -144,6 +147,11 @@ class Settings(BaseSettings):
         if self.QDRANT_URL:
             return self.QDRANT_URL
         return f"http://{self.QDRANT_HOST}:{self.QDRANT_PORT}"
+
+    @property
+    def google_oauth_redirect_uri(self) -> Optional[str]:
+        """Canonical Google OAuth callback URL with backward-compatible env support."""
+        return self.GOOGLE_OAUTH_REDIRECT_URI or self.GOOGLE_REDIRECT_URI
 
 
 @lru_cache()

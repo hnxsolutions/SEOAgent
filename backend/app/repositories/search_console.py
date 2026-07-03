@@ -21,6 +21,7 @@ from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnection,
     GSCConnectionStatus,
+    GSCProjectMonitorSetting,
     GSCProperty,
     GSCPropertySourceType,
     GSCPropertyType,
@@ -127,6 +128,14 @@ class SearchConsoleRepository:
             query = query.where(GSCConnection.status == GSCConnectionStatus.connected)
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
+
+    async def list_connections(self, tenant_id: UUID) -> List[GSCConnection]:
+        result = await self.db.execute(
+            select(GSCConnection)
+            .where(GSCConnection.tenant_id == tenant_id, GSCConnection.provider == "google")
+            .order_by(GSCConnection.updated_at.desc(), GSCConnection.created_at.desc())
+        )
+        return list(result.scalars().all())
 
     async def set_connection_status(
         self,
@@ -274,6 +283,76 @@ class SearchConsoleRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_monitor_setting(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+    ) -> Optional[GSCProjectMonitorSetting]:
+        result = await self.db.execute(
+            select(GSCProjectMonitorSetting).where(
+                GSCProjectMonitorSetting.project_id == project_id,
+                GSCProjectMonitorSetting.tenant_id == tenant_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_monitor_setting(
+        self,
+        *,
+        project_id: UUID,
+        tenant_id: UUID,
+        property_id: UUID,
+        values: dict,
+    ) -> GSCProjectMonitorSetting:
+        setting = await self.get_monitor_setting(project_id, tenant_id)
+        now = datetime.utcnow()
+        if setting:
+            setting.property_id = property_id
+            for key, value in values.items():
+                if hasattr(setting, key):
+                    setattr(setting, key, value)
+            setting.updated_at = now
+        else:
+            setting = GSCProjectMonitorSetting(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                property_id=property_id,
+                **values,
+            )
+            self.db.add(setting)
+        await self.db.flush()
+        await self.db.refresh(setting)
+        return setting
+
+    async def due_monitor_settings(
+        self,
+        now: datetime,
+        tenant_id: Optional[UUID] = None,
+        limit: int = 50,
+    ) -> List[GSCProjectMonitorSetting]:
+        query = select(GSCProjectMonitorSetting).where(
+            GSCProjectMonitorSetting.enabled.is_(True),
+            or_(GSCProjectMonitorSetting.next_sync_at.is_(None), GSCProjectMonitorSetting.next_sync_at <= now),
+        )
+        if tenant_id:
+            query = query.where(GSCProjectMonitorSetting.tenant_id == tenant_id)
+        query = query.order_by(GSCProjectMonitorSetting.next_sync_at.asc().nullsfirst()).limit(limit)
+        result = await self.db.execute(query)
+        return list(result.scalars().all())
+
+    async def update_monitor_schedule(
+        self,
+        setting: GSCProjectMonitorSetting,
+        last_scheduled_at: datetime,
+        next_sync_at: datetime,
+    ) -> GSCProjectMonitorSetting:
+        setting.last_scheduled_at = last_scheduled_at
+        setting.next_sync_at = next_sync_at
+        setting.updated_at = datetime.utcnow()
+        await self.db.flush()
+        await self.db.refresh(setting)
+        return setting
+
     async def create_import(
         self,
         tenant_id: UUID,
@@ -409,6 +488,27 @@ class SearchConsoleRepository:
         await self.db.flush()
         await self.db.refresh(job)
         return job
+
+    async def scheduled_job_exists(
+        self,
+        *,
+        project_id: UUID,
+        tenant_id: UUID,
+        property_id: UUID,
+        date_start: datetime,
+        date_end: datetime,
+    ) -> bool:
+        count = await self.db.scalar(
+            select(func.count(GSCSyncJob.id)).where(
+                GSCSyncJob.project_id == project_id,
+                GSCSyncJob.tenant_id == tenant_id,
+                GSCSyncJob.property_id == property_id,
+                GSCSyncJob.sync_type == GSCSyncType.scheduled,
+                GSCSyncJob.date_start == date_start,
+                GSCSyncJob.date_end == date_end,
+            )
+        )
+        return bool(count)
 
     async def get_sync_job(self, job_id: UUID, tenant_id: Optional[UUID] = None) -> Optional[GSCSyncJob]:
         query = select(GSCSyncJob).where(GSCSyncJob.id == job_id)
@@ -655,6 +755,8 @@ class SearchConsoleRepository:
         )
         latest_job = latest_job_result.scalar_one_or_none()
         selected_property = await self.selected_property(project_id, tenant_id)
+        monitor_setting = await self.get_monitor_setting(project_id, tenant_id)
+        performance = await self.performance_summary(project_id, tenant_id)
         return {
             "project_id": project_id,
             "imports_count": int(imports_count or 0),
@@ -665,6 +767,61 @@ class SearchConsoleRepository:
             "latest_sync_job_id": latest_job.id if latest_job else None,
             "latest_sync_status": latest_job.status if latest_job else None,
             "selected_property": selected_property,
+            "monitor_setting": monitor_setting,
+            **performance,
+        }
+
+    async def latest_completed_import(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+    ) -> Optional[SearchConsoleImport]:
+        result = await self.db.execute(
+            select(SearchConsoleImport)
+            .where(
+                SearchConsoleImport.project_id == project_id,
+                SearchConsoleImport.tenant_id == tenant_id,
+                SearchConsoleImport.status == SearchConsoleImportStatus.completed,
+                SearchConsoleImport.rows_imported > 0,
+            )
+            .order_by(SearchConsoleImport.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def rows_for_latest_completed_import(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        period: SearchConsolePeriod = SearchConsolePeriod.current,
+        limit: int = 5000,
+    ) -> List[SearchConsoleRow]:
+        latest_import = await self.latest_completed_import(project_id, tenant_id)
+        if not latest_import:
+            return []
+        result = await self.db.execute(
+            select(SearchConsoleRow)
+            .where(
+                SearchConsoleRow.import_id == latest_import.id,
+                SearchConsoleRow.tenant_id == tenant_id,
+                SearchConsoleRow.period == period,
+            )
+            .order_by(SearchConsoleRow.impressions.desc(), SearchConsoleRow.clicks.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def performance_summary(self, project_id: UUID, tenant_id: UUID) -> dict:
+        rows = await self.rows_for_latest_completed_import(project_id, tenant_id, limit=5000)
+        clicks = sum(int(row.clicks or 0) for row in rows)
+        impressions = sum(int(row.impressions or 0) for row in rows)
+        weighted_position = sum(float(row.position or 0) * max(int(row.impressions or 0), 1) for row in rows)
+        position_denominator = sum(max(int(row.impressions or 0), 1) for row in rows)
+        return {
+            "clicks": clicks,
+            "impressions": impressions,
+            "average_ctr": round(clicks / impressions, 6) if impressions else None,
+            "average_position": round(weighted_position / position_denominator, 3) if rows else None,
         }
 
     def _url_key(self, url: str) -> str:

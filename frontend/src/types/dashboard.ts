@@ -338,6 +338,11 @@ export type SearchConsoleSummary = {
   latest_sync_job_id?: UUID | null;
   latest_sync_status?: string | null;
   selected_property?: GSCProperty | null;
+  monitor_setting?: GSCMonitorSetting | null;
+  clicks: number;
+  impressions: number;
+  average_ctr?: number | null;
+  average_position?: number | null;
   top_opportunities: SearchConsoleOpportunity[];
 };
 
@@ -370,6 +375,47 @@ export type GSCProperty = {
   last_synced_at?: string | null;
   created_at: string;
   updated_at?: string | null;
+};
+
+export type GSCConnection = {
+  id: UUID;
+  tenant_id: UUID;
+  user_id: UUID;
+  provider: string;
+  scopes?: string[] | null;
+  status: string;
+  metadata_json?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type GSCMonitorSetting = {
+  id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  property_id: UUID;
+  enabled: boolean;
+  frequency_days: 1 | 2 | 3 | number;
+  lookback_days: number;
+  sync_queries: boolean;
+  sync_pages: boolean;
+  sync_query_page_pairs: boolean;
+  sync_country_device: boolean;
+  last_scheduled_at?: string | null;
+  next_sync_at?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type GSCMonitorPayload = {
+  property_id?: UUID;
+  enabled?: boolean;
+  frequency_days?: 1 | 2 | 3;
+  lookback_days?: number;
+  sync_queries?: boolean;
+  sync_pages?: boolean;
+  sync_query_page_pairs?: boolean;
+  sync_country_device?: boolean;
 };
 
 export type GSCSyncJob = {

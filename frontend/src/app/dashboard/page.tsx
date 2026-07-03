@@ -40,6 +40,7 @@ import type {
   CrawlJob,
   KeywordBaseline,
   Project,
+  SearchConsoleSummary,
   SemanticIndexRun,
   SeoRun,
   SeoRunListResponse,
@@ -350,7 +351,7 @@ export default function DashboardOverviewPage() {
         <DashboardMetricCard
           title="Search Console Opportunities"
           value={gscSummaryQuery.data?.opportunities_count ?? 0}
-          detail={gscSummaryQuery.data?.latest_sync_status ?? 'No latest sync'}
+          detail={searchConsoleCardDetail(gscSummaryQuery.data)}
           icon={SearchCheck}
           href="/dashboard/search-console"
           tone="amber"
@@ -472,7 +473,7 @@ export default function DashboardOverviewPage() {
             <StatusRow
               label="Search Console"
               status={gscSummaryQuery.data?.latest_sync_status}
-              detail={`${gscSummaryQuery.data?.rows_count ?? 0} rows imported`}
+              detail={searchConsoleRuntimeDetail(gscSummaryQuery.data)}
             />
           </div>
         </div>
@@ -929,6 +930,24 @@ function contextText(value?: string | null) {
 
 function contextList(value?: string[] | null) {
   return value?.length ? value.join(', ') : 'Not provided';
+}
+
+function searchConsoleCardDetail(summary?: SearchConsoleSummary) {
+  if (!summary?.selected_property) return 'Not connected';
+  const monitor = summary.monitor_setting?.enabled ? 'Monitor on' : 'Monitor off';
+  if (summary.impressions > 0) {
+    return `${monitor}, ${summary.clicks.toLocaleString()} clicks, ${summary.impressions.toLocaleString()} impressions`;
+  }
+  return `${monitor}, no synced rows yet`;
+}
+
+function searchConsoleRuntimeDetail(summary?: SearchConsoleSummary) {
+  if (!summary?.selected_property) return 'No property selected';
+  const property = summary.selected_property.site_url;
+  if (summary.rows_count > 0) {
+    return `${summary.rows_count.toLocaleString()} rows, ${summary.impressions.toLocaleString()} impressions`;
+  }
+  return `Selected: ${property}`;
 }
 
 function summarizeKeywordBaselines(baselines: KeywordBaseline[]) {

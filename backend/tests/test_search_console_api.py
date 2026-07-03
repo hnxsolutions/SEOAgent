@@ -40,6 +40,42 @@ def make_property(tenant_id, project_id, connection_id, property_id=None):
     )
 
 
+def make_connection(tenant_id, user_id, connection_id):
+    now = datetime.utcnow()
+    return SimpleNamespace(
+        id=connection_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        provider="google",
+        scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+        status=GSCConnectionStatus.connected,
+        metadata_json={},
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def make_monitor(tenant_id, project_id, property_id):
+    now = datetime.utcnow()
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        property_id=property_id,
+        enabled=True,
+        frequency_days=1,
+        lookback_days=28,
+        sync_queries=True,
+        sync_pages=True,
+        sync_query_page_pairs=True,
+        sync_country_device=True,
+        last_scheduled_at=None,
+        next_sync_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def make_sync_job(tenant_id, project_id, connection_id, property_id, import_id=None):
     now = datetime.utcnow()
     return SimpleNamespace(
@@ -155,6 +191,8 @@ def test_search_console_api_smoke_flow(monkeypatch):
     import_id = uuid4()
     opportunity_id = uuid4()
     prop = make_property(tenant_id, project_id, connection_id, property_id)
+    connection = make_connection(tenant_id, user_id, connection_id)
+    monitor = make_monitor(tenant_id, project_id, property_id)
     sync_job = make_sync_job(tenant_id, project_id, connection_id, property_id, import_id)
     import_record = make_import(tenant_id, project_id, import_id)
     row = make_row(tenant_id, project_id, import_id)
@@ -183,6 +221,13 @@ def test_search_console_api_smoke_flow(monkeypatch):
                 "scopes": ["https://www.googleapis.com/auth/webmasters.readonly"],
             }
 
+        async def list_connections(self, tenant_id):
+            return [connection]
+
+        async def disconnect_connection(self, tenant_id, connection_id):
+            connection.status = GSCConnectionStatus.revoked
+            return connection
+
         async def list_properties(self, **kwargs):
             return [prop]
 
@@ -190,6 +235,17 @@ def test_search_console_api_smoke_flow(monkeypatch):
             prop.project_id = project_id
             prop.id = property_id
             return prop
+
+        async def selected_project_property(self, project_id, tenant_id):
+            return {"selected_property": prop, "monitor_setting": monitor}
+
+        async def get_monitor_setting(self, project_id, tenant_id):
+            return monitor
+
+        async def update_monitor_setting(self, project_id, tenant_id, values):
+            for key, value in values.items():
+                setattr(monitor, key, value)
+            return monitor
 
         async def register_manual_property(self, project_id, tenant_id, site_url, property_type, notes=None):
             prop.project_id = project_id
@@ -206,6 +262,9 @@ def test_search_console_api_smoke_flow(monkeypatch):
 
         async def list_sync_jobs(self, project_id, tenant_id, limit=100, offset=0):
             return [sync_job]
+
+        async def run_due_monitor_syncs(self, tenant_id=None, limit=50):
+            return {"due_count": 1, "jobs": [sync_job]}
 
         async def summary(self, project_id, tenant_id):
             return {
@@ -258,9 +317,24 @@ def test_search_console_api_smoke_flow(monkeypatch):
     assert start_response.status_code == 200
     assert "webmasters.readonly" in start_response.json()["authorization_url"]
 
-    callback_response = client.get("/search-console/connections/google/callback?code=abc&state=xyz")
+    callback_response = client.get(
+        "/search-console/connections/google/callback?code=abc&state=xyz",
+        follow_redirects=False,
+    )
+    assert callback_response.status_code == 307
+
+    callback_response = client.get("/search-console/connections/google/callback?code=abc&state=xyz&as_json=true")
     assert callback_response.status_code == 200
     assert callback_response.json()["connection_id"] == str(connection_id)
+
+    connections_response = client.get("/search-console/connections")
+    assert connections_response.status_code == 200
+    assert connections_response.json()["connections"][0]["id"] == str(connection_id)
+
+    disconnect_response = client.delete(f"/search-console/connections/{connection_id}")
+    assert disconnect_response.status_code == 200
+    assert disconnect_response.json()["status"] == "revoked"
+    connection.status = GSCConnectionStatus.connected
 
     properties_response = client.get("/search-console/properties?refresh=true")
     assert properties_response.status_code == 200
@@ -272,6 +346,28 @@ def test_search_console_api_smoke_flow(monkeypatch):
     )
     assert select_response.status_code == 200
     assert select_response.json()["is_selected"] is True
+
+    select_alias_response = client.post(
+        f"/search-console/projects/{project_id}/property/select",
+        json={"property_id": str(property_id)},
+    )
+    assert select_alias_response.status_code == 200
+    assert select_alias_response.json()["id"] == str(property_id)
+
+    selected_response = client.get(f"/search-console/projects/{project_id}/property")
+    assert selected_response.status_code == 200
+    assert selected_response.json()["monitor_setting"]["enabled"] is True
+
+    monitor_response = client.get(f"/search-console/projects/{project_id}/monitor")
+    assert monitor_response.status_code == 200
+    assert monitor_response.json()["frequency_days"] == 1
+
+    update_monitor_response = client.put(
+        f"/search-console/projects/{project_id}/monitor",
+        json={"enabled": True, "frequency_days": 2, "lookback_days": 7},
+    )
+    assert update_monitor_response.status_code == 200
+    assert update_monitor_response.json()["frequency_days"] == 2
 
     manual_response = client.post(
         f"/search-console/projects/{project_id}/property/manual",
@@ -291,6 +387,10 @@ def test_search_console_api_smoke_flow(monkeypatch):
     jobs_response = client.get(f"/search-console/projects/{project_id}/sync-jobs")
     assert jobs_response.status_code == 200
     assert jobs_response.json()["sync_jobs"][0]["rows_fetched"] == 4
+
+    due_response = client.post("/search-console/monitor/run-due")
+    assert due_response.status_code == 200
+    assert due_response.json()["due_count"] == 1
 
     summary_response = client.get(f"/search-console/projects/{project_id}/summary")
     assert summary_response.status_code == 200

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.search_console import (
     GSCComparisonWindow,
+    GSCConnectionStatus,
     GSCSyncJobStatus,
     GSCSyncType,
     GSCPropertySourceType,
@@ -31,6 +32,24 @@ class GoogleOAuthCallbackResponse(BaseModel):
     tenant_id: UUID
     status: str
     scopes: List[str]
+
+
+class GSCConnectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
+
+    id: UUID
+    tenant_id: UUID
+    user_id: UUID
+    provider: str
+    scopes: Optional[List[str]] = None
+    status: GSCConnectionStatus
+    metadata_json: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class GSCConnectionListResponse(BaseModel):
+    connections: List[GSCConnectionResponse]
 
 
 class GSCPropertyResponse(BaseModel):
@@ -58,6 +77,42 @@ class GSCPropertyListResponse(BaseModel):
 
 class GSCPropertySelectRequest(BaseModel):
     property_id: UUID
+
+
+class GSCMonitorSettingsUpdate(BaseModel):
+    property_id: Optional[UUID] = None
+    enabled: Optional[bool] = None
+    frequency_days: Optional[int] = Field(None, ge=1, le=3)
+    lookback_days: Optional[int] = Field(None, ge=1, le=90)
+    sync_queries: Optional[bool] = None
+    sync_pages: Optional[bool] = None
+    sync_query_page_pairs: Optional[bool] = None
+    sync_country_device: Optional[bool] = None
+
+
+class GSCMonitorSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
+
+    id: UUID
+    tenant_id: UUID
+    project_id: UUID
+    property_id: UUID
+    enabled: bool
+    frequency_days: int
+    lookback_days: int
+    sync_queries: bool
+    sync_pages: bool
+    sync_query_page_pairs: bool
+    sync_country_device: bool
+    last_scheduled_at: Optional[datetime] = None
+    next_sync_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class GSCProjectPropertyResponse(BaseModel):
+    selected_property: Optional[GSCPropertyResponse] = None
+    monitor_setting: Optional[GSCMonitorSettingsResponse] = None
 
 
 class GSCPropertyManualCreateRequest(BaseModel):
@@ -102,6 +157,11 @@ class GSCSyncJobListResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool = False
+
+
+class GSCMonitorRunResponse(BaseModel):
+    due_count: int
+    jobs: List[GSCSyncJobResponse] = Field(default_factory=list)
 
 
 class SearchConsoleImportResponse(BaseModel):
@@ -223,4 +283,9 @@ class SearchConsoleSummaryResponse(BaseModel):
     latest_sync_job_id: Optional[UUID] = None
     latest_sync_status: Optional[str] = None
     selected_property: Optional[GSCPropertyResponse] = None
+    monitor_setting: Optional[GSCMonitorSettingsResponse] = None
+    clicks: int = 0
+    impressions: int = 0
+    average_ctr: Optional[float] = None
+    average_position: Optional[float] = None
     top_opportunities: List[SearchConsoleOpportunityResponse] = Field(default_factory=list)

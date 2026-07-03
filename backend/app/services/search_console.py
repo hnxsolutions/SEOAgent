@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from app.core.config import settings
-from app.core.encryption import decrypt_secret, encrypt_secret
+from app.core.encryption import TokenEncryptionError, decrypt_secret, encrypt_secret
 from app.models.search_console import (
     GSCComparisonWindow,
     GSCConnectionStatus,
@@ -81,13 +81,13 @@ class GoogleSearchConsoleClient:
 
     @property
     def credentials_configured(self) -> bool:
-        return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET and settings.GOOGLE_REDIRECT_URI)
+        return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET and settings.google_oauth_redirect_uri)
 
     def _require_credentials(self) -> None:
         if not self.credentials_configured:
             raise SearchConsoleConfigurationError(
                 "Google Search Console OAuth is disabled until GOOGLE_CLIENT_ID, "
-                "GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI are configured."
+                "GOOGLE_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI are configured."
             )
 
     def build_authorization_url(self, state: str) -> str:
@@ -95,7 +95,7 @@ class GoogleSearchConsoleClient:
         self._require_credentials()
         params = {
             "client_id": settings.GOOGLE_CLIENT_ID,
-            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "redirect_uri": settings.google_oauth_redirect_uri,
             "response_type": "code",
             "scope": GSC_SCOPE,
             "access_type": "offline",
@@ -111,7 +111,7 @@ class GoogleSearchConsoleClient:
             "code": code,
             "client_id": settings.GOOGLE_CLIENT_ID,
             "client_secret": settings.GOOGLE_CLIENT_SECRET,
-            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "redirect_uri": settings.google_oauth_redirect_uri,
             "grant_type": "authorization_code",
         }
         return await self._post_token(data)
@@ -347,7 +347,7 @@ class SearchConsoleOpportunityAnalyzer:
         candidates: List[dict] = []
         expected_ctr = self._expected_ctr(row["position"])
         ctr_gap = max(expected_ctr - row["ctr"], 0)
-        if row["impressions"] >= self.high_impressions_threshold and row["ctr"] < expected_ctr * 0.65:
+        if row["impressions"] >= self.high_impressions_threshold and row["ctr"] < 0.02:
             candidates.append(
                 self._candidate(
                     row,
@@ -675,6 +675,18 @@ class SearchConsoleService:
             "scopes": scopes,
         }
 
+    async def list_connections(self, tenant_id: UUID):
+        return await self.repository.list_connections(tenant_id)
+
+    async def disconnect_connection(self, tenant_id: UUID, connection_id: UUID):
+        connection = await self.repository.get_connection(connection_id, tenant_id, include_failed=True)
+        if not connection:
+            raise ValueError("Google Search Console connection not found")
+        connection = await self.repository.set_connection_status(connection, GSCConnectionStatus.revoked)
+        await self.db.commit()
+        await self.db.refresh(connection)
+        return connection
+
     async def list_properties(
         self,
         tenant_id: UUID,
@@ -697,9 +709,91 @@ class SearchConsoleService:
         if not project:
             raise ValueError("Project not found")
         prop = await self.repository.select_property(project_id, tenant_id, property_id)
+        monitor = await self.repository.get_monitor_setting(project_id, tenant_id)
+        if monitor:
+            monitor.property_id = prop.id
+            monitor.updated_at = datetime.utcnow()
         await self.db.commit()
         await self.db.refresh(prop)
         return prop
+
+    async def selected_project_property(self, project_id: UUID, tenant_id: UUID) -> dict:
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        return {
+            "selected_property": await self.repository.selected_property(project_id, tenant_id),
+            "monitor_setting": await self.repository.get_monitor_setting(project_id, tenant_id),
+        }
+
+    async def get_monitor_setting(self, project_id: UUID, tenant_id: UUID):
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        return await self.repository.get_monitor_setting(project_id, tenant_id)
+
+    async def update_monitor_setting(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        values: dict,
+    ):
+        project = await self.repository.get_project(project_id, tenant_id)
+        if not project:
+            raise ValueError("Project not found")
+        existing = await self.repository.get_monitor_setting(project_id, tenant_id)
+        selected = await self.repository.selected_property(project_id, tenant_id)
+        property_id = values.pop("property_id", None) or getattr(existing, "property_id", None) or getattr(selected, "id", None)
+        if not property_id:
+            raise ValueError("Select a Search Console property before enabling monitoring")
+        prop = await self.repository.get_property(property_id, tenant_id)
+        if not prop:
+            raise ValueError("GSC property not found")
+        if prop.project_id and prop.project_id != project_id:
+            raise ValueError("GSC property belongs to a different project")
+        if values.get("enabled") is True and (prop.source_type == GSCPropertySourceType.manual or not prop.connection_id):
+            raise ValueError("Automatic monitoring requires an OAuth Search Console property. Manual properties can still use CSV imports.")
+
+        if "frequency_days" not in values or values["frequency_days"] is None:
+            values["frequency_days"] = getattr(existing, "frequency_days", 1) or 1
+        if int(values["frequency_days"]) not in {1, 2, 3}:
+            raise ValueError("frequency_days must be 1, 2, or 3")
+        if "lookback_days" not in values or values["lookback_days"] is None:
+            values["lookback_days"] = getattr(existing, "lookback_days", 28) or 28
+        if int(values["lookback_days"]) < 1 or int(values["lookback_days"]) > 90:
+            raise ValueError("lookback_days must be between 1 and 90")
+
+        for key, default in {
+            "enabled": False,
+            "sync_queries": True,
+            "sync_pages": True,
+            "sync_query_page_pairs": True,
+            "sync_country_device": True,
+        }.items():
+            if key not in values or values[key] is None:
+                values[key] = getattr(existing, key, default) if existing else default
+
+        enabled_now = bool(values["enabled"])
+        was_enabled = bool(getattr(existing, "enabled", False)) if existing else False
+        if enabled_now and (not was_enabled or not getattr(existing, "next_sync_at", None)):
+            values["next_sync_at"] = datetime.utcnow()
+        elif not enabled_now:
+            values["next_sync_at"] = None
+        else:
+            values["next_sync_at"] = getattr(existing, "next_sync_at", None)
+
+        setting = await self.repository.upsert_monitor_setting(
+            project_id=project_id,
+            tenant_id=tenant_id,
+            property_id=prop.id,
+            values=values,
+        )
+        if not prop.project_id:
+            prop.project_id = project_id
+            prop.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(setting)
+        return setting
 
     async def register_manual_property(
         self,
@@ -887,21 +981,20 @@ class SearchConsoleService:
             )
             await self.repository.set_import_status(import_record, SearchConsoleImportStatus.processing)
             access_token = await self._access_token(connection)
-            current_api_rows = await self.google_client.fetch_search_analytics(
+            monitor = await self.repository.get_monitor_setting(job.project_id, job.tenant_id) if job.project_id else None
+            current_api_rows = await self._fetch_search_analytics_groups(
                 access_token,
                 prop.site_url,
                 current_start,
                 current_end,
-                settings.GSC_SYNC_ROW_LIMIT,
-                dimensions=["query", "page", "date", "country", "device", "searchAppearance"],
+                monitor=monitor,
             )
-            previous_api_rows = await self.google_client.fetch_search_analytics(
+            previous_api_rows = await self._fetch_search_analytics_groups(
                 access_token,
                 prop.site_url,
                 previous_start,
                 previous_end,
-                settings.GSC_SYNC_ROW_LIMIT,
-                dimensions=["query", "page", "date", "country", "device", "searchAppearance"],
+                monitor=monitor,
             )
             rows = normalize_gsc_api_rows(
                 current_api_rows,
@@ -913,6 +1006,7 @@ class SearchConsoleService:
                 date_end=current_end,
                 comparison_window=job.comparison_window,
                 period=SearchConsolePeriod.current,
+                site_url=prop.site_url,
             )
             rows.extend(
                 normalize_gsc_api_rows(
@@ -925,6 +1019,7 @@ class SearchConsoleService:
                     date_end=previous_end,
                     comparison_window=job.comparison_window,
                     period=SearchConsolePeriod.previous,
+                    site_url=prop.site_url,
                 )
             )
             await self._attach_crawl_pages(rows, job.tenant_id, job.project_id)
@@ -971,6 +1066,107 @@ class SearchConsoleService:
             await self.db.refresh(job)
             return job
         return await self.run_sync_job(job.id, tenant_id=tenant_id)
+
+    async def run_due_monitor_syncs(
+        self,
+        tenant_id: Optional[UUID] = None,
+        now: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> dict:
+        now = now or datetime.utcnow()
+        due_settings = await self.repository.due_monitor_settings(now=now, tenant_id=tenant_id, limit=limit)
+        jobs: List[GSCSyncJob] = []
+        for setting in due_settings:
+            current_start, current_end = monitor_date_range(setting, today=now.date())
+            next_sync_at = now + timedelta(days=int(setting.frequency_days or 1))
+            try:
+                project = await self.repository.get_project(setting.project_id, setting.tenant_id)
+                prop = await self.repository.get_property(setting.property_id, setting.tenant_id)
+                if not project or not prop:
+                    await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                    await self.db.commit()
+                    continue
+                duplicate_exists = await self.repository.scheduled_job_exists(
+                    project_id=setting.project_id,
+                    tenant_id=setting.tenant_id,
+                    property_id=setting.property_id,
+                    date_start=current_start,
+                    date_end=current_end,
+                )
+                if duplicate_exists:
+                    await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                    await self.db.commit()
+                    continue
+                comparison_window = comparison_window_for_lookback(int(setting.lookback_days or 28))
+                if prop.source_type == GSCPropertySourceType.manual or not prop.connection_id:
+                    job = await self.repository.create_sync_job(
+                        tenant_id=setting.tenant_id,
+                        project_id=setting.project_id,
+                        connection_id=None,
+                        property_id=setting.property_id,
+                        sync_type=GSCSyncType.scheduled,
+                        date_start=current_start,
+                        date_end=current_end,
+                        comparison_window=comparison_window,
+                        status=GSCSyncJobStatus.failed,
+                        error_message=(
+                            "OAuth connection required for automatic Google Search Console sync. "
+                            "Use CSV fallback for manual properties."
+                        ),
+                    )
+                    jobs.append(job)
+                    await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                    await self.db.commit()
+                    continue
+                connection = await self.repository.get_connection(prop.connection_id, setting.tenant_id)
+                if not connection:
+                    job = await self.repository.create_sync_job(
+                        tenant_id=setting.tenant_id,
+                        project_id=setting.project_id,
+                        connection_id=prop.connection_id,
+                        property_id=setting.property_id,
+                        sync_type=GSCSyncType.scheduled,
+                        date_start=current_start,
+                        date_end=current_end,
+                        comparison_window=comparison_window,
+                        status=GSCSyncJobStatus.failed,
+                        error_message="OAuth connection required for automatic Google Search Console sync.",
+                    )
+                    jobs.append(job)
+                    await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                    await self.db.commit()
+                    continue
+                job = await self.repository.create_sync_job(
+                    tenant_id=setting.tenant_id,
+                    project_id=setting.project_id,
+                    connection_id=connection.id,
+                    property_id=setting.property_id,
+                    sync_type=GSCSyncType.scheduled,
+                    date_start=current_start,
+                    date_end=current_end,
+                    comparison_window=comparison_window,
+                )
+                await self.db.commit()
+                await self.db.refresh(job)
+                try:
+                    job = await self.run_sync_job(job.id, tenant_id=setting.tenant_id)
+                except (SearchConsoleError, ValueError):
+                    failed_job = await self.repository.get_sync_job(job.id, tenant_id=setting.tenant_id)
+                    if failed_job:
+                        job = failed_job
+                jobs.append(job)
+                await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                await self.db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "Scheduled GSC monitor sync failed",
+                    project_id=str(setting.project_id),
+                    tenant_id=str(setting.tenant_id),
+                    error=str(exc),
+                )
+                await self.repository.update_monitor_schedule(setting, now, next_sync_at)
+                await self.db.commit()
+        return {"due_count": len(due_settings), "jobs": jobs}
 
     async def analyze_import(
         self,
@@ -1076,14 +1272,64 @@ class SearchConsoleService:
         )
         return summary
 
+    async def _fetch_search_analytics_groups(
+        self,
+        access_token: str,
+        site_url: str,
+        date_start: datetime,
+        date_end: datetime,
+        monitor: Optional[Any] = None,
+    ) -> List[dict]:
+        dimension_sets: List[List[str]] = []
+        if getattr(monitor, "sync_queries", True):
+            dimension_sets.append(["query"])
+        if getattr(monitor, "sync_pages", True):
+            dimension_sets.append(["page"])
+        if getattr(monitor, "sync_query_page_pairs", True):
+            dimension_sets.extend([["query", "page"], ["query", "page", "date"]])
+        if getattr(monitor, "sync_country_device", True):
+            dimension_sets.append(["query", "page", "device", "country"])
+        if not dimension_sets:
+            dimension_sets.append(["query", "page"])
+
+        rows: List[dict] = []
+        seen_dimension_sets: set[tuple[str, ...]] = set()
+        for dimensions in dimension_sets:
+            key = tuple(dimensions)
+            if key in seen_dimension_sets:
+                continue
+            seen_dimension_sets.add(key)
+            rows.extend(
+                await self.google_client.fetch_search_analytics(
+                    access_token,
+                    site_url,
+                    date_start,
+                    date_end,
+                    settings.GSC_SYNC_ROW_LIMIT,
+                    dimensions=list(dimensions),
+                )
+            )
+        return rows
+
     async def _access_token(self, connection) -> str:
-        refresh_token = decrypt_secret(connection.encrypted_refresh_token)
-        tokens = await self.google_client.refresh_access_token(refresh_token)
-        expires_at = self._expires_at(tokens)
-        if expires_at:
-            connection.access_token_expires_at = expires_at
-        connection.status = GSCConnectionStatus.connected
-        return str(tokens["access_token"])
+        try:
+            refresh_token = decrypt_secret(connection.encrypted_refresh_token)
+            tokens = await self.google_client.refresh_access_token(refresh_token)
+            expires_at = self._expires_at(tokens)
+            if expires_at:
+                connection.access_token_expires_at = expires_at
+            connection.status = GSCConnectionStatus.connected
+            return str(tokens["access_token"])
+        except TokenEncryptionError as exc:
+            connection.status = GSCConnectionStatus.failed
+            connection.updated_at = datetime.utcnow()
+            await self.db.flush()
+            raise SearchConsoleOAuthError("Stored Google token could not be decrypted. Reconnect Search Console.") from exc
+        except SearchConsoleOAuthError:
+            connection.status = GSCConnectionStatus.expired
+            connection.updated_at = datetime.utcnow()
+            await self.db.flush()
+            raise
 
     async def _attach_crawl_pages(self, rows: List[dict], tenant_id: UUID, project_id: Optional[UUID]) -> None:
         urls = list({row["page_url"] for row in rows if row.get("page_url")})
@@ -1264,17 +1510,18 @@ def normalize_gsc_api_rows(
     date_end: datetime,
     comparison_window: Optional[GSCComparisonWindow],
     period: SearchConsolePeriod,
+    site_url: Optional[str] = None,
 ) -> List[dict]:
     """Normalize official GSC API search analytics rows."""
     rows: List[dict] = []
     for item in api_rows:
         keys = item.get("keys") or []
         dimensions = item.get("_dimensions") or ["query", "page"]
-        if len(keys) < 2:
+        if not keys:
             continue
         keyed = {str(dimension): str(keys[index]) for index, dimension in enumerate(dimensions) if index < len(keys)}
-        query = keyed.get("query") or str(keys[0])
-        page_url = keyed.get("page") or str(keys[1])
+        query = keyed.get("query") or "(page total)"
+        page_url = keyed.get("page") or site_url or "(site total)"
         row_start = date_start
         row_end = date_end
         if keyed.get("date"):
@@ -1333,6 +1580,22 @@ def comparison_dates(
         datetime.combine(previous_start_date, datetime.min.time()),
         datetime.combine(previous_end_date, datetime.min.time()),
     )
+
+
+def monitor_date_range(setting: Any, today: Optional[date] = None) -> Tuple[datetime, datetime]:
+    """Return finalized GSC monitor dates ending three days before today."""
+    today = today or date.today()
+    end_date = today - timedelta(days=3)
+    lookback_days = max(1, int(getattr(setting, "lookback_days", 28) or 28))
+    start_date = end_date - timedelta(days=lookback_days - 1)
+    return (
+        datetime.combine(start_date, datetime.min.time()),
+        datetime.combine(end_date, datetime.min.time()),
+    )
+
+
+def comparison_window_for_lookback(lookback_days: int) -> GSCComparisonWindow:
+    return GSCComparisonWindow.last_7_days if int(lookback_days or 28) <= 7 else GSCComparisonWindow.last_28_days
 
 
 def _row_values(

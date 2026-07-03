@@ -307,3 +307,33 @@ class GSCSyncJob(Base):
         Index("ix_gsc_sync_jobs_tenant_project", "tenant_id", "project_id"),
         Index("ix_gsc_sync_jobs_status", "status", "created_at"),
     )
+
+
+class GSCProjectMonitorSetting(Base):
+    """Per-project automatic Search Console monitor settings."""
+
+    __tablename__ = "gsc_project_monitor_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    property_id = Column(UUID(as_uuid=True), ForeignKey("gsc_properties.id"), nullable=False, index=True)
+
+    enabled = Column(Boolean, default=False, nullable=False, index=True)
+    frequency_days = Column(Integer, default=1, nullable=False)
+    lookback_days = Column(Integer, default=28, nullable=False)
+    sync_queries = Column(Boolean, default=True, nullable=False)
+    sync_pages = Column(Boolean, default=True, nullable=False)
+    sync_query_page_pairs = Column(Boolean, default=True, nullable=False)
+    sync_country_device = Column(Boolean, default=True, nullable=False)
+
+    last_scheduled_at = Column(DateTime, nullable=True, index=True)
+    next_sync_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_gsc_monitor_tenant_project", "tenant_id", "project_id", unique=True),
+        Index("ix_gsc_monitor_due", "enabled", "next_sync_at"),
+        Index("ix_gsc_monitor_project_property", "project_id", "property_id"),
+    )

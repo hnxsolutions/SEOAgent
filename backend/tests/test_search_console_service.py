@@ -13,6 +13,7 @@ from app.models.search_console import (
     GSCPropertyType,
     GSCSyncJobStatus,
     GSCSyncType,
+    SearchConsoleImportStatus,
     SearchConsoleOpportunityType,
     SearchConsolePeriod,
     SearchConsoleSourceType,
@@ -38,6 +39,9 @@ class FakeDB:
     async def commit(self):
         return None
 
+    async def flush(self):
+        return None
+
     async def refresh(self, _obj):
         return None
 
@@ -58,6 +62,25 @@ def make_manual_property(tenant_id, project_id, site_url="sc-domain:example.com"
         permission_level=None,
         notes="CSV fallback",
         is_selected=selected,
+        last_synced_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def make_oauth_property(tenant_id, project_id, connection_id, site_url="https://example.com/"):
+    now = datetime.utcnow()
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        connection_id=connection_id,
+        site_url=site_url,
+        source_type=GSCPropertySourceType.oauth,
+        property_type=GSCPropertyType.url_prefix,
+        permission_level="siteOwner",
+        notes=None,
+        is_selected=True,
         last_synced_at=None,
         created_at=now,
         updated_at=now,
@@ -606,3 +629,305 @@ async def test_duplicate_opportunities_update_instead_of_recreate():
 
 def test_url_normalization_removes_fragment_and_trailing_slash():
     assert normalize_url("HTTPS://Example.com/Services/#section") == "https://example.com/Services"
+
+
+def test_gsc_api_normalization_supports_query_only_rows():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    import_id = uuid4()
+    property_id = uuid4()
+    rows = normalize_gsc_api_rows(
+        [
+            {
+                "keys": ["Local SEO"],
+                "_dimensions": ["query"],
+                "clicks": 3,
+                "impressions": 120,
+                "ctr": 0.025,
+                "position": 6.4,
+            }
+        ],
+        tenant_id=tenant_id,
+        project_id=project_id,
+        import_id=import_id,
+        property_id=property_id,
+        date_start=datetime(2026, 5, 1),
+        date_end=datetime(2026, 5, 7),
+        comparison_window=GSCComparisonWindow.last_7_days,
+        period=SearchConsolePeriod.current,
+        site_url="https://example.com/",
+    )
+
+    assert rows[0]["query"] == "Local SEO"
+    assert rows[0]["page_url"] == "https://example.com/"
+    assert rows[0]["source_type"] == SearchConsoleSourceType.gsc_api
+
+
+@pytest.mark.asyncio
+async def test_monitor_settings_require_oauth_property_when_enabled():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    connection_id = uuid4()
+    prop = make_oauth_property(tenant_id, project_id, connection_id)
+
+    class FakeRepository:
+        def __init__(self):
+            self.setting = None
+
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def get_monitor_setting(self, project_id_arg, tenant_id_arg):
+            return self.setting
+
+        async def selected_property(self, project_id_arg, tenant_id_arg):
+            return prop
+
+        async def get_property(self, property_id, tenant_id_arg):
+            return prop if property_id == prop.id and tenant_id_arg == tenant_id else None
+
+        async def upsert_monitor_setting(self, **kwargs):
+            values = kwargs["values"]
+            now = datetime.utcnow()
+            self.setting = SimpleNamespace(
+                id=uuid4(),
+                tenant_id=kwargs["tenant_id"],
+                project_id=kwargs["project_id"],
+                property_id=kwargs["property_id"],
+                created_at=now,
+                updated_at=now,
+                last_scheduled_at=None,
+                **values,
+            )
+            return self.setting
+
+    repository = FakeRepository()
+    service = SearchConsoleService(FakeDB())
+    service.repository = repository
+
+    setting = await service.update_monitor_setting(
+        project_id,
+        tenant_id,
+        {"enabled": True, "frequency_days": 2, "lookback_days": 7},
+    )
+
+    assert setting.enabled is True
+    assert setting.frequency_days == 2
+    assert setting.lookback_days == 7
+    assert setting.next_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_due_monitor_sync_skips_duplicate_scheduled_job():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    property_id = uuid4()
+    now = datetime(2026, 7, 3, 9, 0, 0)
+    setting = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        property_id=property_id,
+        enabled=True,
+        frequency_days=1,
+        lookback_days=7,
+        next_sync_at=now,
+    )
+
+    class FakeRepository:
+        def __init__(self):
+            self.created_jobs = 0
+            self.updated_schedule = None
+
+        async def due_monitor_settings(self, now, tenant_id=None, limit=50):
+            return [setting]
+
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def get_property(self, property_id_arg, tenant_id_arg):
+            return make_oauth_property(tenant_id_arg, project_id, uuid4())
+
+        async def scheduled_job_exists(self, **kwargs):
+            return True
+
+        async def create_sync_job(self, **kwargs):
+            self.created_jobs += 1
+
+        async def update_monitor_schedule(self, setting_arg, last_scheduled_at, next_sync_at):
+            self.updated_schedule = (last_scheduled_at, next_sync_at)
+            return setting_arg
+
+    repository = FakeRepository()
+    service = SearchConsoleService(FakeDB())
+    service.repository = repository
+
+    result = await service.run_due_monitor_syncs(tenant_id=tenant_id, now=now)
+
+    assert result["due_count"] == 1
+    assert result["jobs"] == []
+    assert repository.created_jobs == 0
+    assert repository.updated_schedule[0] == now
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_fetches_safe_search_analytics_groups():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    connection_id = uuid4()
+    property_id = uuid4()
+    import_id = uuid4()
+    job_id = uuid4()
+    prop = make_oauth_property(tenant_id, project_id, connection_id)
+    prop.id = property_id
+    connection = SimpleNamespace(
+        id=connection_id,
+        tenant_id=tenant_id,
+        encrypted_refresh_token=encrypt_secret("refresh-token"),
+        status=GSCConnectionStatus.connected,
+        access_token_expires_at=None,
+    )
+    monitor = SimpleNamespace(
+        sync_queries=True,
+        sync_pages=True,
+        sync_query_page_pairs=True,
+        sync_country_device=True,
+    )
+    job = SimpleNamespace(
+        id=job_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        connection_id=connection_id,
+        property_id=property_id,
+        sync_type=GSCSyncType.scheduled,
+        date_start=datetime(2026, 6, 1),
+        date_end=datetime(2026, 6, 7),
+        comparison_window=GSCComparisonWindow.last_7_days,
+        status=GSCSyncJobStatus.queued,
+        rows_fetched=0,
+        opportunities_created=0,
+        opportunities_updated=0,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    class FakeGoogleClient:
+        credentials_configured = True
+
+        def __init__(self):
+            self.dimensions = []
+
+        async def refresh_access_token(self, refresh_token):
+            return {"access_token": "access-token", "expires_in": 3600}
+
+        async def fetch_search_analytics(self, access_token, site_url, date_start, date_end, row_limit, dimensions=None):
+            self.dimensions.append(tuple(dimensions or []))
+            if dimensions == ["query"]:
+                return [{"keys": ["local seo"], "_dimensions": dimensions, "clicks": 1, "impressions": 100, "ctr": 0.01, "position": 8}]
+            if dimensions == ["page"]:
+                return [{"keys": ["https://example.com/"], "_dimensions": dimensions, "clicks": 2, "impressions": 120, "ctr": 0.016, "position": 7}]
+            return [{"keys": ["local seo", "https://example.com/"], "_dimensions": dimensions, "clicks": 3, "impressions": 130, "ctr": 0.02, "position": 6}]
+
+    class FakeRepository:
+        def __init__(self):
+            self.rows = []
+            self.import_record = None
+
+        async def get_sync_job(self, job_id_arg, tenant_id=None):
+            return job if job_id_arg == job_id else None
+
+        async def set_sync_job_status(self, job_arg, status, error_message=None):
+            job_arg.status = status
+            job_arg.error_message = error_message
+            return job_arg
+
+        async def get_property(self, property_id_arg, tenant_id_arg):
+            return prop
+
+        async def get_connection(self, connection_id_arg, tenant_id_arg):
+            return connection
+
+        async def get_monitor_setting(self, project_id_arg, tenant_id_arg):
+            return monitor
+
+        async def create_import(self, **kwargs):
+            self.import_record = SimpleNamespace(id=import_id, status=None, rows_imported=0, **kwargs)
+            return self.import_record
+
+        async def get_import(self, import_id_arg, tenant_id_arg):
+            return self.import_record if import_id_arg == import_id else None
+
+        async def set_import_status(self, import_record, status, error_message=None):
+            import_record.status = status
+            import_record.error_message = error_message
+            return import_record
+
+        async def add_rows(self, rows):
+            self.rows = rows
+            return len(rows)
+
+        async def finish_import(self, import_record, rows_imported):
+            import_record.rows_imported = rows_imported
+            import_record.status = SearchConsoleImportStatus.completed
+            return import_record
+
+        async def rows_for_analysis(self, import_id_arg, tenant_id_arg):
+            return []
+
+        async def signal_context(self, tenant_id_arg, project_id_arg, page_ids):
+            return {}
+
+        async def finish_sync_job(self, job_arg, import_id, rows_fetched, opportunities_created, opportunities_updated):
+            job_arg.import_id = import_id
+            job_arg.rows_fetched = rows_fetched
+            job_arg.opportunities_created = opportunities_created
+            job_arg.opportunities_updated = opportunities_updated
+            job_arg.status = GSCSyncJobStatus.completed
+            return job_arg
+
+        async def match_pages_by_urls(self, tenant_id_arg, project_id_arg, urls):
+            return {}
+
+    google_client = FakeGoogleClient()
+    repository = FakeRepository()
+    service = SearchConsoleService(FakeDB(), google_client=google_client)
+    service.repository = repository
+
+    completed = await service.run_sync_job(job_id, tenant_id=tenant_id)
+
+    assert completed.status == GSCSyncJobStatus.completed
+    assert ("query",) in google_client.dimensions
+    assert ("page",) in google_client.dimensions
+    assert ("query", "page") in google_client.dimensions
+    assert ("query", "page", "date") in google_client.dimensions
+    assert ("query", "page", "device", "country") in google_client.dimensions
+    assert repository.rows
+
+
+@pytest.mark.asyncio
+async def test_token_refresh_failure_marks_connection_expired():
+    tenant_id = uuid4()
+    connection = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        encrypted_refresh_token=encrypt_secret("refresh-token"),
+        status=GSCConnectionStatus.connected,
+        access_token_expires_at=None,
+        updated_at=None,
+    )
+
+    class FakeGoogleClient:
+        credentials_configured = True
+
+        async def refresh_access_token(self, refresh_token):
+            raise SearchConsoleOAuthError("invalid_grant")
+
+    service = SearchConsoleService(FakeDB(), google_client=FakeGoogleClient())
+
+    with pytest.raises(SearchConsoleOAuthError):
+        await service._access_token(connection)
+
+    assert connection.status == GSCConnectionStatus.expired
