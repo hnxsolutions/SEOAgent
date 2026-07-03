@@ -1,6 +1,6 @@
 'use client';
 
-import { ExternalLink, Play, RefreshCw, Save, Unplug } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Play, RefreshCw, Save, Unplug } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -85,6 +85,9 @@ export default function SearchConsolePage() {
     selectedPropertyQuery.data?.selected_property ??
     propertiesQuery.data?.properties.find((property) => property.is_selected);
   const monitorSetting = selectedPropertyQuery.data?.monitor_setting ?? summaryQuery.data?.monitor_setting;
+  const unhealthyConnection = (connectionsQuery.data?.connections ?? []).find((connection) =>
+    ['expired', 'failed', 'revoked'].includes(String(connection.status).toLowerCase())
+  );
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -261,6 +264,17 @@ export default function SearchConsolePage() {
       </div>
 
       <ActionNotice message={notice} />
+      {unhealthyConnection ? (
+        <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+          <div>
+            <p className="font-medium">Search Console connection needs attention.</p>
+            <p className="mt-1">
+              The Google connection is {formatLabel(unhealthyConnection.status)}. Reconnect Google before scheduled sync can import fresh data.
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-5">
         <SummaryBlock label="Clicks" value={summaryQuery.data?.clicks ?? 0} />
@@ -456,6 +470,7 @@ export default function SearchConsolePage() {
             <MonitorToggle label="Device + country" checked={syncCountryDevice} onChange={setSyncCountryDevice} />
             <MonitorFact label="Last scheduled" value={monitorSetting?.last_scheduled_at ? formatDateTime(monitorSetting.last_scheduled_at) : 'Not scheduled'} />
             <MonitorFact label="Next sync" value={monitorSetting?.next_sync_at ? formatDateTime(monitorSetting.next_sync_at) : 'Not scheduled'} />
+            <MonitorFact label="Property last synced" value={selectedProperty?.last_synced_at ? formatDateTime(selectedProperty.last_synced_at) : 'Not synced'} />
           </div>
         </div>
       </section>

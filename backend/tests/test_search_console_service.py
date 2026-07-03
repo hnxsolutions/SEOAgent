@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -20,6 +20,7 @@ from app.models.search_console import (
 )
 from app.services.search_console import (
     GoogleSearchConsoleClient,
+    SearchConsoleConfigurationError,
     SearchConsoleOpportunityAnalyzer,
     SearchConsoleGoogleAPIError,
     SearchConsoleOAuthError,
@@ -128,6 +129,23 @@ def test_oauth_start_url_generation_uses_gsc_scope(monkeypatch):
     assert "webmasters.readonly" in url
     assert "access_type=offline" in url
     assert "prompt=consent" in url
+
+
+def test_oauth_start_reports_missing_env_vars(monkeypatch):
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", None)
+    monkeypatch.setattr(settings, "GOOGLE_CLIENT_SECRET", None)
+    monkeypatch.setattr(settings, "GOOGLE_OAUTH_REDIRECT_URI", None)
+    monkeypatch.setattr(settings, "GOOGLE_REDIRECT_URI", None)
+
+    client = GoogleSearchConsoleClient()
+
+    with pytest.raises(SearchConsoleConfigurationError) as exc:
+        client.build_authorization_url("state-123")
+
+    message = str(exc.value)
+    assert "GOOGLE_CLIENT_ID" in message
+    assert "GOOGLE_CLIENT_SECRET" in message
+    assert "GOOGLE_OAUTH_REDIRECT_URI" in message
 
 
 @pytest.mark.asyncio
@@ -514,6 +532,88 @@ async def test_sync_request_on_manual_property_returns_failed_job():
 
 
 @pytest.mark.asyncio
+async def test_scheduled_sync_requires_enabled_monitor():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    connection_id = uuid4()
+    prop = make_oauth_property(tenant_id, project_id, connection_id)
+
+    class FakeRepository:
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def selected_property(self, project_id_arg, tenant_id_arg):
+            return prop
+
+        async def get_monitor_setting(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(enabled=False)
+
+        async def create_sync_job(self, **kwargs):
+            return SimpleNamespace(
+                id=uuid4(),
+                rows_fetched=0,
+                opportunities_created=0,
+                opportunities_updated=0,
+                **kwargs,
+            )
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    job = await service.create_sync_job(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        sync_type=GSCSyncType.scheduled,
+    )
+
+    assert job.status == GSCSyncJobStatus.failed
+    assert "enabled project monitor" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_manual_sync_job_can_be_created_without_monitor_enabled():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    connection_id = uuid4()
+    prop = make_oauth_property(tenant_id, project_id, connection_id)
+    connection = SimpleNamespace(id=connection_id)
+
+    class FakeRepository:
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def selected_property(self, project_id_arg, tenant_id_arg):
+            return prop
+
+        async def get_connection(self, connection_id_arg, tenant_id_arg):
+            return connection
+
+        async def create_sync_job(self, **kwargs):
+            return SimpleNamespace(
+                id=uuid4(),
+                status=kwargs.get("status", GSCSyncJobStatus.queued),
+                error_message=kwargs.get("error_message"),
+                rows_fetched=0,
+                opportunities_created=0,
+                opportunities_updated=0,
+                **{key: value for key, value in kwargs.items() if key not in {"status", "error_message"}},
+            )
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    job = await service.create_sync_job(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        sync_type=GSCSyncType.manual,
+    )
+
+    assert job.status == GSCSyncJobStatus.queued
+    assert job.error_message is None
+    assert job.connection_id == connection_id
+
+
+@pytest.mark.asyncio
 async def test_summary_includes_selected_manual_property():
     tenant_id = uuid4()
     project_id = uuid4()
@@ -768,6 +868,101 @@ async def test_due_monitor_sync_skips_duplicate_scheduled_job():
     assert result["jobs"] == []
     assert repository.created_jobs == 0
     assert repository.updated_schedule[0] == now
+
+
+@pytest.mark.parametrize("frequency_days", [1, 2, 3])
+@pytest.mark.asyncio
+async def test_due_monitor_sync_calculates_next_sync_at_for_supported_cadences(frequency_days):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    property_id = uuid4()
+    now = datetime(2026, 7, 3, 9, 0, 0)
+    setting = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        property_id=property_id,
+        enabled=True,
+        frequency_days=frequency_days,
+        lookback_days=7,
+        next_sync_at=now,
+    )
+
+    class FakeRepository:
+        def __init__(self):
+            self.next_sync_at = None
+
+        async def due_monitor_settings(self, now, tenant_id=None, limit=50):
+            return [setting]
+
+        async def get_project(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(id=project_id_arg, tenant_id=tenant_id_arg)
+
+        async def get_property(self, property_id_arg, tenant_id_arg):
+            return make_oauth_property(tenant_id_arg, project_id, uuid4())
+
+        async def scheduled_job_exists(self, **kwargs):
+            return True
+
+        async def update_monitor_schedule(self, setting_arg, last_scheduled_at, next_sync_at):
+            self.next_sync_at = next_sync_at
+            return setting_arg
+
+    repository = FakeRepository()
+    service = SearchConsoleService(FakeDB())
+    service.repository = repository
+
+    result = await service.run_due_monitor_syncs(tenant_id=tenant_id, now=now)
+
+    assert result["jobs"] == []
+    assert repository.next_sync_at == now + timedelta(days=frequency_days)
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_fails_when_scheduled_monitor_is_disabled():
+    tenant_id = uuid4()
+    project_id = uuid4()
+    connection_id = uuid4()
+    property_id = uuid4()
+    job_id = uuid4()
+    prop = make_oauth_property(tenant_id, project_id, connection_id)
+    prop.id = property_id
+    job = SimpleNamespace(
+        id=job_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        connection_id=connection_id,
+        property_id=property_id,
+        sync_type=GSCSyncType.scheduled,
+        status=GSCSyncJobStatus.queued,
+        error_message=None,
+        rows_fetched=0,
+        opportunities_created=0,
+        opportunities_updated=0,
+    )
+
+    class FakeRepository:
+        async def get_sync_job(self, job_id_arg, tenant_id=None):
+            return job if job_id_arg == job_id else None
+
+        async def set_sync_job_status(self, job_arg, status, error_message=None):
+            job_arg.status = status
+            job_arg.error_message = error_message
+            return job_arg
+
+        async def get_property(self, property_id_arg, tenant_id_arg):
+            return prop
+
+        async def get_monitor_setting(self, project_id_arg, tenant_id_arg):
+            return SimpleNamespace(enabled=False)
+
+    service = SearchConsoleService(FakeDB())
+    service.repository = FakeRepository()
+
+    result = await service.run_sync_job(job_id, tenant_id=tenant_id)
+
+    assert result.status == GSCSyncJobStatus.failed
+    assert "enabled project monitor" in result.error_message
 
 
 @pytest.mark.asyncio

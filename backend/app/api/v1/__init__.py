@@ -61,6 +61,7 @@ api_router.include_router(impact.router, prefix="/impact", tags=["SEO Impact Tra
 api_router.include_router(repos.router, prefix="/repos", tags=["SEO Code Agent"])
 api_router.include_router(planner.router, prefix="/planner", tags=["Weekly SEO Planner"])
 api_router.include_router(schedules.router, prefix="/schedules", tags=["SEO Scheduler"])
+api_router.include_router(schedules.internal_scheduler_router, prefix="/scheduler", tags=["SEO Scheduler"])
 api_router.include_router(schedules.scheduled_runs_router, prefix="/scheduled-runs", tags=["SEO Scheduler"])
 api_router.include_router(seo_runs.router, tags=["One-click SEO Runs"])
 api_router.include_router(serp.router, prefix="/serp", tags=["SERP Analysis"])

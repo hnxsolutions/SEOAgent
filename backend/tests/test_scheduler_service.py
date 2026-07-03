@@ -296,6 +296,31 @@ async def test_tick_finds_due_and_skips_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tick_with_monitor_details_reports_due_gsc_jobs(monkeypatch):
+    repo = FakeSchedulerRepository()
+    service = make_service(repo)
+    gsc_job = SimpleNamespace(id=uuid4(), status="completed")
+
+    class FakeGSCService:
+        def __init__(self, db):
+            pass
+
+        async def run_due_monitor_syncs(self, tenant_id=None, now=None, limit=50):
+            assert tenant_id == repo.tenant_id
+            return {"due_count": 1, "jobs": [gsc_job]}
+
+    monkeypatch.setattr(service, "search_console_service_class", FakeGSCService)
+
+    result = await service.tick_with_monitor_details(tenant_id=repo.tenant_id)
+
+    assert result["due_count"] == 0
+    assert result["runs_created"] == 0
+    assert result["gsc_monitor_due_count"] == 1
+    assert result["gsc_monitor_jobs_created"] == 1
+    assert result["gsc_monitor_jobs"] == [gsc_job]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_running_schedule_is_skipped():
     repo = FakeSchedulerRepository()
     repo.running = True

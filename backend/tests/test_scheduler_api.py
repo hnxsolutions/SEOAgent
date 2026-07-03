@@ -100,10 +100,22 @@ def test_scheduler_api_smoke_flow(monkeypatch):
         async def tick(self, tenant_id=None, limit=50):
             return [run]
 
+        async def tick_with_monitor_details(self, tenant_id=None, limit=50):
+            return {
+                "due_count": 1,
+                "runs_created": 1,
+                "runs": [run],
+                "gsc_monitor_due_count": 0,
+                "gsc_monitor_jobs_created": 0,
+                "gsc_monitor_jobs": [],
+            }
+
     monkeypatch.setattr(schedule_routes, "SchedulerService", FakeSchedulerService)
+    monkeypatch.setattr(schedule_routes.settings, "SCHEDULER_INTERNAL_API_KEY", "internal-key")
 
     app = FastAPI()
     app.include_router(schedule_routes.router, prefix="/schedules")
+    app.include_router(schedule_routes.internal_scheduler_router, prefix="/scheduler")
     app.include_router(schedule_routes.scheduled_runs_router, prefix="/scheduled-runs")
     app.dependency_overrides[schedule_routes.get_current_user] = lambda: {
         "tenant_id": tenant_id,
@@ -144,3 +156,14 @@ def test_scheduler_api_smoke_flow(monkeypatch):
     tick_response = client.post("/schedules/tick", json=50)
     assert tick_response.status_code == 200
     assert tick_response.json()["runs_created"] == 1
+    assert tick_response.json()["gsc_monitor_due_count"] == 0
+
+    missing_key_response = client.post("/scheduler/tick", json=50)
+    assert missing_key_response.status_code == 401
+
+    wrong_key_response = client.post("/scheduler/tick", json=50, headers={"X-Internal-Api-Key": "wrong"})
+    assert wrong_key_response.status_code == 401
+
+    internal_tick_response = client.post("/scheduler/tick", json=50, headers={"X-Internal-Api-Key": "internal-key"})
+    assert internal_tick_response.status_code == 200
+    assert internal_tick_response.json()["runs_created"] == 1

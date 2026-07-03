@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.scheduler import SeoScheduledRunStatus, SeoScheduleFrequency, SeoScheduleType
+from app.schemas.search_console import GSCSyncJobResponse
 
 
 class SeoScheduleCreate(BaseModel):
@@ -95,3 +96,6 @@ class SchedulerTickResponse(BaseModel):
     due_count: int
     runs_created: int
     runs: List[SeoScheduledRunResponse]
+    gsc_monitor_due_count: int = 0
+    gsc_monitor_jobs_created: int = 0
+    gsc_monitor_jobs: List[GSCSyncJobResponse] = Field(default_factory=list)

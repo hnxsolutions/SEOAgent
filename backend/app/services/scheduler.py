@@ -125,28 +125,46 @@ class SchedulerService:
         now: Optional[datetime] = None,
         limit: int = 50,
     ) -> List[SeoScheduledRun]:
+        result = await self.tick_with_monitor_details(tenant_id=tenant_id, now=now, limit=limit)
+        return result["runs"]
+
+    async def tick_with_monitor_details(
+        self,
+        tenant_id: Optional[UUID] = None,
+        now: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
         await self._evaluate_ready_impact_experiments(now=now)
-        await self._run_due_gsc_monitors(tenant_id=tenant_id, now=now, limit=limit)
+        gsc_result = await self._run_due_gsc_monitors(tenant_id=tenant_id, now=now, limit=limit)
         due = await self.repository.due_schedules(self._naive_utc(now), tenant_id=tenant_id, limit=limit)
         runs = []
         for schedule in due:
             runs.append(await self.execute_schedule(schedule, manual_trigger=False))
-        return runs
+        gsc_jobs = list(gsc_result.get("jobs") or [])
+        return {
+            "due_count": len(runs),
+            "runs_created": len(runs),
+            "runs": runs,
+            "gsc_monitor_due_count": int(gsc_result.get("due_count") or 0),
+            "gsc_monitor_jobs_created": len(gsc_jobs),
+            "gsc_monitor_jobs": gsc_jobs,
+        }
 
     async def _run_due_gsc_monitors(
         self,
         tenant_id: Optional[UUID] = None,
         now: Optional[datetime] = None,
         limit: int = 50,
-    ) -> None:
+    ) -> Dict[str, Any]:
         try:
-            await self.search_console_service_class(self.db).run_due_monitor_syncs(
+            return await self.search_console_service_class(self.db).run_due_monitor_syncs(
                 tenant_id=tenant_id,
                 now=self._naive_utc(now),
                 limit=limit,
             )
         except Exception as exc:
             logger.warning("Scheduled GSC monitor check failed", error=str(exc))
+            return {"due_count": 0, "jobs": []}
 
     async def _evaluate_ready_impact_experiments(self, now: Optional[datetime] = None) -> None:
         try:

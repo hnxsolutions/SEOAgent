@@ -119,6 +119,40 @@ services:
     command: >
       sh -c "python -m rq worker --url redis://redis:6379 seo_queue --with-scheduler"
 
+  # Optional production scheduler tick runner. Enable with:
+  # docker compose --profile scheduler up -d scheduler
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: seo-agent-scheduler
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
+      REDIS_URL: redis://redis:6379
+      QDRANT_URL: http://qdrant:6333
+      SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
+      SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - seo-agent-network
+    profiles:
+      - scheduler
+    command: >
+      sh -c "while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50}; sleep ${SCHEDULER_INTERVAL_SECONDS:-3600}; done"
+    restart: unless-stopped
+
   # Crawl Worker (for distributed crawling)
   crawl-worker:
     build:

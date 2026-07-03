@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     GSC_URL_INSPECTION_REQUEST_DELAY_SECONDS: float = 1.0
     GSC_URL_INSPECTION_LANGUAGE_CODE: str = "en-US"
 
+    # Optional production scheduler runner protection.
+    SCHEDULER_INTERNAL_API_KEY: Optional[str] = None
+    SCHEDULER_INTERVAL_SECONDS: int = 3600
+    SCHEDULER_TICK_LIMIT: int = 50
+
     # Optional GitHub PR creation for approved SEO code patches.
     GITHUB_TOKEN: Optional[str] = None
     GITHUB_DEFAULT_BASE_BRANCH: str = "main"

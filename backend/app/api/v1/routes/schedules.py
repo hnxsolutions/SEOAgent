@@ -1,10 +1,12 @@
 """Production scheduler API routes."""
-from typing import Annotated
+import secrets
+from typing import Annotated, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.schemas.scheduler import (
@@ -20,6 +22,7 @@ from app.services.scheduler import SchedulerError, SchedulerService
 
 router = APIRouter()
 scheduled_runs_router = APIRouter()
+internal_scheduler_router = APIRouter()
 
 
 @router.post("", response_model=SeoScheduleResponse, status_code=status.HTTP_201_CREATED)
@@ -56,8 +59,21 @@ async def run_scheduler_tick(
 ):
     """Run one scheduler tick for due schedules in the current tenant."""
     service = SchedulerService(db)
-    runs = await service.tick(tenant_id=_tenant_id(current_user), limit=limit)
-    return SchedulerTickResponse(due_count=len(runs), runs_created=len(runs), runs=runs)
+    result = await service.tick_with_monitor_details(tenant_id=_tenant_id(current_user), limit=limit)
+    return _scheduler_tick_response(result)
+
+
+@internal_scheduler_router.post("/tick", response_model=SchedulerTickResponse)
+async def run_internal_scheduler_tick(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Body(50, ge=1, le=200),
+    x_internal_api_key: Annotated[Optional[str], Header(alias="X-Internal-Api-Key")] = None,
+):
+    """Run one global scheduler tick from a trusted cron or container runner."""
+    _require_internal_scheduler_key(x_internal_api_key)
+    service = SchedulerService(db)
+    result = await service.tick_with_monitor_details(tenant_id=None, limit=limit)
+    return _scheduler_tick_response(result)
 
 
 @router.get("/{schedule_id}", response_model=SeoScheduleResponse)
@@ -162,3 +178,25 @@ def _tenant_id(current_user: dict) -> UUID:
     if not tenant_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Authenticated user has no tenant context")
     return tenant_id
+
+
+def _require_internal_scheduler_key(value: Optional[str]) -> None:
+    configured = settings.SCHEDULER_INTERNAL_API_KEY
+    if not configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SCHEDULER_INTERNAL_API_KEY is not configured.",
+        )
+    if not value or not secrets.compare_digest(value, configured):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid scheduler internal API key.")
+
+
+def _scheduler_tick_response(result: dict) -> SchedulerTickResponse:
+    return SchedulerTickResponse(
+        due_count=int(result.get("due_count") or 0),
+        runs_created=int(result.get("runs_created") or 0),
+        runs=list(result.get("runs") or []),
+        gsc_monitor_due_count=int(result.get("gsc_monitor_due_count") or 0),
+        gsc_monitor_jobs_created=int(result.get("gsc_monitor_jobs_created") or 0),
+        gsc_monitor_jobs=list(result.get("gsc_monitor_jobs") or []),
+    )

@@ -81,13 +81,24 @@ class GoogleSearchConsoleClient:
 
     @property
     def credentials_configured(self) -> bool:
-        return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET and settings.google_oauth_redirect_uri)
+        return not self.missing_credentials()
+
+    def missing_credentials(self) -> List[str]:
+        missing: List[str] = []
+        if not settings.GOOGLE_CLIENT_ID:
+            missing.append("GOOGLE_CLIENT_ID")
+        if not settings.GOOGLE_CLIENT_SECRET:
+            missing.append("GOOGLE_CLIENT_SECRET")
+        if not settings.google_oauth_redirect_uri:
+            missing.append("GOOGLE_OAUTH_REDIRECT_URI")
+        return missing
 
     def _require_credentials(self) -> None:
-        if not self.credentials_configured:
+        missing = self.missing_credentials()
+        if missing:
             raise SearchConsoleConfigurationError(
-                "Google Search Console OAuth is disabled until GOOGLE_CLIENT_ID, "
-                "GOOGLE_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI are configured."
+                "Google Search Console OAuth is disabled. Missing required env vars: "
+                f"{', '.join(missing)}."
             )
 
     def build_authorization_url(self, state: str) -> str:
@@ -888,6 +899,24 @@ class SearchConsoleService:
         current_start, current_end, _, _ = comparison_dates(comparison_window)
         current_start = date_start or current_start
         current_end = date_end or current_end
+        if sync_type == GSCSyncType.scheduled:
+            monitor = await self.repository.get_monitor_setting(project_id, tenant_id)
+            if not monitor or not bool(getattr(monitor, "enabled", False)):
+                job = await self.repository.create_sync_job(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    connection_id=prop.connection_id,
+                    property_id=prop.id,
+                    sync_type=sync_type,
+                    date_start=current_start,
+                    date_end=current_end,
+                    comparison_window=comparison_window,
+                    status=GSCSyncJobStatus.failed,
+                    error_message="Scheduled Search Console sync requires an enabled project monitor.",
+                )
+                await self.db.commit()
+                await self.db.refresh(job)
+                return job
         if prop.source_type == GSCPropertySourceType.manual or not prop.connection_id:
             job = await self.repository.create_sync_job(
                 tenant_id=tenant_id,
@@ -946,6 +975,17 @@ class SearchConsoleService:
             prop = await self.repository.get_property(job.property_id, job.tenant_id)
             if not prop:
                 raise ValueError("GSC property not found")
+            monitor = None
+            if job.project_id and hasattr(self.repository, "get_monitor_setting"):
+                monitor = await self.repository.get_monitor_setting(job.project_id, job.tenant_id)
+            if job.sync_type == GSCSyncType.scheduled and (
+                not monitor or not bool(getattr(monitor, "enabled", True))
+            ):
+                message = "Scheduled Search Console sync requires an enabled project monitor."
+                await self.repository.set_sync_job_status(job, GSCSyncJobStatus.failed, message)
+                await self.db.commit()
+                await self.db.refresh(job)
+                return job
             if prop.source_type == GSCPropertySourceType.manual or not job.connection_id:
                 message = (
                     "OAuth connection required for automatic Google Search Console sync. "
@@ -981,7 +1021,6 @@ class SearchConsoleService:
             )
             await self.repository.set_import_status(import_record, SearchConsoleImportStatus.processing)
             access_token = await self._access_token(connection)
-            monitor = await self.repository.get_monitor_setting(job.project_id, job.tenant_id) if job.project_id else None
             current_api_rows = await self._fetch_search_analytics_groups(
                 access_token,
                 prop.site_url,
