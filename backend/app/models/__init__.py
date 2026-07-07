@@ -36,6 +36,7 @@ from app.models.indexing import (
     GSCUrlInspectionResult,
     GSCUrlInspectionRun,
 )
+from app.models.sitemap import GSCSitemapRecord, SitemapIssue
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
 from app.models.seo_run import SeoRun
@@ -100,6 +101,8 @@ __all__ = [
     "GSCIndexingIssue",
     "GSCFixValidationRun",
     "GSCFixValidationResult",
+    "GSCSitemapRecord",
+    "SitemapIssue",
     "KeywordBaseline",
     "SeoPlannerRun",
     "SeoTask",

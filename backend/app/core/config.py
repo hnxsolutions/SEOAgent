@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     GSC_URL_INSPECTION_MAX_URLS_PER_RUN: int = 50
     GSC_URL_INSPECTION_REQUEST_DELAY_SECONDS: float = 1.0
     GSC_URL_INSPECTION_LANGUAGE_CODE: str = "en-US"
+    # Sitemap intelligence
+    GSC_SITEMAP_FETCH_TIMEOUT_SECONDS: float = 20.0
+    GSC_SITEMAP_MAX_URLS_PARSED: int = 5000
+    GSC_SITEMAP_MAX_BYTES: int = 15_000_000
+    GSC_SITEMAP_USER_AGENT: str = "SEOAgentBot/1.0 (+sitemap-intelligence)"
 
     # Optional production scheduler runner protection.
     SCHEDULER_INTERNAL_API_KEY: Optional[str] = None

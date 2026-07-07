@@ -3,6 +3,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: seo-agent-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-seoagent}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seoagent_password}
@@ -24,6 +25,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: seo-agent-redis
+    restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -41,6 +43,7 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: seo-agent-qdrant
+    restart: unless-stopped
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
     volumes:
@@ -62,6 +65,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: seo-agent-backend
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -95,6 +99,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: seo-agent-worker
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -117,7 +122,9 @@ services:
     networks:
       - seo-agent-network
     command: >
-      sh -c "python -m rq worker --url redis://redis:6379 seo_queue --with-scheduler"
+      sh -c "rq worker --url redis://redis:6379 seo_queue --with-scheduler"
+    healthcheck:
+      disable: true
 
   # Optional production scheduler tick runner. Enable with:
   # docker compose --profile scheduler up -d scheduler
@@ -152,6 +159,8 @@ services:
     command: >
       sh -c "while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50}; sleep ${SCHEDULER_INTERVAL_SECONDS:-3600}; done"
     restart: unless-stopped
+    healthcheck:
+      disable: true
 
   # Crawl Worker (for distributed crawling)
   crawl-worker:
@@ -159,6 +168,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: seo-agent-crawl-worker
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -228,6 +238,7 @@ services:
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     container_name: seo-agent-frontend
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -237,6 +248,12 @@ services:
     networks:
       - seo-agent-network
     command: node server.js
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
 
   # Nginx Reverse Proxy (Optional - for production)
   nginx:

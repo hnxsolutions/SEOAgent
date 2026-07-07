@@ -9,6 +9,7 @@ import { OpportunityTable } from '@/components/dashboard/OpportunityTable';
 import { StatusBadge, formatLabel } from '@/components/dashboard/StatusBadge';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
+import { extractApiError } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
 import type { UUID } from '@/types/dashboard';
 
@@ -475,6 +476,8 @@ export default function SearchConsolePage() {
         </div>
       </section>
 
+      <SitemapsPanel projectId={projectId} />
+
       <section className="space-y-4">
         <div className="flex flex-col gap-3 rounded-lg border bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -509,6 +512,187 @@ function SummaryBlock({ label, value }: { label: string; value: number }) {
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className="mt-2 text-3xl font-semibold">{value.toLocaleString()}</p>
     </div>
+  );
+}
+
+function SitemapsPanel({ projectId }: { projectId?: UUID }) {
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [submitUrl, setSubmitUrl] = useState('');
+
+  const sitemapsQuery = useQuery({
+    queryKey: ['gsc-sitemaps', projectId],
+    queryFn: () => dashboardApi.sitemaps.list(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const issuesQuery = useQuery({
+    queryKey: ['gsc-sitemap-issues', projectId],
+    queryFn: () => dashboardApi.sitemaps.issues(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const oauthEnabled = sitemapsQuery.data?.oauth_enabled ?? false;
+  const sitemaps = sitemapsQuery.data?.sitemaps ?? [];
+  const issues = issuesQuery.data?.issues ?? [];
+
+  const refetchAll = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['gsc-sitemaps', projectId] });
+    await queryClient.invalidateQueries({ queryKey: ['gsc-sitemap-issues', projectId] });
+  };
+
+  const run = async (label: string, fn: () => Promise<unknown>) => {
+    setNotice(undefined);
+    setError(undefined);
+    try {
+      await fn();
+      await refetchAll();
+      setNotice(label);
+    } catch (err) {
+      setError(extractApiError(err, `${label} failed.`));
+    }
+  };
+
+  const detectMutation = useMutation({
+    mutationFn: () => dashboardApi.sitemaps.detect(projectId!),
+  });
+  const analyzeMutation = useMutation({
+    mutationFn: () => dashboardApi.sitemaps.analyze(projectId!),
+  });
+  const submitMutation = useMutation({
+    mutationFn: (url: string) => dashboardApi.sitemaps.submit(projectId!, url),
+  });
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-lg border bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Sitemaps</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Detect sitemaps from robots.txt and common paths, analyze them against the latest crawl, and
+            {oauthEnabled ? ' submit/list them via the official Search Console Sitemaps API.' : ' (submit/list needs a connected Google account).'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!projectId || detectMutation.isPending}
+            onClick={() => run('Sitemaps detected.', () => detectMutation.mutateAsync())}
+          >
+            {detectMutation.isPending ? 'Detecting…' : 'Detect'}
+          </Button>
+          <Button
+            type="button"
+            disabled={!projectId || analyzeMutation.isPending}
+            onClick={() => run('Sitemaps analyzed.', () => analyzeMutation.mutateAsync())}
+          >
+            {analyzeMutation.isPending ? 'Analyzing…' : 'Analyze'}
+          </Button>
+        </div>
+      </div>
+
+      <ActionNotice message={notice} />
+      <ActionNotice message={error} tone="error" />
+
+      {oauthEnabled ? (
+        <div className="flex flex-col gap-2 rounded-lg border bg-white p-4 sm:flex-row sm:items-center">
+          <input
+            value={submitUrl}
+            onChange={(event) => setSubmitUrl(event.target.value)}
+            placeholder="https://example.com/sitemap.xml"
+            className="h-9 w-full rounded-md border px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <Button
+            type="button"
+            disabled={!submitUrl.trim() || submitMutation.isPending}
+            onClick={() =>
+              run('Sitemap submitted to Search Console.', async () => {
+                await submitMutation.mutateAsync(submitUrl.trim());
+                setSubmitUrl('');
+              })
+            }
+          >
+            {submitMutation.isPending ? 'Submitting…' : 'Submit to GSC'}
+          </Button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Submitting or listing sitemaps via the Sitemaps API needs a connected Google Search Console account with
+          the write scope. Detection and analysis below work without Google credentials.
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-lg border bg-white">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+            <tr>
+              <th className="px-4 py-2">Sitemap</th>
+              <th className="px-4 py-2">Source</th>
+              <th className="px-4 py-2">URLs</th>
+              <th className="px-4 py-2">Errors</th>
+              <th className="px-4 py-2">Warnings</th>
+              <th className="px-4 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sitemapsQuery.isLoading ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Loading sitemaps…</td>
+              </tr>
+            ) : sitemaps.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                  No sitemaps yet. Click Detect to discover sitemaps from robots.txt and common paths.
+                </td>
+              </tr>
+            ) : (
+              sitemaps.map((sitemap) => (
+                <tr key={sitemap.id} className="border-t">
+                  <td className="max-w-[320px] truncate px-4 py-2" title={sitemap.sitemap_url}>
+                    {sitemap.sitemap_url}
+                    {sitemap.is_sitemaps_index ? (
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">index</span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2">{formatLabel(sitemap.source)}</td>
+                  <td className="px-4 py-2">{sitemap.submitted_urls_count.toLocaleString()}</td>
+                  <td className="px-4 py-2">{sitemap.errors_count}</td>
+                  <td className="px-4 py-2">{sitemap.warnings_count}</td>
+                  <td className="px-4 py-2"><StatusBadge status={sitemap.status} /></td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {issues.length > 0 ? (
+        <div className="rounded-lg border bg-white">
+          <div className="border-b px-4 py-3">
+            <h4 className="text-sm font-semibold text-slate-950">Sitemap issues ({issues.length})</h4>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Live crawl checks are labelled as such and reflect what our crawler observed, not Google index status.
+            </p>
+          </div>
+          <ul className="divide-y">
+            {issues.map((issue) => (
+              <li key={issue.id} className="px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={issue.severity} />
+                  <span className="text-sm font-medium text-slate-900">{issue.title}</span>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">{issue.description}</p>
+                <p className="mt-1 text-sm text-slate-700">Recommended: {issue.recommended_action}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

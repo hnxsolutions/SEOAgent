@@ -40,6 +40,36 @@ api.interceptors.response.use(
   }
 );
 
+/**
+ * Extract a human-readable error message from an axios/API error.
+ * Prefers the backend FastAPI `detail` field (string or validation array)
+ * over the generic axios "Request failed with status code XXX" message.
+ */
+export function extractApiError(error: unknown, fallback = 'Something went wrong.'): string {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail;
+    }
+    if (Array.isArray(detail) && detail.length) {
+      // FastAPI/pydantic validation errors: [{ loc, msg, type }, ...]
+      const messages = detail
+        .map((item: { loc?: unknown[]; msg?: string }) => {
+          const field = Array.isArray(item.loc) ? item.loc[item.loc.length - 1] : undefined;
+          return field ? `${field}: ${item.msg}` : item.msg;
+        })
+        .filter(Boolean);
+      if (messages.length) return messages.join(' ');
+    }
+    if (error.code === 'ERR_NETWORK') {
+      return 'Cannot reach the API. Check that the backend is running.';
+    }
+    if (error.message) return error.message;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 // API service functions
 export const authAPI = {
   login: (email: string, password: string) =>

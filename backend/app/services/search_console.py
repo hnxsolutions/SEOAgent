@@ -40,7 +40,12 @@ from app.repositories.search_console import SearchConsoleRepository
 
 logger = structlog.get_logger(__name__)
 
-GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+GSC_READONLY_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+# Full webmasters scope is required to submit/delete sitemap submissions.
+GSC_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
+# Request both so the same connection can read performance/inspection data and
+# submit/delete sitemaps. The full scope is a superset of readonly.
+GSC_SCOPE = f"{GSC_READONLY_SCOPE} {GSC_WRITE_SCOPE}"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GSC_API_BASE_URL = "https://www.googleapis.com/webmasters/v3"
@@ -214,6 +219,75 @@ class GoogleSearchConsoleClient:
         }
         payload = await self._request_json("POST", GSC_URL_INSPECTION_ENDPOINT, access_token, json=body)
         return dict(payload.get("inspectionResult") or {})
+
+    async def list_sitemaps(self, access_token: str, site_url: str) -> List[Dict[str, Any]]:
+        """List sitemaps submitted for a property via the official Sitemaps API."""
+        encoded_site = quote(site_url, safe="")
+        payload = await self._request_json(
+            "GET",
+            f"{GSC_API_BASE_URL}/sites/{encoded_site}/sitemaps",
+            access_token,
+        )
+        return list(payload.get("sitemap") or [])
+
+    async def get_sitemap(self, access_token: str, site_url: str, feedpath: str) -> Dict[str, Any]:
+        """Get one submitted sitemap's status via the official Sitemaps API."""
+        encoded_site = quote(site_url, safe="")
+        encoded_feed = quote(feedpath, safe="")
+        return await self._request_json(
+            "GET",
+            f"{GSC_API_BASE_URL}/sites/{encoded_site}/sitemaps/{encoded_feed}",
+            access_token,
+        )
+
+    async def submit_sitemap(self, access_token: str, site_url: str, feedpath: str) -> None:
+        """Submit (PUT) a sitemap URL to GSC. Requires the write scope."""
+        encoded_site = quote(site_url, safe="")
+        encoded_feed = quote(feedpath, safe="")
+        await self._request_no_content(
+            "PUT",
+            f"{GSC_API_BASE_URL}/sites/{encoded_site}/sitemaps/{encoded_feed}",
+            access_token,
+        )
+
+    async def delete_sitemap(self, access_token: str, site_url: str, feedpath: str) -> None:
+        """Delete a sitemap submission from GSC. Requires the write scope."""
+        encoded_site = quote(site_url, safe="")
+        encoded_feed = quote(feedpath, safe="")
+        await self._request_no_content(
+            "DELETE",
+            f"{GSC_API_BASE_URL}/sites/{encoded_site}/sitemaps/{encoded_feed}",
+            access_token,
+        )
+
+    async def _request_no_content(self, method: str, url: str, access_token: str) -> None:
+        """Perform a request that returns no JSON body (Sitemaps PUT/DELETE -> 204)."""
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                if response.status_code == 403:
+                    raise SearchConsoleGoogleAPIError(
+                        "Google denied the sitemap write (403). Reconnect Search Console granting "
+                        "full permission (the write scope) and confirm you are an owner of the property."
+                    )
+                if response.status_code >= 400:
+                    raise SearchConsoleGoogleAPIError(
+                        f"Google Search Console sitemap request failed with status {response.status_code}."
+                    )
+                return
+            except (httpx.RequestError, SearchConsoleGoogleAPIError) as exc:
+                last_error = exc
+                if isinstance(exc, SearchConsoleGoogleAPIError) and "403" in str(exc):
+                    raise
+                if attempt >= self.max_retries:
+                    break
+        raise SearchConsoleGoogleAPIError(str(last_error or "Google Search Console sitemap request failed."))
 
     async def _fetch_search_analytics_page_set(
         self,

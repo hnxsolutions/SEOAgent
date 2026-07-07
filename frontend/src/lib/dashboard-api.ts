@@ -306,6 +306,39 @@ export const dashboardApi = {
       ),
   },
 
+  sitemaps: {
+    list: (projectId: UUID) =>
+      unwrap<import('@/types/dashboard').SitemapListResponse>(
+        api.get(`/search-console/projects/${projectId}/sitemaps`)
+      ),
+    issues: (projectId: UUID, status?: string) =>
+      unwrap<{ issues: import('@/types/dashboard').SitemapIssue[] }>(
+        api.get(`/search-console/projects/${projectId}/sitemap-issues`, {
+          params: status ? { issue_status: status } : undefined,
+        })
+      ),
+    detect: (projectId: UUID) =>
+      unwrap<import('@/types/dashboard').SitemapListResponse>(
+        api.post(`/search-console/projects/${projectId}/sitemaps/detect`)
+      ),
+    analyze: (projectId: UUID, payload?: { sitemap_id?: UUID; sitemap_url?: string }) =>
+      unwrap<import('@/types/dashboard').SitemapAnalyzeResponse>(
+        api.post(`/search-console/projects/${projectId}/sitemaps/analyze`, payload ?? {})
+      ),
+    refresh: (projectId: UUID) =>
+      unwrap<import('@/types/dashboard').SitemapListResponse>(
+        api.post(`/search-console/projects/${projectId}/sitemaps/refresh`)
+      ),
+    submit: (projectId: UUID, sitemapUrl: string) =>
+      unwrap<import('@/types/dashboard').SitemapRecord>(
+        api.post(`/search-console/projects/${projectId}/sitemaps/submit`, { sitemap_url: sitemapUrl })
+      ),
+    remove: (sitemapId: UUID) =>
+      unwrap<import('@/types/dashboard').SitemapRecord>(
+        api.delete(`/search-console/sitemaps/${sitemapId}`)
+      ),
+  },
+
   rankTracking: {
     summary: (projectId: UUID) =>
       unwrap<RankTrackingSummary>(api.get(`/rank-tracking/projects/${projectId}/summary`)),

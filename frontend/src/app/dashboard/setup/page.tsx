@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
+import { extractApiError } from '@/lib/api';
 import { dashboardApi, type ProjectContextPayload } from '@/lib/dashboard-api';
 import type { Project } from '@/types/dashboard';
 
@@ -118,7 +119,7 @@ export default function ProjectSetupPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-projects'] });
     },
     onError: (error) => {
-      setErrorNotice(error instanceof Error ? error.message : 'Project context could not be saved.');
+      setErrorNotice(extractApiError(error, 'Project context could not be saved.'));
     },
   });
 

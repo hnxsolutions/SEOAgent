@@ -438,6 +438,53 @@ export type GSCSyncJob = {
   created_at: string;
 };
 
+export type SitemapRecord = {
+  id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  property_id?: UUID | null;
+  sitemap_url: string;
+  is_submitted: boolean;
+  is_pending: boolean;
+  is_sitemaps_index: boolean;
+  last_submitted_at?: string | null;
+  last_downloaded_at?: string | null;
+  errors_count: number;
+  warnings_count: number;
+  submitted_urls_count: number;
+  source: 'gsc_api' | 'detected' | 'generated';
+  status: 'active' | 'warning' | 'error' | 'deleted';
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type SitemapIssue = {
+  id: UUID;
+  tenant_id: UUID;
+  project_id: UUID;
+  sitemap_id: UUID;
+  issue_type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  title: string;
+  description: string;
+  recommended_action: string;
+  sample_urls?: string[] | null;
+  status: 'open' | 'approved' | 'fixed' | 'ignored';
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type SitemapListResponse = {
+  sitemaps: SitemapRecord[];
+  oauth_enabled: boolean;
+};
+
+export type SitemapAnalyzeResponse = {
+  analyzed_sitemaps: number;
+  issues_created: number;
+  sitemaps: SitemapRecord[];
+};
+
 export type SearchConsoleOpportunity = {
   id: UUID;
   project_id?: UUID | null;
