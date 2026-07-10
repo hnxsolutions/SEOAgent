@@ -14,6 +14,8 @@ import {
   LineChart,
   LogOut,
   Newspaper,
+  Plus,
+  RefreshCw,
   Rocket,
   Search,
   SearchCheck,
@@ -55,6 +57,10 @@ export function useDashboardProject() {
 
 export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  // The setup page must render its own create form even when the account has
+  // zero projects — otherwise a new user hits a dead-end empty state and can
+  // never create a first project.
+  const allowsEmptyProject = pathname === '/dashboard/setup';
   const [projectId, setProjectIdState] = useState<UUID | undefined>();
   const [authChecked, setAuthChecked] = useState(false);
   const [hasToken, setHasToken] = useState(false);
@@ -77,10 +83,26 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    if (!projectsQuery.data?.length) return;
+    const data = projectsQuery.data;
+    if (!data) return;
     const stored = window.localStorage.getItem('dashboard_project_id');
-    const storedProject = projectsQuery.data.find((project) => project.id === stored);
-    setProjectIdState((current) => current ?? storedProject?.id ?? projectsQuery.data[0]?.id);
+    if (data.length === 0) {
+      // No projects: drop any stale stored id and clear the selection.
+      if (stored) window.localStorage.removeItem('dashboard_project_id');
+      setProjectIdState(undefined);
+      return;
+    }
+    const storedIsValid = Boolean(stored && data.some((project) => project.id === stored));
+    if (stored && !storedIsValid) {
+      // Stored id points at a deleted/missing project — remove it.
+      window.localStorage.removeItem('dashboard_project_id');
+    }
+    setProjectIdState((current) => {
+      if (current && data.some((project) => project.id === current)) return current;
+      const next = (storedIsValid ? stored : data[0]?.id) as UUID | undefined;
+      if (next) window.localStorage.setItem('dashboard_project_id', next);
+      return next;
+    });
   }, [projectsQuery.data]);
 
   const setProjectId = (nextProjectId: UUID) => {
@@ -180,20 +202,16 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                     </Link>
                   ))}
                 </div>
-                <select
-                  className="h-10 min-w-56 rounded-md border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  value={projectId ?? ''}
-                  onChange={(event) => setProjectId(event.target.value)}
-                  disabled={projectsQuery.isLoading || !projectsQuery.data?.length}
-                  aria-label="Select project"
-                >
-                  {!projectId ? <option value="">Select project</option> : null}
-                  {(projectsQuery.data ?? []).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
+                <ProjectSelector
+                  projectId={projectId}
+                  projects={projectsQuery.data ?? []}
+                  isLoading={projectsQuery.isLoading}
+                  isFetching={projectsQuery.isFetching}
+                  isError={projectsQuery.isError}
+                  onChange={setProjectId}
+                  onRefresh={() => void projectsQuery.refetch()}
+                  onLoginAgain={logout}
+                />
                 <Link
                   href="/dashboard/setup"
                   className="inline-flex h-10 items-center justify-center rounded-md border bg-white px-3 text-sm font-medium shadow-sm transition-colors hover:bg-slate-50"
@@ -220,7 +238,9 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                 message="Check that the backend is running and that your session token is valid."
                 onRetry={() => void projectsQuery.refetch()}
               />
-            ) : !projectsQuery.isLoading && projectsQuery.data?.length === 0 ? (
+            ) : !projectsQuery.isLoading &&
+              projectsQuery.data?.length === 0 &&
+              !allowsEmptyProject ? (
               <EmptyState
                 title="No projects yet"
                 description="Create a project first, then this console can show crawl, audit, content, Search Console, blog, and repository workflows."
@@ -232,6 +252,126 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         </div>
       </div>
     </DashboardProjectContext.Provider>
+  );
+}
+
+function ProjectSelector({
+  projectId,
+  projects,
+  isLoading,
+  isFetching,
+  isError,
+  onChange,
+  onRefresh,
+  onLoginAgain,
+}: {
+  projectId?: UUID;
+  projects: Project[];
+  isLoading: boolean;
+  isFetching: boolean;
+  isError: boolean;
+  onChange: (_projectId: UUID) => void;
+  onRefresh: () => void;
+  onLoginAgain: () => void;
+}) {
+  const selectBase =
+    'h-10 min-w-56 rounded-md border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring';
+  const disabledSelect = cn(selectBase, 'cursor-not-allowed text-muted-foreground opacity-70');
+  const iconButton =
+    'inline-flex h-10 w-10 items-center justify-center rounded-md border bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
+
+  if (isError) {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <select disabled aria-label="Select project" className={disabledSelect}>
+            <option>Projects unavailable</option>
+          </select>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={isFetching}
+            className="inline-flex h-10 items-center justify-center rounded-md border bg-white px-3 text-sm font-medium shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw
+              className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')}
+              aria-hidden="true"
+            />
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={onLoginAgain}
+            className="inline-flex h-10 items-center justify-center rounded-md border bg-white px-3 text-sm font-medium shadow-sm transition-colors hover:bg-slate-50"
+          >
+            <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+            Login again
+          </button>
+        </div>
+        <p className="text-xs text-red-600">
+          Projects could not load. Check backend or login again.
+        </p>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-1">
+        <select disabled aria-label="Select project" className={disabledSelect}>
+          <option>Loading projects…</option>
+        </select>
+        <p className="text-xs text-muted-foreground">Fetching your project workspace.</p>
+      </div>
+    );
+  }
+
+  if (projects.length === 0) {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <select disabled aria-label="Select project" className={disabledSelect}>
+            <option>No projects yet</option>
+          </select>
+          <Link
+            href="/dashboard/setup"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-blue-600 px-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
+            Create Project
+          </Link>
+        </div>
+        <p className="text-xs text-muted-foreground">Create your first project to begin.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        className={selectBase}
+        value={projectId ?? ''}
+        onChange={(event) => onChange(event.target.value as UUID)}
+        aria-label="Select project"
+      >
+        {!projectId ? <option value="">Select project</option> : null}
+        {projects.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={isFetching}
+        aria-label="Refresh projects"
+        title="Refresh projects"
+        className={iconButton}
+      >
+        <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
