@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
 import { formatDateTime } from '@/lib/utils';
-import type { SeoReportActionItem, SeoRunListResponse, SeoRunReportResponse } from '@/types/dashboard';
+import type { SeoReportActionItem, SeoRun, SeoRunListResponse, SeoRunReportResponse } from '@/types/dashboard';
 
 export default function DashboardReportPage() {
   return (
@@ -42,19 +42,39 @@ function DashboardReportContent() {
     queryFn: () => dashboardApi.seoRuns.list(projectId!),
     enabled: Boolean(projectId),
     retry: false,
+    // Poll while a run is queued/running so the report reflects live progress
+    // (per-stage data lands on the audit/content tabs as each stage finishes).
+    refetchInterval: (query) => {
+      const runs = (query.state.data as SeoRunListResponse | undefined)?.runs ?? [];
+      return runs.some((run) => run.status === 'queued' || run.status === 'running') ? 4000 : false;
+    },
   });
 
-  const latestCompletedRun = useMemo(
-    () => (seoRunsQuery.data as SeoRunListResponse | undefined)?.runs.find((run) => run.status === 'completed'),
+  const runs = useMemo(
+    () => (seoRunsQuery.data as SeoRunListResponse | undefined)?.runs ?? [],
     [seoRunsQuery.data]
   );
-  const reportRunId = requestedRunId ?? latestCompletedRun?.id;
+  // The report should reflect the LATEST run of any status — not only completed
+  // ones — so in-progress and failed runs surface their partial results instead
+  // of the tab pretending nothing ever ran. Runs are ordered newest-first.
+  const targetRun = useMemo(
+    () => (requestedRunId ? runs.find((run) => run.id === requestedRunId) : runs[0]),
+    [runs, requestedRunId]
+  );
+  const reportRunId = targetRun?.id;
 
   const reportQuery = useQuery({
     queryKey: ['seo-run-report', reportRunId],
     queryFn: () => dashboardApi.seoRuns.report(reportRunId!),
     enabled: Boolean(reportRunId),
     retry: false,
+    // Keep refreshing until the REPORT itself reports a terminal status. Keying
+    // this to the report's own run_status (not the run-list query) avoids a race
+    // where polling stops a cycle early and the body stays stuck on "running".
+    refetchInterval: (query) => {
+      const runStatus = (query.state.data as SeoRunReportResponse | undefined)?.run_status;
+      return runStatus === 'queued' || runStatus === 'running' ? 4000 : false;
+    },
   });
 
   if (projectLoading || (seoRunsQuery.isLoading && !requestedRunId)) {
@@ -78,8 +98,12 @@ function DashboardReportContent() {
   if (!reportRunId) {
     return (
       <EmptyState
-        title="No completed SEO run"
-        description="Run SEO Analysis from the overview, then the client-facing report will appear here."
+        title={requestedRunId ? 'SEO run not found' : 'No SEO run yet'}
+        description={
+          requestedRunId
+            ? 'That SEO run does not exist for this project. Open the overview to start a new run.'
+            : 'Run SEO Analysis from the overview. The report appears here and fills in as each stage finishes.'
+        }
         action={
           <Button asChild type="button">
             <Link href="/dashboard">Open overview</Link>
@@ -103,7 +127,53 @@ function DashboardReportContent() {
     );
   }
 
-  return <ReportView report={reportQuery.data} />;
+  return (
+    <div className="space-y-4">
+      {targetRun && targetRun.status !== 'completed' ? (
+        <RunStatusBanner
+          run={targetRun}
+          onRefresh={() => {
+            void seoRunsQuery.refetch();
+            void reportQuery.refetch();
+          }}
+        />
+      ) : null}
+      <ReportView report={reportQuery.data} />
+    </div>
+  );
+}
+
+function RunStatusBanner({ run, onRefresh }: { run: SeoRun; onRefresh: () => void }) {
+  const active = run.status === 'queued' || run.status === 'running';
+  const failedStage = Object.entries(run.stage_statuses ?? {}).find(
+    ([, value]) => value === 'failed'
+  )?.[0];
+  const failedError = failedStage ? run.stage_errors?.[failedStage] : undefined;
+
+  const tone = active
+    ? 'border-blue-200 bg-blue-50 text-blue-900'
+    : 'border-amber-200 bg-amber-50 text-amber-900';
+
+  return (
+    <div className={`flex flex-wrap items-start justify-between gap-3 rounded-lg border p-4 ${tone}`}>
+      <div className="space-y-1">
+        <p className="text-sm font-semibold">
+          {active
+            ? `SEO run in progress — ${formatLabel(run.current_stage)}`
+            : `Last SEO run ${formatLabel(run.status)}${failedStage ? ` at ${formatLabel(failedStage)}` : ''}`}
+        </p>
+        <p className="text-xs leading-5">
+          {active
+            ? 'Sections below fill in as each stage completes. This report refreshes automatically.'
+            : 'The report below shows the partial results captured before the run stopped.'}
+          {failedError ? ` Details: ${failedError}` : ''}
+        </p>
+      </div>
+      <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
+        Refresh
+      </Button>
+    </div>
+  );
 }
 
 function ReportView({ report }: { report: SeoRunReportResponse }) {
