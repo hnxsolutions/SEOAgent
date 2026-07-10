@@ -1,4 +1,4 @@
-"""Client-facing report generation for completed one-click SEO runs."""
+"""Client-facing report generation for one-click SEO runs (any run status)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -38,6 +38,10 @@ class SeoReportService:
         self.db = db
 
     async def generate_report(self, run_id: UUID, tenant_id: UUID) -> Optional[SeoRunReportResponse]:
+        # Works for a run in ANY status: each section reports available/no_data
+        # from the data actually captured, and run_status reflects the live state.
+        # In-progress and failed runs therefore surface partial results rather
+        # than appearing as "nothing ran".
         run = await self._get_run(run_id, tenant_id)
         if not run:
             return None
