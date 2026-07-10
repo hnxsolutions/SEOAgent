@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ActionNotice, EmptyState, LoadingBlock } from '@/components/dashboard/DashboardStates';
 import { Button } from '@/components/ui/button';
@@ -76,6 +77,7 @@ const emptyForm: ProjectContextForm = {
 
 export default function ProjectSetupPage() {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const { projectId, project, projects, setProjectId, isLoading: projectLoading } = useDashboardProject();
   const [mode, setMode] = useState<OnboardingMode>('edit');
   const [activeStep, setActiveStep] = useState(0);
@@ -110,13 +112,23 @@ export default function ProjectSetupPage() {
       return dashboardApi.createProject(payload);
     },
     onSuccess: async (savedProject) => {
-      setNotice(mode === 'edit' ? 'Project context updated.' : 'Project created with onboarding context.');
+      const wasCreate = mode !== 'edit';
+      setNotice(
+        wasCreate
+          ? 'Project created. Opening your dashboard…'
+          : 'Project context updated.'
+      );
       setErrorNotice(undefined);
       setMode('edit');
+      // Persist + select the saved project so the dashboard opens on it.
       setProjectId(savedProject.id);
+      window.localStorage.setItem('dashboard_project_id', savedProject.id);
       setForm(projectToForm(savedProject));
       queryClient.setQueryData<Project[]>(['dashboard-projects'], (current) => upsertProject(current, savedProject));
       await queryClient.invalidateQueries({ queryKey: ['dashboard-projects'] });
+      if (wasCreate) {
+        router.push('/dashboard');
+      }
     },
     onError: (error) => {
       setErrorNotice(extractApiError(error, 'Project context could not be saved.'));
