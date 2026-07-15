@@ -6,8 +6,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db, get_db_session
+from app.core.database import get_db
 from app.core.security import get_current_user
+from app.jobs.seo_run_jobs import run_seo_run_background
 from app.schemas.seo_run import SeoRunListResponse, SeoRunReportResponse, SeoRunResponse
 from app.services.seo_report import SeoReportService
 from app.services.seo_run import SeoRunService
@@ -90,13 +91,3 @@ async def get_seo_run_report_html(
     if not report:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SEO run not found")
     return HTMLResponse(service.render_html(report))
-
-
-async def run_seo_run_background(run_id: UUID, tenant_id: UUID) -> None:
-    """Execute one-click SEO run with a fresh DB session."""
-    db = get_db_session()
-    try:
-        service = SeoRunService(db)
-        await service.execute_run(run_id, tenant_id)
-    finally:
-        await db.close()

@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "json"
     
     # Feature Flags
+    # Autonomy: when a project is created, immediately kick off the full SEO
+    # pipeline (crawl -> audit -> semantic -> content -> planner) in the
+    # background so the user does not have to click "Run SEO Analysis".
+    AUTO_RUN_SEO_ON_PROJECT_CREATE: bool = True
     FEATURE_CRAWLER_ENABLED: bool = True
     FEATURE_SERP_ANALYSIS_ENABLED: bool = True
     FEATURE_AI_VISIBILITY_ENABLED: bool = True

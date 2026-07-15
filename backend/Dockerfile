@@ -18,10 +18,13 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies.
+# git is required by the Repository AI Agent to create branches, commit patches
+# and push pull requests for approved SEO code fixes.
 RUN apt-get update && apt-get install -y \
     libpq5 \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

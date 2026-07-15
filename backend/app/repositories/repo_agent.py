@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.content_optimization import ContentOptimizationSuggestion, ContentOptimizationSuggestionStatus
 from app.models.geo_aeo import GeoAeoRecommendation
+from app.models.planner import SeoTask, SeoTaskStatus, SeoTaskType
 from app.models.project import Project
 from app.models.repo_agent import (
     PatchApplyResult,
@@ -545,4 +546,32 @@ class RepoAgentRepository:
         if project_id:
             query = query.where(GeoAeoRecommendation.project_id == project_id)
         result = await self.db.execute(query.limit(200))
+        return list(result.scalars().all())
+
+    # Task types the repository agent can turn into code changes. Content/topic
+    # tasks (blogs, citations, backlinks) are excluded because they are not code.
+    CODE_ADDRESSABLE_TASK_TYPES = (
+        SeoTaskType.metadata_rewrite,
+        SeoTaskType.schema_addition,
+        SeoTaskType.geo_aeo_improvement,
+        SeoTaskType.search_console_opportunity,
+        SeoTaskType.sitemap_robots_fix,
+    )
+
+    async def list_open_planner_tasks(self, tenant_id: UUID, project_id: Optional[UUID]) -> List[SeoTask]:
+        """Open planner tasks whose type maps to a concrete code change."""
+        query = select(SeoTask).where(
+            SeoTask.tenant_id == tenant_id,
+            SeoTask.status.in_([
+                SeoTaskStatus.todo,
+                SeoTaskStatus.in_progress,
+                SeoTaskStatus.approved,
+            ]),
+            SeoTask.task_type.in_(self.CODE_ADDRESSABLE_TASK_TYPES),
+        )
+        if project_id:
+            query = query.where(SeoTask.project_id == project_id)
+        result = await self.db.execute(
+            query.order_by(SeoTask.priority_score.desc()).limit(200)
+        )
         return list(result.scalars().all())
