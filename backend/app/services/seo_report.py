@@ -87,6 +87,11 @@ class SeoReportService:
         semantic_vector_count = int(getattr(semantic, "indexed_vectors", 0) or getattr(semantic, "total_vectors", 0) or 0)
         content_suggestions_count = int(getattr(content_run, "total_suggestions", 0) or len(content_suggestions))
         planner_tasks_count = int(getattr(planner_run, "tasks_created", 0) or len(planner_tasks))
+        planner_tasks_total_count = await self._count_planner_tasks(
+            getattr(run, "planner_run_id", None), tenant_id
+        )
+        # Never let the "new" count exceed the true total (e.g. stale counters).
+        planner_tasks_total_count = max(planner_tasks_total_count, planner_tasks_count)
 
         project_name = getattr(project, "name", None) or "SEO project"
         website_url = self._website_url(getattr(project, "domain", None) or getattr(crawl, "url", None) or "")
@@ -114,6 +119,7 @@ class SeoReportService:
             content_suggestions_count=content_suggestions_count,
             content_suggestions=content_suggestions,
             planner_tasks_count=planner_tasks_count,
+            planner_tasks_total_count=planner_tasks_total_count,
             planner_tasks=planner_tasks,
             keyword_baselines=keyword_baselines,
             search_console_performance=search_console_performance,
@@ -140,6 +146,7 @@ class SeoReportService:
             semantic_vector_count=semantic_vector_count,
             content_suggestions_count=content_suggestions_count,
             planner_tasks_count=planner_tasks_count,
+            planner_tasks_total_count=planner_tasks_total_count,
             data_availability=data_availability,
             executive_summary=executive_summary,
             sections=sections,
@@ -319,6 +326,25 @@ class SeoReportService:
         )
         return [self._planner_task_item(task) for task in result.scalars().all()]
 
+    async def _count_planner_tasks(self, run_id: Optional[UUID], tenant_id: UUID) -> int:
+        """Total tasks attached to this planner run.
+
+        The weekly planner both creates new tasks and refreshes/carries forward
+        existing open tasks, so ``planner_run.tasks_created`` (new-only) is smaller
+        than the number of task rows the plan actually contains. The report shows
+        both numbers, so the total must be counted directly to stay consistent with
+        the Planner page task list.
+        """
+        if not run_id:
+            return 0
+        result = await self.db.execute(
+            select(func.count(SeoTask.id)).where(
+                SeoTask.planner_run_id == run_id,
+                SeoTask.tenant_id == tenant_id,
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def _list_keyword_baselines(self, project_id: Optional[UUID], tenant_id: UUID, limit: int = 25) -> list[dict[str, Any]]:
         if not project_id:
             return []
@@ -495,6 +521,7 @@ class SeoReportService:
         content_suggestions_count: int,
         content_suggestions: list[dict[str, Any]],
         planner_tasks_count: int,
+        planner_tasks_total_count: int,
         planner_tasks: list[dict[str, Any]],
         keyword_baselines: list[dict[str, Any]],
         search_console_performance: dict[str, Any],
@@ -607,12 +634,18 @@ class SeoReportService:
                 key="weekly_planner",
                 title="Weekly Action Plan",
                 summary=(
-                    f"{planner_tasks_count} planner tasks were created."
-                    if planner_tasks_count
+                    f"{planner_tasks_total_count} planner tasks in the plan "
+                    f"({planner_tasks_count} new this run)."
+                    if planner_tasks_total_count
                     else "No weekly planner tasks were created for this run."
                 ),
-                status="available" if planner_tasks_count else "no_data",
-                metrics={"tasks": planner_tasks_count},
+                status="available" if planner_tasks_total_count else "no_data",
+                metrics={
+                    "tasks_total": planner_tasks_total_count,
+                    "tasks_new": planner_tasks_count,
+                    # Back-compat: existing consumers reading "tasks" get the total.
+                    "tasks": planner_tasks_total_count,
+                },
                 items=planner_tasks,
             ),
             SeoReportSection(

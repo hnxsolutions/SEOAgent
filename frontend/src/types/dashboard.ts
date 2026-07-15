@@ -138,6 +138,7 @@ export type SeoRunReportResponse = {
   semantic_vector_count: number;
   content_suggestions_count: number;
   planner_tasks_count: number;
+  planner_tasks_total_count: number;
   data_availability: Record<string, string>;
   executive_summary: string;
   sections: SeoReportSection[];

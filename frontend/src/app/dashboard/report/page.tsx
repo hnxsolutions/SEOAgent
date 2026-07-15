@@ -239,8 +239,8 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
         />
         <ReportMetric
           label="Planner Tasks"
-          value={report.planner_tasks_count}
-          detail="Weekly action items"
+          value={report.planner_tasks_total_count || report.planner_tasks_count}
+          detail={`${report.planner_tasks_count} new this run`}
           icon={ClipboardList}
         />
       </section>

@@ -73,6 +73,7 @@ class SeoRunReportResponse(BaseModel):
     semantic_vector_count: int = 0
     content_suggestions_count: int = 0
     planner_tasks_count: int = 0
+    planner_tasks_total_count: int = 0
     data_availability: Dict[str, str] = Field(default_factory=dict)
     executive_summary: str
     sections: List[SeoReportSection] = Field(default_factory=list)

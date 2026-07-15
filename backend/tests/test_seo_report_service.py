@@ -132,6 +132,11 @@ def patch_report_sources(
     )
     monkeypatch.setattr(
         service,
+        "_count_planner_tasks",
+        AsyncMock(return_value=3),
+    )
+    monkeypatch.setattr(
+        service,
         "_data_availability",
         AsyncMock(
             return_value=data_availability
@@ -178,6 +183,11 @@ async def test_completed_seo_run_returns_report(monkeypatch):
     assert report.semantic_vector_count == 12
     assert report.content_suggestions_count == 1
     assert report.planner_tasks_count == 1
+    assert report.planner_tasks_total_count == 3
+    planner_section = next(section for section in report.sections if section.key == "weekly_planner")
+    assert planner_section.metrics["tasks_new"] == 1
+    assert planner_section.metrics["tasks_total"] == 3
+    assert "1 new" in planner_section.summary
     assert report.next_actions
     business_section = next(section for section in report.sections if section.key == "business_context")
     assert business_section.title == "Business Context"
