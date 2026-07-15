@@ -134,7 +134,12 @@ export default function SeoBrainPage() {
               <div className="text-sm font-semibold capitalize">{name.replace('_', ' ')}</div>
               <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                 {Object.entries(data as Record<string, unknown>)
-                  .filter(([k]) => !k.endsWith('_id') && k !== 'project_id')
+                  .filter(
+                    ([k, v]) =>
+                      !k.endsWith('_id') &&
+                      k !== 'project_id' &&
+                      (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+                  )
                   .slice(0, 4)
                   .map(([k, v]) => (
                     <div key={k}>
