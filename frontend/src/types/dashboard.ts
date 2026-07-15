@@ -1216,3 +1216,50 @@ export type GoogleOAuthStart = {
   expires_at: string;
   scopes: string[];
 };
+
+export type BrainMasterPlanItem = {
+  source: string;
+  issue_type: string;
+  title: string;
+  url?: string | null;
+  reference_id?: string | null;
+  severity: string;
+  impact: string;
+  difficulty: string;
+  category: string;
+  code_fixable: boolean;
+  estimated_minutes: number;
+  expected_traffic_gain: string;
+  expected_ranking_gain: string;
+  confidence: number;
+  business_impact: string;
+  priority_score: number;
+};
+
+export type BrainMasterPlan = {
+  project_id: string;
+  total_issues: number;
+  code_fixable_count: number;
+  by_category: Record<string, number>;
+  top_priority?: BrainMasterPlanItem | null;
+  items: BrainMasterPlanItem[];
+};
+
+export type BrainState = {
+  project_id: string;
+  project_name: string;
+  domain: string;
+  overall_health: number;
+  current_run: {
+    id?: string | null;
+    status: string;
+    current_stage?: string | null;
+    stage_statuses?: Record<string, string> | null;
+  };
+  pending_approvals: { proposed_patches: number; open_pull_requests: number };
+  master_plan_preview: BrainMasterPlanItem[];
+  master_plan_total: number;
+  code_fixable_count: number;
+  next_action: string;
+  modules: Record<string, Record<string, unknown>>;
+};

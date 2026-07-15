@@ -376,6 +376,7 @@ function ProjectSelector({
 }
 
 const navItems = [
+  { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Report', href: '/dashboard/report', icon: FileCheck2 },
   { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
