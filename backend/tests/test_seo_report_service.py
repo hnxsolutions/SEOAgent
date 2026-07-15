@@ -32,6 +32,7 @@ def patch_report_sources(
     data_availability=None,
     keyword_baselines=None,
     search_console_performance=None,
+    sitemap_summary=None,
     project=None,
 ):
     project = project or SimpleNamespace(id=run.project_id, tenant_id=run.tenant_id, name="Acme", domain="example.com")
@@ -139,6 +140,28 @@ def patch_report_sources(
                 "search_console": "Connected",
                 "ranking_data": "Real Search Console data available",
                 "serp": "Manual SERP snapshots available",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_sitemap_summary",
+        AsyncMock(
+            return_value=sitemap_summary
+            if sitemap_summary is not None
+            else {
+                "status": "available",
+                "sitemaps_count": 1,
+                "open_issues": 2,
+                "by_severity": {"high": 1, "medium": 1},
+                "items": [
+                    {
+                        "issue_type": "non_https_url",
+                        "severity": "high",
+                        "title": "Sitemap lists non-HTTPS URLs",
+                        "recommended_action": "Update sitemap URLs to HTTPS.",
+                    }
+                ],
             }
         ),
     )
@@ -372,3 +395,42 @@ async def test_report_keyword_baseline_empty_state(monkeypatch):
 
     assert baseline_section.status == "no_data"
     assert baseline_section.summary == "No manual keyword baseline provided."
+
+
+@pytest.mark.asyncio
+async def test_report_includes_sitemap_section_with_open_issues(monkeypatch):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    run = make_run(tenant_id, project_id)
+    service = SeoReportService(db=object())
+    patch_report_sources(monkeypatch, service, run)  # default sitemap_summary has open issues
+
+    report = await service.generate_report(run.id, tenant_id)
+    sitemap_section = next(section for section in report.sections if section.key == "sitemap_health")
+
+    assert sitemap_section.status == "available"
+    assert sitemap_section.metrics["open_issues"] == 2
+    assert sitemap_section.metrics["sitemaps_tracked"] == 1
+    payload = sitemap_section.model_dump_json()
+    assert "non_https_url" in payload
+    assert "Update sitemap URLs to HTTPS." in payload
+
+
+@pytest.mark.asyncio
+async def test_report_sitemap_section_empty_state(monkeypatch):
+    tenant_id = uuid4()
+    project_id = uuid4()
+    run = make_run(tenant_id, project_id)
+    service = SeoReportService(db=object())
+    patch_report_sources(
+        monkeypatch,
+        service,
+        run,
+        sitemap_summary={"status": "no_data", "sitemaps_count": 0, "open_issues": 0, "by_severity": {}, "items": []},
+    )
+
+    report = await service.generate_report(run.id, tenant_id)
+    sitemap_section = next(section for section in report.sections if section.key == "sitemap_health")
+
+    assert sitemap_section.status == "no_data"
+    assert "Run sitemap detection/analysis" in sitemap_section.summary

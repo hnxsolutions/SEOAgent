@@ -12,6 +12,7 @@ from app.models.internal_linking import InternalLinkRecommendationType
 from app.models.planner import (
     SeoPlannerRunStatus,
     SeoPlannerRunType,
+    SeoTaskSourceType,
     SeoTaskStatus,
     SeoTaskType,
 )
@@ -57,6 +58,7 @@ class FakePlannerRepository:
         self.content_suggestions = []
         self.geo_recommendations = []
         self.internal_link_recommendations = []
+        self.sitemap_issues = []
         self.blog_topics = []
         self.repo_patches = []
         self.repo_issues = []
@@ -216,6 +218,9 @@ class FakePlannerRepository:
     async def list_internal_link_recommendations(self, project_id, tenant_id, limit=200):
         return self.internal_link_recommendations
 
+    async def list_sitemap_issues(self, project_id, tenant_id, limit=200):
+        return self.sitemap_issues
+
     async def list_blog_topics(self, project_id, tenant_id, limit=200):
         return self.blog_topics
 
@@ -320,6 +325,17 @@ def seeded_repository():
             status=SeoCodePatchStatus.proposed,
         )
     ]
+    repo.sitemap_issues = [
+        obj(
+            id=uuid4(),
+            issue_type="non_https_url",
+            severity=SEOIssueSeverity.high,
+            title="Sitemap lists non-HTTPS URLs",
+            description="The sitemap references http:// URLs.",
+            recommended_action="Update sitemap URLs to their HTTPS equivalents.",
+            sample_urls=["http://example.com/page"],
+        )
+    ]
     return repo, tenant_id, project_id
 
 
@@ -342,6 +358,10 @@ async def test_planner_run_creation_and_task_generation_from_all_modules():
     assert SeoTaskType.blog_topic in task_types
     assert SeoTaskType.blog_draft in task_types
     assert SeoTaskType.repo_patch_review in task_types
+    assert SeoTaskType.sitemap_robots_fix in task_types
+    sitemap_task = next(task for task in repo.tasks if task.task_type == SeoTaskType.sitemap_robots_fix)
+    assert sitemap_task.source_type == SeoTaskSourceType.search_console
+    assert sitemap_task.priority_score == 80  # high severity
     assert repo.reports[0].summary.startswith("Weekly SEO plan")
 
 

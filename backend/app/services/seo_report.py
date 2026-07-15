@@ -26,6 +26,7 @@ from app.models.search_console import (
 )
 from app.models.semantic import SemanticIndexedContent, SemanticIndexRun
 from app.models.seo_run import SeoRun
+from app.models.sitemap import GSCSitemapRecord, SitemapIssue, SitemapIssueSeverity, SitemapIssueStatus
 from app.models.serp import SerpSnapshot
 from app.schemas.seo_run import SeoReportActionItem, SeoReportSection, SeoRunReportResponse
 from app.services.project_context import business_context_items, has_business_context, project_business_context
@@ -66,6 +67,7 @@ class SeoReportService:
         data_availability = await self._data_availability(getattr(run, "project_id"), tenant_id)
         keyword_baselines = await self._list_keyword_baselines(getattr(run, "project_id"), tenant_id)
         search_console_performance = await self._search_console_performance(getattr(run, "project_id"), tenant_id)
+        sitemap_summary = await self._sitemap_summary(getattr(run, "project_id"), tenant_id)
         business_context = project_business_context(project)
         competitor_urls = self._list_values(getattr(project, "competitor_urls", None))
 
@@ -117,6 +119,7 @@ class SeoReportService:
             planner_tasks=planner_tasks,
             keyword_baselines=keyword_baselines,
             search_console_performance=search_console_performance,
+            sitemap_summary=sitemap_summary,
             data_availability=data_availability,
             business_context=business_context,
             competitor_urls=competitor_urls,
@@ -330,6 +333,66 @@ class SeoReportService:
         )
         return [self._keyword_baseline_item(baseline) for baseline in result.scalars().all()]
 
+    async def _sitemap_summary(self, project_id: Optional[UUID], tenant_id: UUID, limit: int = 10) -> dict[str, Any]:
+        """Project-level sitemap intelligence summary for the report.
+
+        Sitemaps and their issues are project-scoped (not tied to a single run),
+        and are populated by the sitemap analyze/detect flow independently of GSC.
+        """
+        empty = {"status": "no_data", "sitemaps_count": 0, "open_issues": 0, "by_severity": {}, "items": []}
+        if not project_id:
+            return empty
+
+        sitemaps_count_result = await self.db.execute(
+            select(func.count(GSCSitemapRecord.id)).where(
+                GSCSitemapRecord.project_id == project_id,
+                GSCSitemapRecord.tenant_id == tenant_id,
+            )
+        )
+        sitemaps_count = sitemaps_count_result.scalar() or 0
+
+        severity_rows = await self.db.execute(
+            select(SitemapIssue.severity, func.count(SitemapIssue.id))
+            .where(
+                SitemapIssue.project_id == project_id,
+                SitemapIssue.tenant_id == tenant_id,
+                SitemapIssue.status.in_([SitemapIssueStatus.open, SitemapIssueStatus.approved]),
+            )
+            .group_by(SitemapIssue.severity)
+        )
+        by_severity = {self._enum_value(sev): int(count) for sev, count in severity_rows.all()}
+        open_issues = sum(by_severity.values())
+
+        issues_result = await self.db.execute(
+            select(SitemapIssue)
+            .where(
+                SitemapIssue.project_id == project_id,
+                SitemapIssue.tenant_id == tenant_id,
+                SitemapIssue.status.in_([SitemapIssueStatus.open, SitemapIssueStatus.approved]),
+            )
+            .order_by(SitemapIssue.severity.desc(), SitemapIssue.created_at.desc())
+            .limit(limit)
+        )
+        items = [
+            {
+                "issue_type": self._enum_value(getattr(issue, "issue_type", "")),
+                "severity": self._enum_value(getattr(issue, "severity", "")),
+                "title": getattr(issue, "title", ""),
+                "recommended_action": getattr(issue, "recommended_action", ""),
+            }
+            for issue in issues_result.scalars().all()
+        ]
+
+        if not sitemaps_count and not open_issues:
+            return empty
+        return {
+            "status": "available",
+            "sitemaps_count": int(sitemaps_count),
+            "open_issues": open_issues,
+            "by_severity": by_severity,
+            "items": items,
+        }
+
     async def _count_issues_by(self, audit_id: UUID, tenant_id: UUID, column: Any) -> dict[str, int]:
         result = await self.db.execute(
             select(column, func.count(SEOIssue.id))
@@ -498,6 +561,7 @@ class SeoReportService:
         planner_tasks: list[dict[str, Any]],
         keyword_baselines: list[dict[str, Any]],
         search_console_performance: dict[str, Any],
+        sitemap_summary: dict[str, Any],
         data_availability: dict[str, str],
         business_context: dict[str, Any],
         competitor_urls: list[str],
@@ -578,6 +642,23 @@ class SeoReportService:
                     "by_category": issue_counts_by_category,
                 },
                 items=top_issues,
+            ),
+            SeoReportSection(
+                key="sitemap_health",
+                title="Sitemap & Indexability",
+                summary=(
+                    f"{sitemap_summary['open_issues']} open sitemap issue(s) across "
+                    f"{sitemap_summary['sitemaps_count']} tracked sitemap(s)."
+                    if sitemap_summary.get("status") == "available"
+                    else "No sitemap analysis yet. Run sitemap detection/analysis to surface indexability issues."
+                ),
+                status=sitemap_summary.get("status", "no_data"),
+                metrics={
+                    "sitemaps_tracked": sitemap_summary.get("sitemaps_count", 0),
+                    "open_issues": sitemap_summary.get("open_issues", 0),
+                    "by_severity": sitemap_summary.get("by_severity", {}),
+                },
+                items=sitemap_summary.get("items", []),
             ),
             SeoReportSection(
                 key="semantic_index",

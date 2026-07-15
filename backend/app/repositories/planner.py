@@ -33,6 +33,7 @@ from app.models.search_console import (
     SearchConsoleOpportunityStatus,
 )
 from app.models.semantic import SemanticIndexRun
+from app.models.sitemap import SitemapIssue, SitemapIssueStatus
 
 
 OPEN_TASK_STATUSES = {
@@ -414,6 +415,22 @@ class PlannerRepository:
                 ]),
             )
             .order_by(GeoAeoRecommendation.priority_score.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_sitemap_issues(self, project_id: UUID, tenant_id: UUID, limit: int = 200) -> List[SitemapIssue]:
+        result = await self.db.execute(
+            select(SitemapIssue)
+            .where(
+                SitemapIssue.project_id == project_id,
+                SitemapIssue.tenant_id == tenant_id,
+                SitemapIssue.status.in_([
+                    SitemapIssueStatus.open,
+                    SitemapIssueStatus.approved,
+                ]),
+            )
+            .order_by(SitemapIssue.severity.desc(), SitemapIssue.created_at.desc())
             .limit(limit)
         )
         return list(result.scalars().all())

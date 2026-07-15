@@ -273,6 +273,7 @@ class PlannerService:
             "content_suggestions": await self.repository.list_content_suggestions(run.project_id, run.tenant_id),
             "geo_recommendations": await self.repository.list_geo_recommendations(run.project_id, run.tenant_id),
             "internal_link_recommendations": await self.repository.list_internal_link_recommendations(run.project_id, run.tenant_id),
+            "sitemap_issues": await self.repository.list_sitemap_issues(run.project_id, run.tenant_id),
             "blog_topics": await self.repository.list_blog_topics(run.project_id, run.tenant_id),
             "repo_patches": await self.repository.list_repo_patches(run.project_id, run.tenant_id),
             "repo_issues": await self.repository.list_repo_issues(run.project_id, run.tenant_id),
@@ -289,6 +290,7 @@ class PlannerService:
         candidates.extend(self._tasks_from_content(signals["content_suggestions"]))
         candidates.extend(self._tasks_from_geo(signals["geo_recommendations"]))
         candidates.extend(self._tasks_from_internal_links(signals["internal_link_recommendations"]))
+        candidates.extend(self._tasks_from_sitemap(signals["sitemap_issues"]))
         candidates.extend(self._tasks_from_blogs(signals["blog_topics"], has_knowledge=signals["has_knowledge"]))
         candidates.extend(self._tasks_from_repo(signals["repo_patches"], signals["repo_issues"]))
         candidates.extend(self._tasks_from_project_context(signals["project_context"]))
@@ -562,6 +564,34 @@ class PlannerService:
                     priority_score=self._score_from_severity(getattr(issue, "severity", None), getattr(issue, "score_impact", 0)),
                     estimated_impact=self._impact_from_severity(getattr(issue, "severity", None)),
                     effort=SeoTaskEffort.low if task_type in {SeoTaskType.metadata_rewrite, SeoTaskType.schema_addition} else SeoTaskEffort.medium,
+                )
+            )
+        return candidates
+
+    def _tasks_from_sitemap(self, issues) -> List[TaskCandidate]:
+        """Turn open sitemap-intelligence issues into prioritized planner tasks.
+
+        Sitemap issues live under the Search Console feature, so they map to the
+        search_console source with the sitemap_robots_fix task type.
+        """
+        candidates = []
+        for issue in issues:
+            issue_type = self._enum_value(getattr(issue, "issue_type", "")) or "sitemap_issue"
+            sample_urls = getattr(issue, "sample_urls", None)
+            target_url = sample_urls[0] if isinstance(sample_urls, list) and sample_urls else None
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.sitemap_robots_fix,
+                    title=getattr(issue, "title", None) or f"Fix sitemap issue: {issue_type.replace('_', ' ')}",
+                    description=getattr(issue, "recommended_action", None)
+                    or getattr(issue, "description", None)
+                    or "Resolve this sitemap/indexability issue.",
+                    source_type=SeoTaskSourceType.search_console,
+                    source_reference_id=getattr(issue, "id", None),
+                    target_page_url=target_url,
+                    priority_score=self._score_from_severity(getattr(issue, "severity", None)),
+                    estimated_impact=self._impact_from_severity(getattr(issue, "severity", None)),
+                    effort=SeoTaskEffort.low,
                 )
             )
         return candidates

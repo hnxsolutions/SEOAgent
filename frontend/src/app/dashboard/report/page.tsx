@@ -183,6 +183,7 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
   const contentSection = report.sections.find((section) => section.key === 'content_optimization');
   const plannerSection = report.sections.find((section) => section.key === 'weekly_planner');
   const realSearchSection = report.sections.find((section) => section.key === 'real_search_data');
+  const sitemapSection = report.sections.find((section) => section.key === 'sitemap_health');
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 print:max-w-none">
@@ -316,6 +317,34 @@ function ReportView({ report }: { report: SeoRunReportResponse }) {
           </div>
         </div>
       </section>
+
+      <ReportSection title="Sitemap & Indexability" status={sitemapSection?.status} summary={sitemapSection?.summary}>
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {Object.entries(sitemapSection?.metrics ?? {})
+              .filter(([key]) => key !== 'by_severity')
+              .map(([key, value]) => (
+                <div key={key} className="rounded-md border bg-slate-50 px-3 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-normal text-slate-500">
+                    {formatLabel(key)}
+                  </p>
+                  <p className="mt-2 break-words text-sm font-medium text-slate-900">
+                    {readableValue(value)}
+                  </p>
+                </div>
+              ))}
+          </div>
+          <div className="space-y-3">
+            {(sitemapSection?.items ?? []).length ? (
+              sitemapSection!.items.slice(0, 8).map((issue) => (
+                <SitemapIssueRow key={text(issue.title, text(issue.issue_type))} issue={issue} />
+              ))
+            ) : (
+              <EmptyInline text="No open sitemap issues. Run sitemap detection/analysis to check indexability." />
+            )}
+          </div>
+        </div>
+      </ReportSection>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <ReportSection title="AI Content Suggestions" status={contentSection?.status} summary={contentSection?.summary}>
@@ -539,6 +568,23 @@ function IssueRow({ issue }: { issue: Record<string, unknown> }) {
       <p className="mt-2 text-sm font-semibold text-slate-950">{text(issue.title, 'Audit issue')}</p>
       <p className="mt-1 text-sm text-muted-foreground">{text(issue.recommendation ?? issue.message, 'Review this issue.')}</p>
       {issue.url ? <p className="mt-2 break-words text-xs text-slate-500">{text(issue.url)}</p> : null}
+    </div>
+  );
+}
+
+function SitemapIssueRow({ issue }: { issue: Record<string, unknown> }) {
+  return (
+    <div className="rounded-md border bg-slate-50 px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={text(issue.severity, 'open')} />
+        <span className="text-xs font-medium uppercase tracking-normal text-slate-500">
+          {formatLabel(text(issue.issue_type, 'sitemap'))}
+        </span>
+      </div>
+      <p className="mt-2 text-sm font-semibold text-slate-950">{text(issue.title, 'Sitemap issue')}</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {text(issue.recommended_action, 'Review this sitemap/indexability issue.')}
+      </p>
     </div>
   );
 }
