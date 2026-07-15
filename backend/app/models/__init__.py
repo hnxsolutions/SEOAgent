@@ -37,6 +37,7 @@ from app.models.indexing import (
     GSCUrlInspectionRun,
 )
 from app.models.sitemap import GSCSitemapRecord, SitemapIssue
+from app.models.robots import RobotsAnalysisRun, RobotsIssue
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
 from app.models.seo_run import SeoRun

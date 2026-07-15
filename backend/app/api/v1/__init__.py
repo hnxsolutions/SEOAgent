@@ -21,6 +21,7 @@ from app.api.v1.routes import (
     impact,
     search_console,
     sitemaps,
+    robots,
     indexing,
     keyword_baselines,
     rank_tracking,
@@ -56,6 +57,7 @@ api_router.include_router(blogs.router, prefix="/blogs", tags=["Blogs"])
 api_router.include_router(blog_publishing.router, prefix="/blog-publishing", tags=["Blog Publishing"])
 api_router.include_router(search_console.router, prefix="/search-console", tags=["Search Console"])
 api_router.include_router(sitemaps.router, prefix="/search-console", tags=["Sitemap Intelligence"])
+api_router.include_router(robots.router, prefix="/robots", tags=["Robots.txt Intelligence"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])
 api_router.include_router(keyword_baselines.router, tags=["Manual Keyword Baselines"])
 api_router.include_router(rank_tracking.router, prefix="/rank-tracking", tags=["Rank Tracking"])
