@@ -13,6 +13,7 @@ import structlog
 
 from app.core.config import settings
 from app.models.content_optimization import ContentOptimizationSuggestionType
+from app.models.planner import SeoTaskType
 from app.models.repo_agent import (
     PatchApplyResultStatus,
     PatchApplyRun,
@@ -197,6 +198,7 @@ class RepoAgentService:
             candidates = self.scanner.analyze(scanned_files)
             candidates.extend(self._architecture_issue_candidates(architecture_data, scanned_by_path, file_by_path))
             candidates.extend(await self._signal_issue_candidates(run, scanned_files, file_by_path))
+            candidates.extend(await self._planner_issue_candidates(run, scanned_files, file_by_path))
             issues = await self.repository.add_issues(
                 [self._issue_record(run, candidate, file_by_path) for candidate in candidates]
             )
@@ -903,6 +905,76 @@ class RepoAgentService:
                 )
             )
         return [candidate for candidate in candidates if candidate.file_path]
+
+    # Planner task type -> (code issue type, safe code-fix instruction).
+    _PLANNER_TASK_ISSUE_MAP = {
+        SeoTaskType.metadata_rewrite: (
+            SeoCodeIssueType.weak_metadata,
+            "Generate a metadata-only patch that preserves visible UI.",
+        ),
+        SeoTaskType.search_console_opportunity: (
+            SeoCodeIssueType.weak_metadata,
+            "Generate a metadata-only patch for human review.",
+        ),
+        SeoTaskType.schema_addition: (
+            SeoCodeIssueType.missing_schema,
+            "Generate a JSON-LD patch where a safe page component is available.",
+        ),
+        SeoTaskType.geo_aeo_improvement: (
+            SeoCodeIssueType.missing_schema,
+            "Generate a JSON-LD patch for review if the page can safely accept hidden structured data.",
+        ),
+        SeoTaskType.sitemap_robots_fix: (
+            SeoCodeIssueType.missing_sitemap,
+            "Generate a sitemap/robots configuration patch for human review.",
+        ),
+    }
+
+    async def _planner_issue_candidates(
+        self,
+        run: RepoScanRun,
+        scanned_files,
+        file_by_path: Dict[str, object],
+    ) -> List[RepoIssueCandidate]:
+        """Bridge open, code-addressable planner tasks into repo code issues.
+
+        Every candidate carries source_reference_type=planner_task and
+        source_reference_id=task.id so the resulting patch/PR stays traceable to
+        the originating planner task (and, through the task, its audit source).
+        """
+        candidates: List[RepoIssueCandidate] = []
+        tasks = await self.repository.list_open_planner_tasks(run.tenant_id, run.project_id)
+        default_file = self._default_page_file(scanned_files)
+        for task in tasks:
+            mapping = self._PLANNER_TASK_ISSUE_MAP.get(getattr(task, "task_type", None))
+            if not mapping:
+                continue
+            issue_type, recommended_fix = mapping
+            file_path = self._path_for_page_url(getattr(task, "target_page_url", None), scanned_files) or default_file
+            candidates.append(
+                self._source_candidate(
+                    file_path,
+                    file_by_path,
+                    issue_type,
+                    self._severity_from_task_priority(getattr(task, "priority", None)),
+                    getattr(task, "title", None) or "Planner task code fix",
+                    getattr(task, "description", None)
+                    or "A weekly planner task recommends a code-level SEO fix.",
+                    recommended_fix,
+                    SeoCodeIssueSource.planner_task,
+                    task.id,
+                )
+            )
+        return [candidate for candidate in candidates if candidate.file_path]
+
+    @staticmethod
+    def _severity_from_task_priority(priority) -> SeoCodeIssueSeverity:
+        """Map planner task priority onto code-issue severity (same value space)."""
+        value = getattr(priority, "value", priority)
+        try:
+            return SeoCodeIssueSeverity(value)
+        except (ValueError, TypeError):
+            return SeoCodeIssueSeverity.medium
 
     def _issue_record(
         self,

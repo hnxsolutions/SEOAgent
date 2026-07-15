@@ -68,6 +68,7 @@ class SeoCodeIssueSource(str, enum.Enum):
     geo_aeo = "geo_aeo"
     search_console = "search_console"
     repo_scan = "repo_scan"
+    planner_task = "planner_task"
 
 
 class SeoCodeIssueStatus(str, enum.Enum):

@@ -6,10 +6,12 @@ from uuid import uuid4
 import pytest
 
 from app.models.content_optimization import ContentOptimizationSuggestionType
+from app.models.planner import SeoTaskPriority, SeoTaskType
 from app.models.repo_agent import (
     RepoConnectionStatus,
     RepoProvider,
     RepoScanRunStatus,
+    SeoCodeIssueSource,
     SeoCodeIssueStatus,
     SeoCodeIssueType,
     SeoCodePatchStatus,
@@ -60,6 +62,7 @@ class FakeRepoAgentRepository:
         self.content_suggestions = []
         self.search_opportunities = []
         self.geo_recommendations = []
+        self.planner_tasks = []
         self.architecture_profile = None
 
     async def get_project(self, project_id, tenant_id):
@@ -197,6 +200,9 @@ class FakeRepoAgentRepository:
     async def list_geo_aeo_recommendations(self, tenant_id, project_id):
         return self.geo_recommendations
 
+    async def list_open_planner_tasks(self, tenant_id, project_id):
+        return self.planner_tasks
+
 
 @pytest.mark.asyncio
 async def test_service_scan_creates_repo_and_signal_issues_and_patches(tmp_path):
@@ -247,6 +253,76 @@ async def test_service_scan_creates_repo_and_signal_issues_and_patches(tmp_path)
     assert "sitemap_update" in patch_types
     assert "robots_update" in patch_types
     assert all("className" not in patch.diff_text for patch in patches)
+
+
+@pytest.mark.asyncio
+async def test_service_scan_bridges_planner_tasks_into_traceable_code_issues(tmp_path):
+    """Open code-addressable planner tasks become repo code issues that stay
+    traceable to the planner task; non-code tasks are ignored."""
+    create_fixture(tmp_path)
+    tenant_id = uuid4()
+    project_id = uuid4()
+    repository = FakeRepoAgentRepository(tenant_id, project_id, tmp_path)
+
+    metadata_task_id = uuid4()
+    schema_task_id = uuid4()
+    blog_task_id = uuid4()
+    repository.planner_tasks = [
+        SimpleNamespace(
+            id=metadata_task_id,
+            task_type=SeoTaskType.metadata_rewrite,
+            priority=SeoTaskPriority.high,
+            title="Rewrite weak title on services page",
+            description="The services page title is duplicated and too short.",
+            target_page_url="https://example.com/services",
+        ),
+        SimpleNamespace(
+            id=schema_task_id,
+            task_type=SeoTaskType.schema_addition,
+            priority=SeoTaskPriority.medium,
+            title="Add FAQ schema",
+            description="Add JSON-LD FAQ structured data.",
+            target_page_url="https://example.com/",
+        ),
+        # Not a code change -> must be ignored by the bridge.
+        SimpleNamespace(
+            id=blog_task_id,
+            task_type=SeoTaskType.blog_topic,
+            priority=SeoTaskPriority.low,
+            title="Write a blog about telehealth",
+            description="Content task, not a code change.",
+            target_page_url=None,
+        ),
+    ]
+
+    service = RepoAgentService(FakeDB())
+    service.repository = repository
+
+    connection = await service.create_connection(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        provider=RepoProvider.local,
+        local_path=str(tmp_path),
+    )
+    await service.scan_connection(connection.id, tenant_id)
+
+    planner_issues = [
+        issue
+        for issue in repository.issues
+        if issue.source_reference_type == SeoCodeIssueSource.planner_task
+    ]
+    # Only the two code-addressable tasks were bridged (blog task ignored).
+    assert len(planner_issues) == 2
+    traced_ids = {issue.source_reference_id for issue in planner_issues}
+    assert traced_ids == {metadata_task_id, schema_task_id}
+    assert blog_task_id not in traced_ids
+
+    by_source = {issue.source_reference_id: issue for issue in planner_issues}
+    assert by_source[metadata_task_id].issue_type == SeoCodeIssueType.weak_metadata
+    assert by_source[metadata_task_id].severity.value == "high"
+    assert by_source[schema_task_id].issue_type == SeoCodeIssueType.missing_schema
+    # Every planner-sourced issue must reference a real repo file (traceable fix).
+    assert all(issue.file_id is not None for issue in planner_issues)
 
 
 @pytest.mark.asyncio
