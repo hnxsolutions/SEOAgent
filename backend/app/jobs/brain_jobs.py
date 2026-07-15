@@ -9,11 +9,34 @@ from uuid import UUID
 import structlog
 
 from app.core.database import get_db_session
+from app.services.repo_agent import RepoAgentService
 from app.services.robots import RobotsIntelligenceService
 from app.services.seo_run import SeoRunService
 from app.services.sitemap import SitemapIntelligenceService
 
 logger = structlog.get_logger(__name__)
+
+
+async def dispatch_code_fixes_background(connection_id: UUID, tenant_id: UUID) -> None:
+    """Auto-dispatch: scan the connected repo and generate patches for every
+    code-fixable issue. Reuses the repo agent (which already filters to safe,
+    code-generatable issue types and leaves patches 'proposed' for admin
+    approval — nothing reaches git without a human)."""
+    db = get_db_session()
+    try:
+        service = RepoAgentService(db)
+        scan = await service.scan_connection(connection_id, tenant_id)
+        patches = await service.generate_patches(scan.id, tenant_id)
+        logger.info(
+            "brain_auto_dispatch_complete",
+            connection_id=str(connection_id),
+            scan_id=str(scan.id),
+            patches=len(patches),
+        )
+    except Exception:
+        logger.exception("brain_auto_dispatch_failed", connection_id=str(connection_id))
+    finally:
+        await db.close()
 
 
 async def run_brain_cycle_background(seo_run_id: UUID, project_id: UUID, tenant_id: UUID) -> None:

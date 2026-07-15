@@ -1263,3 +1263,34 @@ export type BrainState = {
   next_action: string;
   modules: Record<string, Record<string, unknown>>;
 };
+
+export type BrainPendingFix = {
+  patch_id: string;
+  status: string;
+  patch_type: string;
+  file_path: string;
+  affected_files: string[];
+  issue: {
+    id?: string | null;
+    issue_type: string;
+    title: string;
+    source: string;
+    source_reference_id?: string | null;
+  };
+  reason: string;
+  seo_impact: string;
+  expected_ranking_gain: string;
+  expected_traffic_gain: string;
+  confidence: number;
+  category: string;
+  risk_level: string;
+  diff: string;
+  before_after_available: boolean;
+  rollback_strategy: string;
+};
+
+export type BrainPendingFixes = {
+  project_id: string;
+  total: number;
+  items: BrainPendingFix[];
+};

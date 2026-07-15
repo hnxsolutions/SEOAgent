@@ -3,6 +3,7 @@ import { api, projectAPI } from '@/lib/api';
 import type {
   BrainState,
   BrainMasterPlan,
+  BrainPendingFixes,
   AuditRun,
   AuditSummary,
   BlogDraft,
@@ -132,6 +133,16 @@ export const dashboardApi = {
       unwrap<{ status: string; seo_run_id: string; project_id: string }>(
         api.post(`/brain/projects/${projectId}/run`)
       ),
+    dispatch: (projectId: UUID) =>
+      unwrap<{ status: string; connection_id?: string; detail?: string }>(
+        api.post(`/brain/projects/${projectId}/dispatch`)
+      ),
+    pendingFixes: (projectId: UUID) =>
+      unwrap<BrainPendingFixes>(api.get(`/brain/projects/${projectId}/pending-fixes`)),
+    approvePatch: (patchId: UUID) =>
+      unwrap<unknown>(api.post(`/repos/patches/${patchId}/approve`)),
+    rejectPatch: (patchId: UUID) =>
+      unwrap<unknown>(api.post(`/repos/patches/${patchId}/reject`)),
   },
 
   planner: {
