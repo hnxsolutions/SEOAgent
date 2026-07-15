@@ -23,7 +23,17 @@ class LocalLLMError(RuntimeError):
 
 
 class OllamaUnavailableError(LocalLLMError):
-    """Raised when the local Ollama server is not reachable."""
+    """Raised when the local Ollama server is not reachable (connection failure)."""
+
+
+class OllamaTimeoutError(LocalLLMError):
+    """Raised when Ollama is reachable but did not respond within the read timeout.
+
+    This is distinct from OllamaUnavailableError: the server accepted the
+    connection but generation took longer than ``timeout_seconds`` (typically a
+    slow CPU model or an oversized prompt/num_predict), so the message must not
+    claim the server is "not reachable".
+    """
 
 
 class OllamaModelNotFoundError(LocalLLMError):
@@ -42,12 +52,14 @@ class LocalLLMService:
         base_url: str = settings.OLLAMA_BASE_URL,
         default_model: str = settings.OLLAMA_DEFAULT_MODEL,
         timeout_seconds: float = settings.OLLAMA_TIMEOUT_SECONDS,
+        connect_timeout_seconds: float = settings.OLLAMA_CONNECT_TIMEOUT_SECONDS,
         max_retries: int = settings.OLLAMA_MAX_RETRIES,
         client: Optional[httpx.AsyncClient] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
         self.timeout_seconds = timeout_seconds
+        self.connect_timeout_seconds = connect_timeout_seconds
         self.max_retries = max(0, int(max_retries))
         self._client = client
 
@@ -224,7 +236,18 @@ class LocalLLMService:
                         f"Ollama request failed with status {response.status_code}: {response.text}"
                     )
                 return response.json()
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.NetworkError) as exc:
+            except httpx.ReadTimeout as exc:
+                # The server accepted the connection but generation exceeded the
+                # read timeout. Retrying rarely helps (the model is simply slow)
+                # and each retry costs another full timeout, so fail fast with an
+                # accurate, actionable message instead of "not reachable".
+                raise OllamaTimeoutError(
+                    f"Ollama did not respond within {self.timeout_seconds:.0f}s at "
+                    f"{self.base_url}. The local model was too slow for this request "
+                    f"(large prompt or high num_predict). Increase OLLAMA_TIMEOUT_SECONDS "
+                    f"or reduce the request size."
+                ) from exc
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.NetworkError) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     await asyncio.sleep(0.25 * (attempt + 1))
@@ -250,7 +273,7 @@ class LocalLLMService:
 
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=httpx.Timeout(self.timeout_seconds),
+            timeout=httpx.Timeout(self.timeout_seconds, connect=self.connect_timeout_seconds),
         ) as client:
             return await client.request(method, path, json=json_payload)
 

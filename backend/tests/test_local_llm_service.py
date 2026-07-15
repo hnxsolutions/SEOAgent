@@ -6,6 +6,7 @@ import pytest
 from app.services.local_llm import (
     LocalLLMService,
     OllamaModelNotFoundError,
+    OllamaTimeoutError,
     OllamaUnavailableError,
 )
 
@@ -147,3 +148,45 @@ async def test_generate_json_parses_json_object_from_response_text():
         result = await service.generate_json("Return a title")
 
     assert result["json"] == {"title": "Local SEO"}
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_raises_timeout_error_not_unreachable():
+    """A slow generation (ReadTimeout) must be reported as a timeout, not as the
+    server being unreachable, and must not be retried into a multiple of the
+    read timeout."""
+    generate_calls = 0
+
+    async def handler(request):
+        nonlocal generate_calls
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=tags_payload())
+        generate_calls += 1
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://ollama.test") as client:
+        service = LocalLLMService(base_url="http://ollama.test", client=client, max_retries=2)
+        with pytest.raises(OllamaTimeoutError) as exc_info:
+            await service.generate("hello")
+
+    message = str(exc_info.value)
+    assert "not reachable" not in message
+    assert "did not respond" in message
+    # ReadTimeout must fail fast (single attempt), not retry through the timeout.
+    assert generate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_error_still_raises_unavailable():
+    """A genuine connection failure must still surface as OllamaUnavailableError."""
+    async def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=tags_payload())
+        raise httpx.ConnectError("connection refused", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://ollama.test") as client:
+        service = LocalLLMService(base_url="http://ollama.test", client=client, max_retries=0)
+        with pytest.raises(OllamaUnavailableError) as exc_info:
+            await service.generate("hello")
+
+    assert "not reachable" in str(exc_info.value)

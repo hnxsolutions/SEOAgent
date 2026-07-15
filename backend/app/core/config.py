@@ -74,7 +74,14 @@ class Settings(BaseSettings):
     # Local Ollama connector only; the app must stay self-hosted.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_DEFAULT_MODEL: str = "qwen2.5:3b"
-    OLLAMA_TIMEOUT_SECONDS: float = 60.0
+    # Read timeout for a single generation. CPU inference of a 3B model with
+    # num_predict up to ~1200 tokens measured 15-40s per call and can spike
+    # higher on cold start or contention, so 60s produced spurious ReadTimeouts
+    # that failed the content-optimization stage. 180s gives ample headroom.
+    OLLAMA_TIMEOUT_SECONDS: float = 180.0
+    # Connection-establishment timeout, kept short so a genuinely down server is
+    # reported quickly rather than waiting out the full read timeout.
+    OLLAMA_CONNECT_TIMEOUT_SECONDS: float = 10.0
     OLLAMA_MAX_RETRIES: int = 2
 
     # Free Google Search Console API integration. Optional until configured.
