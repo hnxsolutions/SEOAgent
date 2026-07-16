@@ -1,6 +1,8 @@
 import type { AxiosResponse } from 'axios';
 import { api, projectAPI } from '@/lib/api';
 import type {
+  BrainState,
+  BrainMasterPlan,
   AuditRun,
   AuditSummary,
   BlogDraft,
@@ -117,6 +119,19 @@ export const dashboardApi = {
       unwrap<SeoRun>(api.get(`/seo-runs/${runId}/status`)),
     report: (runId: UUID) =>
       unwrap<SeoRunReportResponse>(api.get(`/seo-runs/${runId}/report`)),
+  },
+
+  brain: {
+    state: (projectId: UUID) =>
+      unwrap<BrainState>(api.get(`/brain/projects/${projectId}/state`)),
+    masterPlan: (projectId: UUID) =>
+      unwrap<BrainMasterPlan>(
+        api.get(`/brain/projects/${projectId}/master-plan`, { params: { limit: 100 } })
+      ),
+    run: (projectId: UUID) =>
+      unwrap<{ status: string; seo_run_id: string; project_id: string }>(
+        api.post(`/brain/projects/${projectId}/run`)
+      ),
   },
 
   planner: {
