@@ -146,14 +146,39 @@ class SeoBrainService:
             )
             issues_by_id = {i.id: i for i in irows.scalars().all()}
 
-        items = [self._enrich_patch(p, issues_by_id.get(p.issue_id)) for p in patches]
+        # Evidence-based confidence (from verified past outcomes) overrides the
+        # heuristic when enough history exists for a patch type.
+        from app.services.learning import LearningEngine
+
+        confidence_map = await LearningEngine(self.db).confidence_map(tenant_id)
+
+        items = [
+            self._enrich_patch(
+                p,
+                issues_by_id.get(p.issue_id),
+                evidence_confidence=self._evidence_confidence(confidence_map, p),
+            )
+            for p in patches
+        ]
         return {
             "project_id": str(project_id),
             "total": len(items),
             "items": items,
         }
 
-    def _enrich_patch(self, patch: SeoCodePatch, issue: Optional[RepoCodeIssue]) -> Dict[str, Any]:
+    @staticmethod
+    def _evidence_confidence(confidence_map: Dict[str, Any], patch: SeoCodePatch) -> Optional[int]:
+        entry = confidence_map.get(SeoBrainService._enum(getattr(patch, "patch_type", "")))
+        if entry and entry.get("evidence_based"):
+            return entry.get("confidence")
+        return None
+
+    def _enrich_patch(
+        self,
+        patch: SeoCodePatch,
+        issue: Optional[RepoCodeIssue],
+        evidence_confidence: Optional[int] = None,
+    ) -> Dict[str, Any]:
         issue_type = self._enum(getattr(issue, "issue_type", "")) if issue else self._enum(getattr(patch, "patch_type", ""))
         source = self._enum(getattr(issue, "source_reference_type", "")) if issue else "repo_scan"
         title = getattr(issue, "title", None) or f"Code fix: {self._enum(getattr(patch, 'patch_type', ''))}"
@@ -181,7 +206,8 @@ class SeoBrainService:
             "seo_impact": c.impact,
             "expected_ranking_gain": c.expected_ranking_gain,
             "expected_traffic_gain": c.expected_traffic_gain,
-            "confidence": c.confidence,
+            "confidence": evidence_confidence if evidence_confidence is not None else c.confidence,
+            "confidence_source": "evidence" if evidence_confidence is not None else "heuristic",
             "category": c.category,
             "risk_level": self._enum(patch.risk_level),
             "diff": patch.diff_text,  # unified before/after

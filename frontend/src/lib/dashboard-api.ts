@@ -4,6 +4,8 @@ import type {
   BrainState,
   BrainMasterPlan,
   BrainPendingFixes,
+  VerificationList,
+  LearningStats,
   AuditRun,
   AuditSummary,
   BlogDraft,
@@ -143,6 +145,20 @@ export const dashboardApi = {
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/approve`)),
     rejectPatch: (patchId: UUID) =>
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/reject`)),
+  },
+  verification: {
+    queue: (projectId: UUID) =>
+      unwrap<VerificationList>(api.get(`/verification/projects/${projectId}/queue`)),
+    history: (projectId: UUID) =>
+      unwrap<VerificationList>(api.get(`/verification/projects/${projectId}/history`)),
+    learningStats: (projectId: UUID) =>
+      unwrap<LearningStats>(api.get(`/verification/projects/${projectId}/learning-stats`)),
+    simulateMerge: (pullRequestId: UUID) =>
+      unwrap<{ pull_request_id: string; status: string; verifications_enqueued: number }>(
+        api.post(`/verification/pull-requests/${pullRequestId}/simulate-merge`)
+      ),
+    runDue: (projectId: UUID) =>
+      unwrap<{ status: string }>(api.post(`/verification/projects/${projectId}/run-due`)),
   },
 
   planner: {

@@ -1294,3 +1294,41 @@ export type BrainPendingFixes = {
   total: number;
   items: BrainPendingFix[];
 };
+
+export type AiFixVerification = {
+  id: string;
+  project_id: string;
+  patch_id: string;
+  pull_request_id?: string | null;
+  issue_id?: string | null;
+  patch_type: string;
+  issue_type?: string | null;
+  status: string;
+  scheduled_at: string;
+  verified_at?: string | null;
+  baseline_score?: number | null;
+  followup_score?: number | null;
+  issue_resolved?: boolean | null;
+  improvement_pct?: number | null;
+  details?: Record<string, unknown> | null;
+  merged_at?: string | null;
+};
+
+export type VerificationList = {
+  verifications: AiFixVerification[];
+  total: number;
+};
+
+export type LearningStats = {
+  total_verifications: number;
+  finalized: number;
+  by_status: Record<string, number>;
+  success_rate?: number | null;
+  average_improvement_pct?: number | null;
+  most_successful_fixes: Array<Record<string, unknown>>;
+  least_successful_fixes: Array<Record<string, unknown>>;
+  confidence_by_patch_type: Record<string, {
+    success: number; partial: number; failed: number; total: number;
+    confidence: number | null; evidence_based: boolean;
+  }>;
+};
