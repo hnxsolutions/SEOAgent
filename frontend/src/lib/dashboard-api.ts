@@ -6,6 +6,8 @@ import type {
   BrainPendingFixes,
   VerificationList,
   LearningStats,
+  Deployment,
+  DeploymentList,
   AuditRun,
   AuditSummary,
   BlogDraft,
@@ -159,6 +161,17 @@ export const dashboardApi = {
       ),
     runDue: (projectId: UUID) =>
       unwrap<{ status: string }>(api.post(`/verification/projects/${projectId}/run-due`)),
+  },
+  deployments: {
+    list: (projectId: UUID) =>
+      unwrap<DeploymentList>(api.get(`/deployments/projects/${projectId}`)),
+    updateStatus: (deploymentId: UUID, status: string, deploymentUrl?: string) =>
+      unwrap<Deployment>(
+        api.post(`/deployments/${deploymentId}/status`, {
+          status,
+          deployment_url: deploymentUrl,
+        })
+      ),
   },
 
   planner: {

@@ -43,6 +43,7 @@ class SimulateMergeResponse(BaseModel):
     status: str
     verifications_enqueued: int
     scheduled_at: str
+    deployment_id: Optional[str] = None
 
 
 class LearningStatsResponse(BaseModel):

@@ -23,6 +23,7 @@ from app.api.v1.routes import (
     sitemaps,
     robots,
     verification,
+    deployments,
     indexing,
     keyword_baselines,
     rank_tracking,
@@ -61,6 +62,7 @@ api_router.include_router(search_console.router, prefix="/search-console", tags=
 api_router.include_router(sitemaps.router, prefix="/search-console", tags=["Sitemap Intelligence"])
 api_router.include_router(robots.router, prefix="/robots", tags=["Robots.txt Intelligence"])
 api_router.include_router(verification.router, prefix="/verification", tags=["After-Merge Verification"])
+api_router.include_router(deployments.router, prefix="/deployments", tags=["Deployment Intelligence"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])
 api_router.include_router(keyword_baselines.router, tags=["Manual Keyword Baselines"])
