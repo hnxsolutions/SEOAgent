@@ -21,6 +21,7 @@ import {
   Search,
   SearchCheck,
   Sparkles,
+  Gauge,
   Target,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -378,6 +379,7 @@ function ProjectSelector({
 }
 
 const navItems = [
+  { label: 'Mission Control', href: '/dashboard/mission-control', icon: Gauge },
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
   { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
   { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },

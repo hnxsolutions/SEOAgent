@@ -1404,3 +1404,47 @@ export type NotificationList = {
   notifications: AppNotification[];
   unread_count: number;
 };
+
+export type MissionControlProjectCard = {
+  project_id: string;
+  name: string;
+  domain?: string | null;
+  seo_score?: number | null;
+  health?: number | null;
+  run_status: string;
+  last_run_at?: string | null;
+  pending_fixes: number;
+  open_prs: number;
+  last_deployment?: string | null;
+  last_verification?: string | null;
+};
+
+export type MissionControlOverview = {
+  generated_at: string;
+  overall_health?: number | null;
+  ai_confidence?: number | null;
+  system_health: {
+    status: string;
+    environment: string;
+    components: Record<string, { status: string; available?: boolean }>;
+  };
+  current_activity: {
+    active: boolean;
+    task: string;
+    project_id?: string | null;
+    project_name?: string | null;
+    current_stage?: string | null;
+    stage_statuses?: Record<string, string> | null;
+    progress_pct?: number;
+  };
+  projects: MissionControlProjectCard[];
+  project_count: number;
+  pending_approvals: Record<string, number>;
+  recommendations: Array<Record<string, any>>;
+  notifications: { unread_count: number; items: AppNotification[] };
+  learning: Record<string, any>;
+  verification: Record<string, number>;
+  deployment: { recent: Array<Record<string, any>> };
+  scheduler: Record<string, any>;
+  timeline: Array<{ time: string | null; event: string; category: string }>;
+};
