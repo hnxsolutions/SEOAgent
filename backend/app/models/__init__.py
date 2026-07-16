@@ -39,6 +39,7 @@ from app.models.indexing import (
 from app.models.sitemap import GSCSitemapRecord, SitemapIssue
 from app.models.robots import RobotsAnalysisRun, RobotsIssue
 from app.models.verification import AiFixVerification
+from app.models.deployment import Deployment
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
 from app.models.seo_run import SeoRun

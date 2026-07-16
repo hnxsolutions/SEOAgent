@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # After a repo-agent PR is merged, wait this long before running the
     # follow-up SEO analysis that verifies whether the fix actually worked.
     VERIFICATION_DELAY_MINUTES: int = 10
+    # Deployment intelligence: when a repo-agent PR is merged, track the deploy
+    # and only run verification after the site is live. If no deployment signal
+    # arrives within this window, verification falls back to the delay above so
+    # the loop never stalls. Provider credentials (Vercel/Netlify/etc.) are
+    # optional; without them, deploy status arrives via webhook or simulate.
+    DEPLOYMENT_DEFAULT_PROVIDER: str = "custom_webhook"
+    DEPLOYMENT_SETTLE_SECONDS: int = 0  # extra wait after deploy success before verifying
     FEATURE_CRAWLER_ENABLED: bool = True
     FEATURE_SERP_ANALYSIS_ENABLED: bool = True
     FEATURE_AI_VISIBILITY_ENABLED: bool = True

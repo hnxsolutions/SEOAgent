@@ -1332,3 +1332,25 @@ export type LearningStats = {
     confidence: number | null; evidence_based: boolean;
   }>;
 };
+
+export type Deployment = {
+  id: string;
+  project_id: string;
+  pull_request_id?: string | null;
+  provider: string;
+  status: string;
+  commit_sha?: string | null;
+  deployment_url?: string | null;
+  external_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_seconds?: number | null;
+  logs?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+};
+
+export type DeploymentList = {
+  deployments: Deployment[];
+  total: number;
+};

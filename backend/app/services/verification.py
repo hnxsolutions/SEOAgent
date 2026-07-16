@@ -110,10 +110,18 @@ class VerificationEngine:
             ))
             enqueued += 1
 
+        # Deployment intelligence: record a pending deployment for this merge.
+        # When the deploy succeeds, the DeploymentEngine accelerates these
+        # verifications so SEO is re-measured against the now-live site. If no
+        # deploy signal arrives, the fallback delay above still runs them.
+        from app.services.deployment import DeploymentEngine
+
+        deployment = await DeploymentEngine(self.db).create_pending_for_pr(pr, tenant_id)
+
         await self.db.commit()
         logger.info("verification_enqueued", pr_id=str(pr.id), enqueued=enqueued, scheduled_at=scheduled_at.isoformat())
         return {"pull_request_id": str(pr.id), "status": "merged", "verifications_enqueued": enqueued,
-                "scheduled_at": scheduled_at.isoformat()}
+                "scheduled_at": scheduled_at.isoformat(), "deployment_id": str(deployment.id)}
 
     # -- automation (called by the scheduler) --------------------------------
 
