@@ -1354,3 +1354,53 @@ export type DeploymentList = {
   deployments: Deployment[];
   total: number;
 };
+
+export type DailyBriefing = {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  briefing_date: string;
+  health_score?: number | null;
+  ai_confidence?: number | null;
+  seo_score?: number | null;
+  seo_score_prev?: number | null;
+  executive_summary: string;
+  summary_source: string;
+  sections: Record<string, any>;
+  timeline?: Array<{ time: string | null; event: string; category: string }> | null;
+  created_at?: string | null;
+};
+
+export type BriefingTrends = {
+  window_days: number;
+  count: number;
+  points: Array<{ date: string; health?: number | null; seo_score?: number | null; confidence?: number | null }>;
+};
+
+export type BriefingHistory = {
+  briefings: Array<{
+    id: string;
+    briefing_date: string;
+    health_score?: number | null;
+    seo_score?: number | null;
+    ai_confidence?: number | null;
+    executive_summary: string;
+  }>;
+  total: number;
+};
+
+export type AppNotification = {
+  id: string;
+  project_id?: string | null;
+  level: 'info' | 'success' | 'warning' | 'critical';
+  category: string;
+  title: string;
+  message: string;
+  read: boolean;
+  created_at?: string | null;
+};
+
+export type NotificationList = {
+  notifications: AppNotification[];
+  unread_count: number;
+};

@@ -4,6 +4,11 @@ import type {
   BrainState,
   BrainMasterPlan,
   BrainPendingFixes,
+  DailyBriefing,
+  BriefingHistory,
+  BriefingTrends,
+  NotificationList,
+  AppNotification,
   VerificationList,
   LearningStats,
   Deployment,
@@ -147,6 +152,20 @@ export const dashboardApi = {
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/approve`)),
     rejectPatch: (patchId: UUID) =>
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/reject`)),
+  },
+  briefing: {
+    generate: (projectId: UUID) =>
+      unwrap<DailyBriefing>(api.post(`/briefing/projects/${projectId}/generate`, null, { params: { use_llm: true } })),
+    latest: (projectId: UUID) =>
+      unwrap<DailyBriefing>(api.get(`/briefing/projects/${projectId}/latest`)),
+    history: (projectId: UUID, days = 30) =>
+      unwrap<BriefingHistory>(api.get(`/briefing/projects/${projectId}/history`, { params: { days } })),
+    trends: (projectId: UUID, window = 30) =>
+      unwrap<BriefingTrends>(api.get(`/briefing/projects/${projectId}/trends`, { params: { window } })),
+    notifications: (projectId?: UUID) =>
+      unwrap<NotificationList>(api.get(`/briefing/notifications`, { params: projectId ? { project_id: projectId } : {} })),
+    markNotificationRead: (id: UUID) =>
+      unwrap<AppNotification>(api.post(`/briefing/notifications/${id}/read`)),
   },
   verification: {
     queue: (projectId: UUID) =>
