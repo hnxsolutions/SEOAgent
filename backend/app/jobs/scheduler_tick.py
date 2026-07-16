@@ -30,6 +30,14 @@ async def run(limit: int = 50) -> dict[str, Any]:
         payload["verification_processed"] = True
     except Exception:  # pragma: no cover - defensive; never break the tick
         payload["verification_processed"] = False
+
+    # Autonomous daily executive briefing (one per project per day; upsert-safe).
+    from app.jobs.briefing_jobs import generate_daily_briefings_background
+
+    try:
+        payload["briefings_generated"] = await generate_daily_briefings_background(use_llm=False)
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["briefings_generated"] = 0
     return payload
 
 

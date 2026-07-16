@@ -20,6 +20,7 @@ import {
   Rocket,
   Search,
   SearchCheck,
+  Sparkles,
   Target,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -378,6 +379,7 @@ function ProjectSelector({
 
 const navItems = [
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
+  { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
   { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },
   { label: 'Verification', href: '/dashboard/verification', icon: BadgeCheck },
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
