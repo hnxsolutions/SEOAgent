@@ -18,7 +18,19 @@ async def run(limit: int = 50) -> dict[str, Any]:
     async with get_db_session() as db:
         result = await SchedulerService(db).tick_with_monitor_details(limit=limit)
         await db.commit()
-        return _summary_payload(result)
+        payload = _summary_payload(result)
+
+    # Autonomous after-merge verification: process any due verifications across
+    # tenants (start follow-up SEO runs, execute them, reconcile results). This
+    # is why an admin never needs to click "Verify".
+    from app.jobs.verification_jobs import run_due_verifications_background
+
+    try:
+        await run_due_verifications_background(tenant_id=None)
+        payload["verification_processed"] = True
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["verification_processed"] = False
+    return payload
 
 
 def _summary_payload(result: dict[str, Any]) -> dict[str, Any]:

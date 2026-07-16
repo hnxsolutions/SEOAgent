@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     # pipeline (crawl -> audit -> semantic -> content -> planner) in the
     # background so the user does not have to click "Run SEO Analysis".
     AUTO_RUN_SEO_ON_PROJECT_CREATE: bool = True
+    # After a repo-agent PR is merged, wait this long before running the
+    # follow-up SEO analysis that verifies whether the fix actually worked.
+    VERIFICATION_DELAY_MINUTES: int = 10
     FEATURE_CRAWLER_ENABLED: bool = True
     FEATURE_SERP_ANALYSIS_ENABLED: bool = True
     FEATURE_AI_VISIBILITY_ENABLED: bool = True

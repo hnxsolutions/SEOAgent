@@ -9,6 +9,7 @@ import {
   FileText,
   FileWarning,
   GitBranch,
+  BadgeCheck,
   KeyRound,
   LayoutDashboard,
   LineChart,
@@ -377,6 +378,8 @@ function ProjectSelector({
 
 const navItems = [
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
+  { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },
+  { label: 'Verification', href: '/dashboard/verification', icon: BadgeCheck },
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Report', href: '/dashboard/report', icon: FileCheck2 },
   { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },

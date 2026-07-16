@@ -19,7 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.brain.classifier import BrainIssue, classify
 from app.models.audit import SEOIssue, SEOIssueStatus
 from app.models.project import Project
-from app.models.repo_agent import PullRequestRecord, PullRequestStatus, SeoCodePatch, SeoCodePatchStatus
+from app.models.repo_agent import (
+    PullRequestRecord,
+    PullRequestStatus,
+    RepoConnection,
+    SeoCodeIssue as RepoCodeIssue,
+    SeoCodePatch,
+    SeoCodePatchStatus,
+)
 from app.models.robots import RobotsIssue, RobotsIssueStatus
 from app.models.seo_run import SeoRun
 from app.models.sitemap import SitemapIssue, SitemapIssueStatus
@@ -104,6 +111,113 @@ class SeoBrainService:
             "code_fixable_count": plan["code_fixable_count"],
             "next_action": self._next_action(plan, pending),
             "modules": modules,
+        }
+
+    # -- auto dispatch to the repo agent ------------------------------------
+
+    async def get_repo_connection(self, project_id: UUID, tenant_id: UUID) -> Optional[RepoConnection]:
+        """Most recent repository connection for the project, if any."""
+        rows = await self.db.execute(
+            select(RepoConnection).where(
+                RepoConnection.project_id == project_id,
+                RepoConnection.tenant_id == tenant_id,
+            ).order_by(RepoConnection.created_at.desc()).limit(1)
+        )
+        return rows.scalars().first()
+
+    async def get_pending_fixes(self, project_id: UUID, tenant_id: UUID, limit: int = 200) -> Dict[str, Any]:
+        """Proposed patches awaiting human approval, enriched with SEO impact,
+        confidence, before/after diff, traceability and a rollback strategy."""
+        rows = await self.db.execute(
+            select(SeoCodePatch).where(
+                SeoCodePatch.project_id == project_id,
+                SeoCodePatch.tenant_id == tenant_id,
+                SeoCodePatch.status == SeoCodePatchStatus.proposed,
+            ).order_by(SeoCodePatch.created_at.desc()).limit(limit)
+        )
+        patches = list(rows.scalars().all())
+
+        # Load the originating code issues in one query for traceability.
+        issue_ids = [p.issue_id for p in patches if p.issue_id]
+        issues_by_id: Dict[Any, RepoCodeIssue] = {}
+        if issue_ids:
+            irows = await self.db.execute(
+                select(RepoCodeIssue).where(RepoCodeIssue.id.in_(issue_ids))
+            )
+            issues_by_id = {i.id: i for i in irows.scalars().all()}
+
+        # Evidence-based confidence (from verified past outcomes) overrides the
+        # heuristic when enough history exists for a patch type.
+        from app.services.learning import LearningEngine
+
+        confidence_map = await LearningEngine(self.db).confidence_map(tenant_id)
+
+        items = [
+            self._enrich_patch(
+                p,
+                issues_by_id.get(p.issue_id),
+                evidence_confidence=self._evidence_confidence(confidence_map, p),
+            )
+            for p in patches
+        ]
+        return {
+            "project_id": str(project_id),
+            "total": len(items),
+            "items": items,
+        }
+
+    @staticmethod
+    def _evidence_confidence(confidence_map: Dict[str, Any], patch: SeoCodePatch) -> Optional[int]:
+        entry = confidence_map.get(SeoBrainService._enum(getattr(patch, "patch_type", "")))
+        if entry and entry.get("evidence_based"):
+            return entry.get("confidence")
+        return None
+
+    def _enrich_patch(
+        self,
+        patch: SeoCodePatch,
+        issue: Optional[RepoCodeIssue],
+        evidence_confidence: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        issue_type = self._enum(getattr(issue, "issue_type", "")) if issue else self._enum(getattr(patch, "patch_type", ""))
+        source = self._enum(getattr(issue, "source_reference_type", "")) if issue else "repo_scan"
+        title = getattr(issue, "title", None) or f"Code fix: {self._enum(getattr(patch, 'patch_type', ''))}"
+        c = classify(BrainIssue(
+            source=source or "repo_scan",
+            issue_type=issue_type or "",
+            severity=self._enum(getattr(issue, "severity", "medium")) or "medium",
+            title=title,
+        ))
+        return {
+            "patch_id": str(patch.id),
+            "status": self._enum(patch.status),
+            "patch_type": self._enum(patch.patch_type),
+            "file_path": patch.file_path,
+            "affected_files": [patch.file_path],
+            "issue": {
+                "id": str(getattr(issue, "id", "")) if issue else None,
+                "issue_type": issue_type,
+                "title": title,
+                "source": source,
+                "source_reference_id": str(getattr(issue, "source_reference_id", "") or "") if issue else None,
+            },
+            # Patch-quality metadata required for admin review.
+            "reason": patch.explanation,
+            "seo_impact": c.impact,
+            "expected_ranking_gain": c.expected_ranking_gain,
+            "expected_traffic_gain": c.expected_traffic_gain,
+            "confidence": evidence_confidence if evidence_confidence is not None else c.confidence,
+            "confidence_source": "evidence" if evidence_confidence is not None else "heuristic",
+            "category": c.category,
+            "risk_level": self._enum(patch.risk_level),
+            "diff": patch.diff_text,  # unified before/after
+            "before_after_available": bool(patch.diff_text),
+            "rollback_strategy": (
+                "Applied on an isolated branch and opened as a PR; never merged automatically. "
+                "To roll back: close the PR unmerged, or revert the commit if merged. The original "
+                f"content hash ({(patch.original_content_hash or '')[:12]}) is stored to restore the "
+                "pre-change file."
+            ),
         }
 
     # -- issue collection (data only, no re-implemented logic) --------------

@@ -86,6 +86,62 @@ async def test_brain_state_health_and_next_action(monkeypatch):
     assert state["master_plan_total"] == 2
 
 
+def test_enrich_patch_includes_quality_metadata_and_traceability():
+    service = SeoBrainService(db=object())
+    issue = SimpleNamespace(
+        id=uuid4(),
+        issue_type="missing_schema",
+        title="Add FAQ schema",
+        severity=SimpleNamespace(value="medium"),
+        source_reference_type=SimpleNamespace(value="planner_task"),
+        source_reference_id=uuid4(),
+    )
+    patch = SimpleNamespace(
+        id=uuid4(),
+        status=SimpleNamespace(value="proposed"),
+        patch_type=SimpleNamespace(value="schema_addition"),
+        file_path="app/page.tsx",
+        explanation="Adds JSON-LD WebPage schema.",
+        diff_text="--- a/app/page.tsx\n+++ b/app/page.tsx\n+<script type=...",
+        risk_level=SimpleNamespace(value="low"),
+        original_content_hash="abcdef1234567890",
+        issue_id=issue.id,
+    )
+    enriched = service._enrich_patch(patch, issue)
+
+    # Required patch-quality fields are all present.
+    for key in (
+        "reason", "seo_impact", "expected_ranking_gain", "expected_traffic_gain",
+        "confidence", "affected_files", "diff", "rollback_strategy",
+    ):
+        assert key in enriched and enriched[key] not in (None, "")
+    assert enriched["affected_files"] == ["app/page.tsx"]
+    assert enriched["before_after_available"] is True
+    # Traceable back to the originating (planner) issue.
+    assert enriched["issue"]["source"] == "planner_task"
+    assert enriched["issue"]["title"] == "Add FAQ schema"
+    assert "roll back" in enriched["rollback_strategy"].lower()
+
+
+def test_enrich_patch_without_issue_is_graceful():
+    service = SeoBrainService(db=object())
+    patch = SimpleNamespace(
+        id=uuid4(),
+        status=SimpleNamespace(value="proposed"),
+        patch_type=SimpleNamespace(value="metadata_update"),
+        file_path="app/layout.tsx",
+        explanation="Metadata update.",
+        diff_text="diff",
+        risk_level=SimpleNamespace(value="low"),
+        original_content_hash="0" * 64,
+        issue_id=None,
+    )
+    enriched = service._enrich_patch(patch, None)
+    assert enriched["issue"]["source"] == "repo_scan"
+    assert enriched["confidence"] >= 0
+    assert enriched["affected_files"] == ["app/layout.tsx"]
+
+
 @pytest.mark.asyncio
 async def test_brain_state_prioritizes_pending_pr_approval(monkeypatch):
     issues = [BrainIssue("audit", "meta_description", "high", title="Weak meta")]
