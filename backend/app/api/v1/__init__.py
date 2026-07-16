@@ -25,6 +25,7 @@ from app.api.v1.routes import (
     verification,
     deployments,
     briefing,
+    mission_control,
     indexing,
     keyword_baselines,
     rank_tracking,
@@ -65,6 +66,7 @@ api_router.include_router(robots.router, prefix="/robots", tags=["Robots.txt Int
 api_router.include_router(verification.router, prefix="/verification", tags=["After-Merge Verification"])
 api_router.include_router(deployments.router, prefix="/deployments", tags=["Deployment Intelligence"])
 api_router.include_router(briefing.router, prefix="/briefing", tags=["Daily Executive Briefing"])
+api_router.include_router(mission_control.router, prefix="/mission-control", tags=["Mission Control"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])
 api_router.include_router(keyword_baselines.router, tags=["Manual Keyword Baselines"])

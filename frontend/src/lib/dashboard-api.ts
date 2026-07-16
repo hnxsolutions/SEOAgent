@@ -9,6 +9,7 @@ import type {
   BriefingTrends,
   NotificationList,
   AppNotification,
+  MissionControlOverview,
   VerificationList,
   LearningStats,
   Deployment,
@@ -152,6 +153,9 @@ export const dashboardApi = {
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/approve`)),
     rejectPatch: (patchId: UUID) =>
       unwrap<unknown>(api.post(`/repos/patches/${patchId}/reject`)),
+  },
+  missionControl: {
+    overview: () => unwrap<MissionControlOverview>(api.get(`/mission-control/overview`)),
   },
   briefing: {
     generate: (projectId: UUID) =>
