@@ -10,6 +10,7 @@ import type {
   NotificationList,
   AppNotification,
   MissionControlOverview,
+  PagespeedRun,
   VerificationList,
   LearningStats,
   Deployment,
@@ -156,6 +157,16 @@ export const dashboardApi = {
   },
   missionControl: {
     overview: () => unwrap<MissionControlOverview>(api.get(`/mission-control/overview`)),
+  },
+  pagespeed: {
+    analyze: (projectId: UUID) =>
+      unwrap<{ runs: PagespeedRun[] }>(api.post(`/pagespeed/projects/${projectId}/analyze`)),
+    latest: (projectId: UUID) =>
+      unwrap<{ mobile: PagespeedRun | null; desktop: PagespeedRun | null }>(
+        api.get(`/pagespeed/projects/${projectId}/latest`)
+      ),
+    history: (projectId: UUID) =>
+      unwrap<{ runs: PagespeedRun[]; total: number }>(api.get(`/pagespeed/projects/${projectId}/history`)),
   },
   briefing: {
     generate: (projectId: UUID) =>

@@ -131,6 +131,31 @@ export default function MissionControlPage() {
         </Card>
       ) : null}
 
+      {/* Core Web Vitals */}
+      {data.core_web_vitals ? (
+        <Card>
+          <div className="flex items-center justify-between">
+            <h2 className="flex items-center gap-2 font-semibold"><Gauge className="h-4 w-4" /> Core Web Vitals</h2>
+            <Link href="/dashboard/core-web-vitals" className="text-xs text-indigo-600 hover:underline">Details →</Link>
+          </div>
+          {data.core_web_vitals.status === 'completed' ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Metric label="Perf (mobile)" value={data.core_web_vitals.performance_mobile ?? '—'} />
+              <Metric label="Perf (desktop)" value={data.core_web_vitals.performance_desktop ?? '—'} />
+              <Metric label="LCP" value={data.core_web_vitals.lcp_ms != null ? `${(data.core_web_vitals.lcp_ms / 1000).toFixed(1)}s` : '—'} />
+              <Metric label="CLS" value={data.core_web_vitals.cls ?? '—'} />
+              <Metric label="INP" value={data.core_web_vitals.inp_ms != null ? `${Math.round(data.core_web_vitals.inp_ms)}ms` : '—'} />
+            </div>
+          ) : (
+            <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {data.core_web_vitals.status === 'quota_exceeded'
+                ? 'PageSpeed quota exceeded — set a free GOOGLE_PAGESPEED_API_KEY for live Core Web Vitals.'
+                : (data.core_web_vitals.note ?? 'No Core Web Vitals data yet — run an analysis.')}
+            </p>
+          )}
+        </Card>
+      ) : null}
+
       {/* Headline metrics */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Metric label="AI Health Score" value={data.ai_health_score ?? '—'} tone={Number(data.ai_health_score) >= 80 ? 'text-emerald-600' : Number(data.ai_health_score) >= 60 ? 'text-amber-600' : 'text-rose-600'} sub="0–100" />

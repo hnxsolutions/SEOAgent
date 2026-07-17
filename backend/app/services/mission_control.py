@@ -73,6 +73,12 @@ class MissionControlService:
         pipeline = await sq.latest_pipeline(tenant_id, project_id=active_project)
         stage_analytics = await sq.stage_analytics(tenant_id)
 
+        # Core Web Vitals summary for the most-active / first project.
+        from app.services.pagespeed import PagespeedService
+
+        cwv_target = active_project or (projects[-1].id if projects else None)
+        core_web_vitals = await PagespeedService(self.db).summary(cwv_target, tenant_id) if cwv_target else {"status": "no_data"}
+
         # Aggregate health across projects for the headline number.
         healths = [c["health"] for c in project_cards if c["health"] is not None]
         overall_health = round(sum(healths) / len(healths)) if healths else None
@@ -87,6 +93,7 @@ class MissionControlService:
             "telemetry": telemetry,
             "pipeline": pipeline,
             "stage_analytics": stage_analytics,
+            "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
             "project_count": len(project_cards),
