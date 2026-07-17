@@ -29,6 +29,7 @@ from app.services.daily_briefing import DailyBriefingService
 from app.services.learning import LearningEngine
 from app.services.notifications import NotificationService
 from app.services.telemetry_query import TelemetryQuery
+from app.services.stage_telemetry import StageTelemetryQuery
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +64,15 @@ class MissionControlService:
             "failures": [self._job_item(j) for j in await tq.failures(tenant_id, limit=10)],
         }
 
+        # Per-stage pipeline visualisation (latest run of the most-active project)
+        # + per-stage analytics across all runs.
+        sq = StageTelemetryQuery(self.db)
+        # Prefer an actively-running project's pipeline; otherwise show the most
+        # recent run across the tenant (so the panel persists after completion).
+        active_project = UUID(current_activity["project_id"]) if current_activity.get("project_id") else None
+        pipeline = await sq.latest_pipeline(tenant_id, project_id=active_project)
+        stage_analytics = await sq.stage_analytics(tenant_id)
+
         # Aggregate health across projects for the headline number.
         healths = [c["health"] for c in project_cards if c["health"] is not None]
         overall_health = round(sum(healths) / len(healths)) if healths else None
@@ -75,6 +85,8 @@ class MissionControlService:
             "ai_confidence": learning.get("success_rate"),
             "system_health": system_health,
             "telemetry": telemetry,
+            "pipeline": pipeline,
+            "stage_analytics": stage_analytics,
             "current_activity": current_activity,
             "projects": project_cards,
             "project_count": len(project_cards),

@@ -42,6 +42,7 @@ from app.models.verification import AiFixVerification
 from app.models.deployment import Deployment
 from app.models.briefing import DailyBriefing, Notification
 from app.models.telemetry import SchedulerJobRun
+from app.models.pipeline import PipelineStageRun
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
 from app.models.seo_run import SeoRun

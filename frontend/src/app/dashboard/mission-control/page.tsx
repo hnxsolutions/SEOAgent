@@ -6,9 +6,24 @@ import {
   Activity, CheckCircle2, AlertTriangle, Server, Database, Cpu, Boxes,
   Rocket, ShieldCheck, GitPullRequest, Sparkles, Bell, Clock, Gauge,
 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { LoadingBlock, ErrorState } from '@/components/dashboard/DashboardStates';
 import { dashboardApi } from '@/lib/dashboard-api';
+import { useMissionControlStream } from '@/lib/useMissionControlStream';
+
+const STAGE_LABELS: Record<string, string> = {
+  crawl: 'Crawl', audit: 'Audit', semantic_index: 'Semantic',
+  content_optimization: 'Content', planner: 'Planner',
+};
+
+function stageColor(status: string) {
+  if (status === 'completed') return 'border-emerald-300 bg-emerald-50 text-emerald-700';
+  if (status === 'running') return 'border-indigo-300 bg-indigo-50 text-indigo-700 animate-pulse';
+  if (status === 'failed') return 'border-rose-300 bg-rose-50 text-rose-700';
+  if (status === 'retrying') return 'border-amber-300 bg-amber-50 text-amber-700 animate-pulse';
+  return 'border-slate-200 bg-slate-50 text-slate-500';
+}
 
 function statusTone(status?: string) {
   if (status === 'ok' || status === 'healthy' || status === 'success' || status === 'verified_success') return 'text-emerald-600 bg-emerald-50 border-emerald-200';
@@ -47,10 +62,20 @@ const PENDING_LINKS: Record<string, string> = {
 };
 
 export default function MissionControlPage() {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError } = useQuery({
     queryKey: ['mission-control'],
     queryFn: () => dashboardApi.missionControl.overview(),
-    refetchInterval: 15000,
+    refetchInterval: 30000, // SSE drives most updates; poll is a safety net
+  });
+
+  // Live updates: refetch (debounced) whenever a real backend job/stage event arrives.
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { connected } = useMissionControlStream(() => {
+    if (debounce.current) clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => {
+      queryClient.invalidateQueries({ queryKey: ['mission-control'] });
+    }, 400);
   });
 
   if (isLoading) return <LoadingBlock label="Loading Mission Control" />;
@@ -65,13 +90,46 @@ export default function MissionControlPage() {
           <h1 className="flex items-center gap-2 text-2xl font-semibold">
             <Gauge className="h-6 w-6 text-indigo-600" /> Mission Control
           </h1>
-          <p className="text-sm text-muted-foreground">Live system overview · refreshes every 15s</p>
+          <p className="text-sm text-muted-foreground">Real-time system overview</p>
         </div>
-        <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium ${statusTone(data.system_health.status)}`}>
-          {data.system_health.status === 'healthy' ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
-          System {data.system_health.status}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${connected ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>
+            <span className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+            {connected ? 'LIVE' : 'connecting…'}
+          </span>
+          <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium ${statusTone(data.system_health.status)}`}>
+            {data.system_health.status === 'healthy' ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+            System {data.system_health.status}
+          </span>
+        </div>
       </header>
+
+      {/* AI Pipeline visualization (live) */}
+      {data.pipeline && data.pipeline.stages.length > 0 ? (
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold">
+            <Activity className="h-4 w-4" /> AI Pipeline
+            {data.pipeline.run_status ? <span className="rounded-full border bg-slate-50 px-2 py-0.5 text-xs text-muted-foreground">{data.pipeline.run_status}</span> : null}
+          </h2>
+          <div className="flex flex-wrap items-center gap-1">
+            {data.pipeline.stages.map((s, i) => (
+              <div key={s.stage} className="flex items-center">
+                <div className={`rounded-lg border px-3 py-2 text-center ${stageColor(s.status)}`}>
+                  <p className="text-xs font-semibold">{STAGE_LABELS[s.stage] ?? s.stage}</p>
+                  <p className="text-[10px] capitalize">{s.status}{s.duration_ms != null ? ` · ${(s.duration_ms / 1000).toFixed(1)}s` : ''}</p>
+                </div>
+                {i < data.pipeline!.stages.length - 1 ? <span className="mx-1 text-slate-300">→</span> : null}
+              </div>
+            ))}
+          </div>
+          {data.stage_analytics && data.stage_analytics.stages.length > 0 ? (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Fastest stage: <span className="font-medium">{data.stage_analytics.fastest_stage ?? '—'}</span> ·
+              Slowest stage: <span className="font-medium">{data.stage_analytics.slowest_stage ?? '—'}</span>
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       {/* Headline metrics */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">

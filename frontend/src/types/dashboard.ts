@@ -1479,4 +1479,23 @@ export type MissionControlOverview = {
   deployment: { recent: Array<Record<string, any>> };
   scheduler: Record<string, any>;
   timeline: Array<{ time: string | null; event: string; category: string }>;
+  pipeline?: {
+    run_id?: string | null;
+    run_status?: string | null;
+    current_stage?: string | null;
+    stages: Array<{
+      stage: string;
+      status: string;
+      duration_ms?: number | null;
+      started_at?: string | null;
+      finished_at?: string | null;
+      retry_count: number;
+      error_message?: string | null;
+    }>;
+  };
+  stage_analytics?: {
+    stages: Array<{ stage: string; runs: number; avg_duration_ms?: number | null; success_rate?: number | null; failure_rate?: number | null }>;
+    fastest_stage?: string | null;
+    slowest_stage?: string | null;
+  };
 };
