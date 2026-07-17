@@ -74,7 +74,8 @@ export default function MissionControlPage() {
       </header>
 
       {/* Headline metrics */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Metric label="AI Health Score" value={data.ai_health_score ?? '—'} tone={Number(data.ai_health_score) >= 80 ? 'text-emerald-600' : Number(data.ai_health_score) >= 60 ? 'text-amber-600' : 'text-rose-600'} sub="0–100" />
         <Metric label="Overall Health" value={data.overall_health ?? '—'} tone={Number(data.overall_health) >= 80 ? 'text-emerald-600' : Number(data.overall_health) >= 60 ? 'text-amber-600' : 'text-rose-600'} />
         <Metric label="AI Confidence" value={data.ai_confidence != null ? `${data.ai_confidence}%` : '—'} sub={`${data.learning?.finalized ?? 0} verified`} />
         <Metric label="Active Projects" value={data.project_count} />
@@ -198,6 +199,68 @@ export default function MissionControlPage() {
           </div>
         )}
       </Card>
+
+      {/* Scheduler telemetry */}
+      {data.telemetry ? (
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold"><Activity className="h-4 w-4" /> Scheduler & Workers (24h)</h2>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <Metric label="Jobs" value={data.telemetry.stats.total} />
+            <Metric label="Running" value={data.telemetry.stats.running} tone={data.telemetry.stats.running ? 'text-indigo-600' : 'text-foreground'} />
+            <Metric label="Success" value={data.telemetry.stats.success_rate != null ? `${data.telemetry.stats.success_rate}%` : '—'} tone="text-emerald-600" />
+            <Metric label="Failure" value={data.telemetry.stats.failure_rate != null ? `${data.telemetry.stats.failure_rate}%` : '—'} tone={Number(data.telemetry.stats.failure_rate) > 0 ? 'text-rose-600' : 'text-foreground'} />
+            <Metric label="Retry" value={data.telemetry.stats.retry_rate != null ? `${data.telemetry.stats.retry_rate}%` : '—'} tone="text-amber-600" />
+            <Metric label="Avg" value={data.telemetry.stats.average_duration_ms != null ? `${(data.telemetry.stats.average_duration_ms / 1000).toFixed(1)}s` : '—'} />
+          </div>
+          {data.telemetry.workers.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {data.telemetry.workers.map((w) => (
+                <span key={w.job_name} className="inline-flex items-center gap-1.5 rounded-full border bg-slate-50 px-3 py-1 text-xs">
+                  <span className="font-medium">{w.job_name}</span> · {w.runs} runs
+                  {w.avg_duration_ms != null ? ` · ${(w.avg_duration_ms / 1000).toFixed(1)}s` : ''}
+                  {w.failed ? <span className="text-rose-600">· {w.failed} failed</span> : null}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {/* Failure center */}
+      {data.telemetry && data.telemetry.failures.length > 0 ? (
+        <Card className="border-rose-200">
+          <h2 className="mb-3 flex items-center gap-2 font-semibold text-rose-700"><AlertTriangle className="h-4 w-4" /> Failure Center</h2>
+          <ul className="space-y-2">
+            {data.telemetry.failures.map((f) => (
+              <li key={f.id} className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{f.job_name}</span>
+                  <span className="text-xs text-muted-foreground">retries: {f.retry_count}</span>
+                </div>
+                <p className="mt-1 text-xs text-rose-700">{f.error_message ?? 'Unknown error'}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Auto-retry applies to transient failures; deterministic errors need a fix.</p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      {/* Live activity feed (newest first) */}
+      {data.telemetry && data.telemetry.recent.length > 0 ? (
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold"><Activity className="h-4 w-4" /> Live Activity (newest first)</h2>
+          <ol className="space-y-1.5">
+            {data.telemetry.recent.map((j) => (
+              <li key={j.id} className="flex items-center gap-3 text-sm">
+                <span className="w-14 shrink-0 font-mono text-xs text-muted-foreground">{j.started_at ? new Date(j.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+                <span className={`inline-flex h-2 w-2 shrink-0 rounded-full ${j.status === 'completed' ? 'bg-emerald-500' : j.status === 'failed' ? 'bg-rose-500' : j.status === 'running' || j.status === 'retrying' ? 'bg-indigo-500' : 'bg-slate-400'}`} />
+                <span className="font-medium">{j.job_name}</span>
+                <span className="text-xs text-muted-foreground">{j.status}{j.duration_ms != null ? ` · ${(j.duration_ms / 1000).toFixed(1)}s` : ''}</span>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      ) : null}
 
       {/* Summary strip: verification / deployment / learning + timeline */}
       <div className="grid gap-6 lg:grid-cols-2">

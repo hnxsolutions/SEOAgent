@@ -1419,10 +1419,42 @@ export type MissionControlProjectCard = {
   last_verification?: string | null;
 };
 
+export type TelemetryJobItem = {
+  id: string;
+  job_name: string;
+  job_type: string;
+  status: string;
+  trigger_type: string;
+  worker_name?: string | null;
+  retry_count: number;
+  duration_ms?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
+};
+
 export type MissionControlOverview = {
   generated_at: string;
   overall_health?: number | null;
+  ai_health_score?: number | null;
   ai_confidence?: number | null;
+  telemetry?: {
+    stats: {
+      total: number;
+      by_status: Record<string, number>;
+      running: number;
+      retrying: number;
+      success_rate?: number | null;
+      failure_rate?: number | null;
+      retry_rate?: number | null;
+      average_duration_ms?: number | null;
+      longest_job?: { job_name: string; duration_ms?: number | null; status: string } | null;
+    };
+    workers: Array<{ job_name: string; runs: number; avg_duration_ms?: number | null; failed: number }>;
+    active: TelemetryJobItem[];
+    recent: TelemetryJobItem[];
+    failures: TelemetryJobItem[];
+  };
   system_health: {
     status: string;
     environment: string;
