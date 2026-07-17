@@ -204,6 +204,9 @@ class FakePlannerRepository:
     async def list_gsc_opportunities(self, project_id, tenant_id, limit=200):
         return self.gsc_opportunities
 
+    async def list_pagespeed_opportunities(self, project_id, tenant_id, limit=30):
+        return getattr(self, "pagespeed_opportunities", [])
+
     async def list_keyword_baselines(self, project_id, tenant_id, limit=500):
         return self.keyword_baselines
 

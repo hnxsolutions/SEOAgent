@@ -284,6 +284,36 @@ class SeoBrainService:
                 reference_id=str(r.id),
             ))
 
+        # Core Web Vitals opportunities (latest completed PageSpeed run) so they
+        # rank alongside every other SEO opportunity in the master plan.
+        from app.models.pagespeed import PagespeedRun, PagespeedStatus, PagespeedStrategy
+
+        ps_run = None
+        for strat in (PagespeedStrategy.mobile, PagespeedStrategy.desktop):
+            ps_run = (await self.db.execute(
+                select(PagespeedRun).where(
+                    PagespeedRun.project_id == project_id,
+                    PagespeedRun.tenant_id == tenant_id,
+                    PagespeedRun.strategy == strat,
+                    PagespeedRun.status == PagespeedStatus.completed,
+                ).order_by(PagespeedRun.created_at.desc()).limit(1)
+            )).scalars().first()
+            if ps_run:
+                break
+        for opp in (getattr(ps_run, "opportunities", None) or [])[:25]:
+            savings = opp.get("savings_ms") or 0
+            severity = "high" if savings >= 1000 else "medium" if savings >= 400 else "low"
+            issues.append(BrainIssue(
+                source="pagespeed",
+                issue_type=opp.get("id") or "performance",
+                severity=severity,
+                category="performance",
+                title=opp.get("title") or "PageSpeed opportunity",
+                description=(opp.get("description") or "")[:300],
+                url=getattr(ps_run, "url", None),
+                reference_id=str(getattr(ps_run, "id", "")),
+            ))
+
         return issues
 
     async def _module_summaries(self, project_id: UUID, tenant_id: UUID) -> Dict[str, Any]:

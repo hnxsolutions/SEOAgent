@@ -140,6 +140,24 @@ class PagespeedService:
             "top_opportunities": [{"id": o["id"], "title": o["title"], "savings_ms": o["savings_ms"]} for o in opps],
         }
 
+    @staticmethod
+    def delta(before: "PagespeedRun", after: "PagespeedRun") -> Dict[str, Any]:
+        """Before/after deltas for the verification engine (positive = improved
+        for scores; negative = improved for CWV timings/CLS)."""
+        def d(a, b):
+            return round(b - a, 2) if (a is not None and b is not None) else None
+        return {
+            "performance_delta": d(before.performance_score, after.performance_score),
+            "accessibility_delta": d(before.accessibility_score, after.accessibility_score),
+            "best_practices_delta": d(before.best_practices_score, after.best_practices_score),
+            "seo_delta": d(before.seo_score, after.seo_score),
+            "lcp_ms_delta": d(before.lcp_ms, after.lcp_ms),
+            "cls_delta": d(before.cls, after.cls),
+            "inp_ms_delta": d(before.inp_ms, after.inp_ms),
+            "fcp_ms_delta": d(before.fcp_ms, after.fcp_ms),
+            "tbt_ms_delta": d(before.tbt_ms, after.tbt_ms),
+        }
+
     async def _get_project(self, project_id: UUID, tenant_id: UUID) -> Optional[Project]:
         return (await self.db.execute(
             select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)

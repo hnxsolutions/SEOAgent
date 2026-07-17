@@ -247,8 +247,19 @@ class VerificationEngine:
             else:
                 v.improvement_pct = None
 
+        # Core Web Vitals state at verification time (best-effort; never breaks
+        # the verification if PageSpeed data / the session is unavailable).
+        cwv = {"status": "no_data"}
+        try:
+            from app.services.pagespeed import PagespeedService
+
+            cwv = await PagespeedService(self.db).summary(v.project_id, v.tenant_id)
+        except Exception:
+            cwv = {"status": "unavailable"}
+
         v.details = {
             "category_checked": category,
+            "core_web_vitals": cwv,
             "baseline_category_issues": base_cat,
             "followup_category_issues": after_cat,
             "baseline_total_issues": base_total,

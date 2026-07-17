@@ -49,6 +49,7 @@ class SeoTaskSourceType(str, enum.Enum):
     blog_engine = "blog_engine"
     repo_agent = "repo_agent"
     planner = "planner"
+    core_web_vitals = "core_web_vitals"
 
 
 class SeoTaskPriority(str, enum.Enum):
