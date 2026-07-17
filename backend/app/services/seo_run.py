@@ -218,6 +218,9 @@ class SeoRunService:
     ) -> None:
         await self.repository.set_stage(run, stage, status, error_message=error_message)
         await self.db.commit()
+        from app.services.stage_telemetry import record_stage
+
+        await record_stage(self.db, run, stage, status, error_message=error_message)
 
     async def _fail_run(self, run_id: UUID, tenant_id: UUID, stage: SeoRunStage, exc: Exception) -> SeoRun:
         await self.db.rollback()
@@ -228,6 +231,9 @@ class SeoRunService:
         await self.repository.set_stage(run, stage, SeoRunStageStatus.failed, error_message=error_message)
         await self.repository.set_status(run, SeoRunStatus.failed, current_stage=stage, error_message=error_message)
         await self.db.commit()
+        from app.services.stage_telemetry import record_stage
+
+        await record_stage(self.db, run, stage, SeoRunStageStatus.failed, error_message=error_message)
         await self.db.refresh(run)
         logger.error("One-click SEO run failed", run_id=str(run.id), stage=stage.value, error=error_message, exc_info=True)
         return run

@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     # arrives within this window, verification falls back to the delay above so
     # the loop never stalls. Provider credentials (Vercel/Netlify/etc.) are
     # optional; without them, deploy status arrives via webhook or simulate.
+    # Google PageSpeed Insights (Core Web Vitals). The API is official and free;
+    # without a key it is heavily rate-limited (HTTP 429). Provide a free key from
+    # Google Cloud Console for reliable use.
+    GOOGLE_PAGESPEED_API_KEY: Optional[str] = None
+    PAGESPEED_API_URL: str = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+    PAGESPEED_TIMEOUT_SECONDS: float = 90.0
     DEPLOYMENT_DEFAULT_PROVIDER: str = "custom_webhook"
     DEPLOYMENT_SETTLE_SECONDS: int = 0  # extra wait after deploy success before verifying
     FEATURE_CRAWLER_ENABLED: bool = True

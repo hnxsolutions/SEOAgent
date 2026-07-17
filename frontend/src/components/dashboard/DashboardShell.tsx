@@ -383,6 +383,7 @@ const navItems = [
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
   { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
   { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },
+  { label: 'Core Web Vitals', href: '/dashboard/core-web-vitals', icon: Gauge },
   { label: 'Verification', href: '/dashboard/verification', icon: BadgeCheck },
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Report', href: '/dashboard/report', icon: FileCheck2 },

@@ -1479,4 +1479,59 @@ export type MissionControlOverview = {
   deployment: { recent: Array<Record<string, any>> };
   scheduler: Record<string, any>;
   timeline: Array<{ time: string | null; event: string; category: string }>;
+  pipeline?: {
+    run_id?: string | null;
+    run_status?: string | null;
+    current_stage?: string | null;
+    stages: Array<{
+      stage: string;
+      status: string;
+      duration_ms?: number | null;
+      started_at?: string | null;
+      finished_at?: string | null;
+      retry_count: number;
+      error_message?: string | null;
+    }>;
+  };
+  stage_analytics?: {
+    stages: Array<{ stage: string; runs: number; avg_duration_ms?: number | null; success_rate?: number | null; failure_rate?: number | null }>;
+    fastest_stage?: string | null;
+    slowest_stage?: string | null;
+  };
+  core_web_vitals?: {
+    status: string;
+    note?: string;
+    performance_mobile?: number | null;
+    performance_desktop?: number | null;
+    lcp_ms?: number | null;
+    cls?: number | null;
+    inp_ms?: number | null;
+    top_opportunities?: Array<{ id: string; title: string; savings_ms?: number | null }>;
+  };
+};
+
+export type PagespeedRun = {
+  id: string;
+  project_id: string;
+  url: string;
+  strategy: 'mobile' | 'desktop';
+  status: 'completed' | 'quota_exceeded' | 'error';
+  performance_score?: number | null;
+  accessibility_score?: number | null;
+  best_practices_score?: number | null;
+  seo_score?: number | null;
+  lcp_ms?: number | null;
+  cls?: number | null;
+  inp_ms?: number | null;
+  tbt_ms?: number | null;
+  fcp_ms?: number | null;
+  speed_index_ms?: number | null;
+  ttfb_ms?: number | null;
+  field_lcp_ms?: number | null;
+  field_cls?: number | null;
+  field_inp_ms?: number | null;
+  opportunities?: Array<Record<string, any>> | null;
+  diagnostics?: Array<Record<string, any>> | null;
+  error_message?: string | null;
+  created_at?: string | null;
 };

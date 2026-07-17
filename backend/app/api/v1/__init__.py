@@ -27,6 +27,7 @@ from app.api.v1.routes import (
     briefing,
     mission_control,
     telemetry,
+    pagespeed,
     indexing,
     keyword_baselines,
     rank_tracking,
@@ -69,6 +70,7 @@ api_router.include_router(deployments.router, prefix="/deployments", tags=["Depl
 api_router.include_router(briefing.router, prefix="/briefing", tags=["Daily Executive Briefing"])
 api_router.include_router(mission_control.router, prefix="/mission-control", tags=["Mission Control"])
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["Scheduler Telemetry"])
+api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])
 api_router.include_router(keyword_baselines.router, tags=["Manual Keyword Baselines"])
