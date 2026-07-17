@@ -15,6 +15,15 @@ from app.services.scheduler import SchedulerService
 
 
 async def run(limit: int = 50) -> dict[str, Any]:
+    """Run one scheduler tick, recorded in scheduler telemetry."""
+    from app.services.telemetry import run_with_telemetry
+
+    return await run_with_telemetry(
+        "scheduler_tick", "scheduler", lambda: _run_tick(limit), max_retries=0
+    )
+
+
+async def _run_tick(limit: int = 50) -> dict[str, Any]:
     async with get_db_session() as db:
         result = await SchedulerService(db).tick_with_monitor_details(limit=limit)
         await db.commit()

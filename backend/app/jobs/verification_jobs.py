@@ -16,6 +16,15 @@ logger = structlog.get_logger(__name__)
 
 
 async def run_due_verifications_background(tenant_id: Optional[UUID] = None) -> None:
+    from app.services.telemetry import run_with_telemetry
+
+    await run_with_telemetry(
+        "verification", "verification", lambda: _run_due_verifications(tenant_id),
+        tenant_id=tenant_id, max_retries=1,
+    )
+
+
+async def _run_due_verifications(tenant_id: Optional[UUID] = None) -> None:
     """Start follow-up runs for due verifications, execute them, then reconcile.
 
     Reuses run_seo_run_background so the follow-up analysis is the exact same

@@ -272,7 +272,11 @@ class DailyBriefingService:
             return str(value)
         if isinstance(value, (datetime, date)):
             return value.isoformat()
-        return value
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        # Anything else (e.g. a leaked SQLAlchemy ORM object) is stringified so a
+        # single unexpected type can never break the whole JSONB write.
+        return str(value)
 
     # -- executive summary (LLM with deterministic fallback) ----------------
 

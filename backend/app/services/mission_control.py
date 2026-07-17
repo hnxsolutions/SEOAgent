@@ -28,6 +28,7 @@ from app.models.verification import AiFixVerification, VerificationStatus
 from app.services.daily_briefing import DailyBriefingService
 from app.services.learning import LearningEngine
 from app.services.notifications import NotificationService
+from app.services.telemetry_query import TelemetryQuery
 
 logger = structlog.get_logger(__name__)
 
@@ -52,15 +53,28 @@ class MissionControlService:
         recommendations = await self._recommendations(tenant_id, projects, current_activity)
         timeline = await self._timeline(tenant_id, projects, current_activity)
 
+        tq = TelemetryQuery(self.db)
+        telemetry_stats = await tq.stats(tenant_id)
+        telemetry = {
+            "stats": telemetry_stats,
+            "workers": await tq.worker_health(tenant_id),
+            "active": [self._job_item(j) for j in await tq.active_runs(tenant_id)],
+            "recent": [self._job_item(j) for j in await tq.list_runs(tenant_id, limit=15)],
+            "failures": [self._job_item(j) for j in await tq.failures(tenant_id, limit=10)],
+        }
+
         # Aggregate health across projects for the headline number.
         healths = [c["health"] for c in project_cards if c["health"] is not None]
         overall_health = round(sum(healths) / len(healths)) if healths else None
+        ai_health = self._ai_health_score(system_health, telemetry_stats, verification, learning, overall_health)
 
         return {
             "generated_at": datetime.utcnow().isoformat(),
             "overall_health": overall_health,
+            "ai_health_score": ai_health,
             "ai_confidence": learning.get("success_rate"),
             "system_health": system_health,
+            "telemetry": telemetry,
             "current_activity": current_activity,
             "projects": project_cards,
             "project_count": len(project_cards),
@@ -321,6 +335,47 @@ class MissionControlService:
             "tick_limit": settings.SCHEDULER_TICK_LIMIT,
             "status": "configured",
         }
+
+    @staticmethod
+    def _job_item(j) -> Dict[str, Any]:
+        return {
+            "id": str(j.id),
+            "job_name": j.job_name,
+            "job_type": j.job_type,
+            "status": MissionControlService._enum(j.status),
+            "trigger_type": MissionControlService._enum(j.trigger_type),
+            "worker_name": j.worker_name,
+            "retry_count": j.retry_count,
+            "duration_ms": j.duration_ms,
+            "started_at": j.started_at.isoformat() if j.started_at else None,
+            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+            "error_message": j.error_message,
+        }
+
+    @staticmethod
+    def _ai_health_score(system_health, telemetry_stats, verification, learning, overall_health) -> int:
+        """One 0-100 AI health score blending infra, scheduler/workers, SEO
+        pipeline and verification signals. Weights sum to 100; each sub-score is
+        0-1 and degrades gracefully when a signal has no data yet."""
+        comps = system_health.get("components", {})
+        infra_total = len(comps) or 1
+        infra_ok = sum(1 for c in comps.values() if c.get("status") == "ok")
+        infra = infra_ok / infra_total
+
+        fail_rate = telemetry_stats.get("failure_rate")
+        workers = 1.0 if fail_rate is None else max(0.0, 1 - fail_rate / 100)
+
+        pipeline = (overall_health / 100) if overall_health is not None else 0.7
+
+        v_total = sum(v for v in verification.values() if isinstance(v, int))
+        v_ok = verification.get("verified_success", 0) + 0.5 * verification.get("partially_successful", 0)
+        verif = (v_ok / v_total) if v_total else 0.7  # neutral when no evidence
+
+        learn_rate = learning.get("success_rate")
+        learn = (learn_rate / 100) if learn_rate is not None else 0.7
+
+        score = (infra * 30) + (workers * 25) + (pipeline * 20) + (verif * 15) + (learn * 10)
+        return int(round(max(0, min(100, score))))
 
     @staticmethod
     def _enum(value):

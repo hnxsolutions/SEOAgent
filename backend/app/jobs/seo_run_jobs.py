@@ -10,17 +10,24 @@ import structlog
 
 from app.core.database import get_db_session
 from app.services.seo_run import SeoRunService
+from app.services.telemetry import run_with_telemetry
 
 logger = structlog.get_logger(__name__)
 
 
 async def run_seo_run_background(run_id: UUID, tenant_id: UUID) -> None:
-    """Execute a one-click SEO run with its own fresh DB session."""
-    db = get_db_session()
-    try:
-        service = SeoRunService(db)
-        await service.execute_run(run_id, tenant_id)
-    except Exception:  # pragma: no cover - defensive: never crash the worker/task
-        logger.exception("seo_run_background_failed", run_id=str(run_id), tenant_id=str(tenant_id))
-    finally:
-        await db.close()
+    """Execute a one-click SEO run with its own fresh DB session, recorded in
+    scheduler telemetry (crawl->audit->semantic->content->planner)."""
+    async def _body():
+        db = get_db_session()
+        try:
+            await SeoRunService(db).execute_run(run_id, tenant_id)
+        finally:
+            await db.close()
+
+    await run_with_telemetry(
+        "seo_run", "pipeline", _body,
+        tenant_id=tenant_id, project_id=None,
+        # A full pipeline is expensive; don't auto-retry the whole thing.
+        max_retries=0,
+    )

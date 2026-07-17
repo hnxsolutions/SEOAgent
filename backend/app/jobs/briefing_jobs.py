@@ -19,6 +19,15 @@ logger = structlog.get_logger(__name__)
 
 
 async def generate_daily_briefings_background(use_llm: bool = True, limit: int = 200) -> int:
+    from app.services.telemetry import run_with_telemetry
+
+    return await run_with_telemetry(
+        "daily_briefing", "briefing", lambda: _generate_daily_briefings(use_llm, limit),
+        max_retries=0,
+    ) or 0
+
+
+async def _generate_daily_briefings(use_llm: bool = True, limit: int = 200) -> int:
     """Generate today's briefing for every project that does not have one yet."""
     generated = 0
     db = get_db_session()
