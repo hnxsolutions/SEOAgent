@@ -10,6 +10,7 @@ import type {
   NotificationList,
   AppNotification,
   MissionControlOverview,
+  QueueStats,
   PagespeedRun,
   VerificationList,
   LearningStats,
@@ -157,6 +158,9 @@ export const dashboardApi = {
   },
   missionControl: {
     overview: () => unwrap<MissionControlOverview>(api.get(`/mission-control/overview`)),
+  },
+  queue: {
+    stats: () => unwrap<QueueStats>(api.get(`/queue/stats`)),
   },
   pagespeed: {
     analyze: (projectId: UUID) =>

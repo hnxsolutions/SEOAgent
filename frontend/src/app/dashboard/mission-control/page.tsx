@@ -69,6 +69,12 @@ export default function MissionControlPage() {
     refetchInterval: 30000, // SSE drives most updates; poll is a safety net
   });
 
+  const queueQuery = useQuery({
+    queryKey: ['queue-stats'],
+    queryFn: () => dashboardApi.queue.stats(),
+    refetchInterval: 10000,
+  });
+
   // Live updates: refetch (debounced) whenever a real backend job/stage event arrives.
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { connected } = useMissionControlStream(() => {
@@ -342,6 +348,29 @@ export default function MissionControlPage() {
               </li>
             ))}
           </ol>
+        </Card>
+      ) : null}
+
+      {/* Durable queue & workers */}
+      {queueQuery.data && queueQuery.data.status === 'available' ? (
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold"><Boxes className="h-4 w-4" /> Durable Queue &amp; Workers</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <Metric label="Workers" value={queueQuery.data.worker_count ?? 0} tone={queueQuery.data.worker_count ? 'text-emerald-600' : 'text-rose-600'} />
+            <Metric label="Pending" value={queueQuery.data.totals?.pending ?? 0} />
+            <Metric label="Running" value={queueQuery.data.totals?.running ?? 0} tone={queueQuery.data.totals?.running ? 'text-indigo-600' : 'text-foreground'} />
+            <Metric label="Finished" value={queueQuery.data.totals?.finished ?? 0} tone="text-emerald-600" />
+            <Metric label="Dead-letter" value={queueQuery.data.dead_letter ?? 0} tone={queueQuery.data.dead_letter ? 'text-rose-600' : 'text-foreground'} />
+          </div>
+          {(queueQuery.data.workers ?? []).length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {queueQuery.data.workers!.map((w) => (
+                <span key={w.name} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${w.state === 'busy' ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" /> {w.name.slice(0, 8)} · {w.state} · ✓{w.successful_jobs ?? 0}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </Card>
       ) : null}
 

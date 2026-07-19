@@ -1551,3 +1551,12 @@ export type PagespeedRun = {
   error_message?: string | null;
   created_at?: string | null;
 };
+
+export type QueueStats = {
+  status: string;
+  totals?: { pending: number; running: number; failed: number; finished: number };
+  queues?: Array<{ name: string; priority: string; pending: number; running: number; failed: number; finished: number }>;
+  workers?: Array<{ name: string; state: string; current_job?: string | null; successful_jobs?: number; failed_jobs?: number; last_heartbeat?: string | null; queues?: string[] }>;
+  worker_count?: number;
+  dead_letter?: number;
+};

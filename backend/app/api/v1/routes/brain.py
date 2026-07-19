@@ -88,7 +88,12 @@ async def brain_dispatch_code_fixes(
             "detail": "Connect a repository (POST /repos/connections) before auto-dispatch.",
             "project_id": str(project_id),
         }
-    background_tasks.add_task(dispatch_code_fixes_background, connection.id, tenant_id)
+    from app.queue.client import enqueue_or_background
+
+    enqueue_or_background(
+        background_tasks, "app.queue.jobs.dispatch_code_fixes", dispatch_code_fixes_background,
+        connection.id, tenant_id, max_retries=1,
+    )
     return {
         "status": "dispatching",
         "connection_id": str(connection.id),

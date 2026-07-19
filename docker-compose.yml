@@ -122,7 +122,7 @@ services:
     networks:
       - seo-agent-network
     command: >
-      sh -c "rq worker --url redis://redis:6379 seo_queue --with-scheduler"
+      sh -c "rq worker --url redis://redis:6379 seo_queue_high seo_queue seo_queue_low --with-scheduler"
     healthcheck:
       disable: true
 
