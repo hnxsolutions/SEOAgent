@@ -69,6 +69,9 @@ import type {
   RankTrackingSummary,
   RepoConnection,
   RepoScanRun,
+  IndexQueueItem,
+  IndexQueueSummary,
+  IndexQueueSubmitResult,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -397,6 +400,29 @@ export const dashboardApi = {
       unwrap<SearchConsoleOpportunity>(
         api.post(`/search-console/opportunities/${id}/mark-completed`)
       ),
+  },
+
+  indexQueue: {
+    discover: (projectId: UUID) =>
+      unwrap<{ discovered: number; total_candidates: number }>(
+        api.post(`/index-queue/projects/${projectId}/discover`)
+      ),
+    queue: (projectId: UUID, status?: string) =>
+      unwrap<{ items: IndexQueueItem[]; total: number }>(
+        api.get(`/index-queue/projects/${projectId}/queue`, {
+          params: { limit: 500, ...(status ? { status } : {}) },
+        })
+      ),
+    summary: (projectId: UUID) =>
+      unwrap<IndexQueueSummary>(api.get(`/index-queue/projects/${projectId}/summary`)),
+    approve: (urlId: UUID) =>
+      unwrap<IndexQueueItem>(api.post(`/index-queue/${urlId}/approve`)),
+    reject: (urlId: UUID) =>
+      unwrap<IndexQueueItem>(api.post(`/index-queue/${urlId}/reject`)),
+    approveAll: (projectId: UUID) =>
+      unwrap<{ approved: number }>(api.post(`/index-queue/projects/${projectId}/approve-all`)),
+    submit: (projectId: UUID) =>
+      unwrap<IndexQueueSubmitResult>(api.post(`/index-queue/projects/${projectId}/submit`)),
   },
 
   sitemaps: {

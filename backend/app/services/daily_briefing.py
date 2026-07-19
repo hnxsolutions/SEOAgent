@@ -62,6 +62,13 @@ class DailyBriefingService:
         core_web_vitals = await PagespeedService(self.db).summary(project_id, tenant_id)
         site_validation = await SiteValidationService(self.db).summary(project_id, tenant_id)
 
+        from app.services.index_queue import IndexQueueService
+
+        try:
+            index_queue = await IndexQueueService(self.db).summary(project_id, tenant_id)
+        except Exception:
+            index_queue = {"pending": 0, "approved": 0, "submitted": 0, "indexed": 0, "total": 0}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -99,6 +106,7 @@ class DailyBriefingService:
             "pull_requests": prs,
             "core_web_vitals": core_web_vitals,
             "site_validation": site_validation,
+            "index_queue": index_queue,
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)

@@ -29,6 +29,7 @@ from app.api.v1.routes import (
     mission_control,
     telemetry,
     queue,
+    index_queue,
     pagespeed,
     indexing,
     keyword_baselines,
@@ -74,6 +75,7 @@ api_router.include_router(site_validation.router, prefix="/site-validation", tag
 api_router.include_router(mission_control.router, prefix="/mission-control", tags=["Mission Control"])
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["Scheduler Telemetry"])
 api_router.include_router(queue.router, prefix="/queue", tags=["Durable Queue"])
+api_router.include_router(index_queue.router, prefix="/index-queue", tags=["Auto Index Queue"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])

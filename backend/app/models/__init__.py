@@ -44,6 +44,7 @@ from app.models.briefing import DailyBriefing, Notification
 from app.models.telemetry import SchedulerJobRun
 from app.models.pipeline import PipelineStageRun
 from app.models.pagespeed import PagespeedRun
+from app.models.index_queue import PendingIndexUrl
 from app.models.site_validation import SiteValidation
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport

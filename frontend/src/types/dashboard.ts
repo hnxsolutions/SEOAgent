@@ -346,6 +346,38 @@ export type SearchConsoleSummary = {
   top_opportunities: SearchConsoleOpportunity[];
 };
 
+export type IndexQueueItem = {
+  id: UUID;
+  project_id: UUID;
+  url: string;
+  source: string;
+  status: string;
+  eligible: boolean;
+  reason?: string | null;
+  submitted_via?: string | null;
+  discovered_at?: string | null;
+  approved_at?: string | null;
+  submitted_at?: string | null;
+};
+
+export type IndexQueueSummary = {
+  by_status?: Record<string, number>;
+  pending: number;
+  approved: number;
+  submitted: number;
+  indexed?: number;
+  total: number;
+};
+
+export type IndexQueueSubmitResult = {
+  status: string; // submitted | not_connected | submit_failed | nothing_to_submit
+  submitted: number;
+  via?: string;
+  sitemap_url?: string;
+  error?: string;
+  note?: string;
+};
+
 export type SearchConsoleImport = {
   id: UUID;
   project_id?: UUID | null;
