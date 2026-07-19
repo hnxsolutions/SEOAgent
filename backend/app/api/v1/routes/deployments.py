@@ -21,6 +21,40 @@ def _tenant_id(current_user: dict) -> UUID:
     return current_user["tenant_id"]
 
 
+@router.get("/provider-health")
+async def deployment_provider_health(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Configured/unconfigured state of each deployment provider adapter."""
+    from app.deployment.adapters import provider_health
+
+    return {"providers": provider_health()}
+
+
+@router.get("/projects/{project_id}/stats")
+async def deployment_stats(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Deployment success/failure/duration + per-provider reliability (learning evidence)."""
+    return await DeploymentEngine(db).deployment_stats(_tenant_id(current_user))
+
+
+@router.post("/{deployment_id}/poll", response_model=DeploymentResponse)
+async def poll_deployment(
+    deployment_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Poll the provider adapter for a deployment's live status (credential-gated)."""
+    engine = DeploymentEngine(db)
+    try:
+        return await engine.poll_deployment(deployment_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 @router.get("/projects/{project_id}", response_model=DeploymentListResponse)
 async def list_deployments(
     project_id: UUID,

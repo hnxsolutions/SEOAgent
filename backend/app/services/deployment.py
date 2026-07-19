@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -104,6 +104,7 @@ class DeploymentEngine:
 
         if new_status == DeploymentStatus.success:
             await self._accelerate_verifications(deployment.pull_request_id, tenant_id)
+            await self._run_site_validation(deployment, tenant_id)
         elif new_status == DeploymentStatus.failed:
             # The fix never went live; it cannot be measured automatically.
             await self._flag_verifications_needs_review(deployment.pull_request_id, tenant_id)
@@ -142,6 +143,101 @@ class DeploymentEngine:
             v.status = VerificationStatus.needs_human_review
             v.details = {**(v.details or {}), "deployment": "failed"}
         return len(verifs)
+
+    async def _run_site_validation(self, deployment: Deployment, tenant_id: UUID) -> None:
+        """Validate the live site once a deployment is Ready (best-effort)."""
+        try:
+            from app.services.site_validation import SiteValidationService
+
+            await SiteValidationService(self.db).validate(
+                deployment.project_id, tenant_id,
+                url=deployment.deployment_url, deployment_id=deployment.id,
+            )
+        except Exception:  # pragma: no cover - never break the deploy flow
+            logger.warning("deployment_site_validation_failed", deployment_id=str(deployment.id))
+
+    async def poll_deployment(self, deployment_id: UUID, tenant_id: UUID) -> Deployment:
+        """Poll the provider adapter for a deployment's live status and update it.
+
+        Credential-gated: when the provider has no token the adapter returns None
+        and the deployment is left unchanged (never fabricated)."""
+        deployment = await self.get_deployment(deployment_id, tenant_id)
+        if not deployment:
+            raise ValueError("Deployment not found")
+        if deployment.status in _TERMINAL_DEPLOY:
+            return deployment
+
+        from app.deployment.adapters import get_adapter
+
+        adapter = get_adapter(deployment.provider)
+        if not adapter.configured or not deployment.commit_sha:
+            return deployment  # gracefully leave as-is
+        info = await adapter.get_by_commit(deployment.commit_sha)
+        if not info:
+            return deployment
+        return await self.update_status(
+            deployment_id, tenant_id, info.status.value,
+            deployment_url=info.deployment_url, external_id=info.deployment_id,
+        )
+
+    async def poll_active_deployments(self, tenant_id: Optional[UUID] = None, limit: int = 25) -> int:
+        """Scheduler entry: poll every non-terminal deployment via its adapter."""
+        query = select(Deployment).where(Deployment.status.in_([DeploymentStatus.pending, DeploymentStatus.building]))
+        if tenant_id:
+            query = query.where(Deployment.tenant_id == tenant_id)
+        active = (await self.db.execute(query.limit(limit))).scalars().all()
+        polled = 0
+        for d in active:
+            try:
+                await self.poll_deployment(d.id, d.tenant_id)
+                polled += 1
+            except Exception:  # pragma: no cover
+                logger.warning("poll_deployment_failed", deployment_id=str(d.id))
+        return polled
+
+    async def deployment_stats(self, tenant_id: UUID) -> Dict[str, Any]:
+        """Production evidence for the learning engine + Mission Control."""
+        rows = (await self.db.execute(
+            select(Deployment.status, func.count(Deployment.id), func.avg(Deployment.duration_seconds))
+            .where(Deployment.tenant_id == tenant_id)
+            .group_by(Deployment.status)
+        )).all()
+        by_status: Dict[str, int] = {}
+        durations = []
+        for status, count, avg_dur in rows:
+            by_status[self._status_value(status)] = int(count)
+            if avg_dur is not None:
+                durations.append(float(avg_dur))
+        success = by_status.get("success", 0)
+        failed = by_status.get("failed", 0)
+        finalized = success + failed
+        # Per-provider reliability.
+        prov_rows = (await self.db.execute(
+            select(Deployment.provider, Deployment.status, func.count(Deployment.id))
+            .where(Deployment.tenant_id == tenant_id)
+            .group_by(Deployment.provider, Deployment.status)
+        )).all()
+        providers: Dict[str, Dict[str, int]] = {}
+        for provider, status, count in prov_rows:
+            p = providers.setdefault(self._status_value(provider), {"success": 0, "failed": 0, "total": 0})
+            sv = self._status_value(status)
+            if sv in ("success", "failed"):
+                p[sv] += int(count)
+            p["total"] += int(count)
+        for p in providers.values():
+            fin = p["success"] + p["failed"]
+            p["reliability"] = round(p["success"] / fin * 100, 1) if fin else None
+        return {
+            "by_status": by_status,
+            "success_rate": round(success / finalized * 100, 1) if finalized else None,
+            "failure_rate": round(failed / finalized * 100, 1) if finalized else None,
+            "avg_duration_seconds": round(sum(durations) / len(durations)) if durations else None,
+            "provider_reliability": providers,
+        }
+
+    @staticmethod
+    def _status_value(v):
+        return getattr(v, "value", v)
 
     async def list_deployments(self, project_id: UUID, tenant_id: UUID, limit: int = 50) -> List[Deployment]:
         rows = await self.db.execute(

@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import {
   Activity, CheckCircle2, AlertTriangle, Server, Database, Cpu, Boxes,
-  Rocket, ShieldCheck, GitPullRequest, Sparkles, Bell, Clock, Gauge,
+  Rocket, ShieldCheck, GitPullRequest, Sparkles, Bell, Clock, Gauge, Check, X,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
@@ -344,6 +344,50 @@ export default function MissionControlPage() {
           </ol>
         </Card>
       ) : null}
+
+      {/* Deployments & live-site validation */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold"><Rocket className="h-4 w-4" /> Deployments</h2>
+          <div className="grid grid-cols-3 gap-3">
+            <Metric label="Success" value={data.deployment.stats?.success_rate != null ? `${data.deployment.stats.success_rate}%` : '—'} tone="text-emerald-600" />
+            <Metric label="Active" value={data.deployment.active_count ?? 0} tone={data.deployment.active_count ? 'text-indigo-600' : 'text-foreground'} />
+            <Metric label="Avg" value={data.deployment.stats?.avg_duration_seconds != null ? `${data.deployment.stats.avg_duration_seconds}s` : '—'} />
+          </div>
+          <div className="mt-3">
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Provider health</p>
+            <div className="flex flex-wrap gap-2">
+              {(data.deployment.provider_health ?? []).map((p) => (
+                <span key={p.provider} className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${p.configured ? statusTone('ok') : 'border-slate-200 bg-slate-50 text-slate-500'}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${p.configured ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                  {p.provider}{p.configured ? '' : ' · gated'}
+                </span>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <h2 className="mb-3 flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4" /> Live Site Validation</h2>
+          {!data.site_validation || data.site_validation.status !== 'available' ? (
+            <p className="text-sm text-muted-foreground">No validation yet — runs automatically after a deployment succeeds.</p>
+          ) : (
+            <div>
+              <p className="text-sm">
+                <span className="font-mono text-xs">{data.site_validation.url}</span> · HTTP {data.site_validation.http_status} ·{' '}
+                <span className="font-semibold">{data.site_validation.passed}/{data.site_validation.total} checks</span>
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {Object.entries(data.site_validation.checks ?? {}).map(([name, c]) => (
+                  <span key={name} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${c.passed ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                    {c.passed ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}{name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
 
       {/* Summary strip: verification / deployment / learning + timeline */}
       <div className="grid gap-6 lg:grid-cols-2">

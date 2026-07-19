@@ -40,6 +40,21 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     except Exception:  # pragma: no cover - defensive; never break the tick
         payload["verification_processed"] = False
 
+    # Monitor active deployments via provider adapters (credential-gated; a
+    # no-op when no provider tokens are configured). Verification is only
+    # accelerated once a deployment reaches Ready, never mid-deploy.
+    try:
+        from app.core.database import get_db_session
+        from app.services.deployment import DeploymentEngine
+
+        db2 = get_db_session()
+        try:
+            payload["deployments_polled"] = await DeploymentEngine(db2).poll_active_deployments()
+        finally:
+            await db2.close()
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["deployments_polled"] = 0
+
     # Autonomous daily executive briefing (one per project per day; upsert-safe).
     from app.jobs.briefing_jobs import generate_daily_briefings_background
 
