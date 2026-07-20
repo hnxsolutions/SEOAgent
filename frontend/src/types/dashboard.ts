@@ -461,6 +461,60 @@ export type PatchPipelineSummary = {
   updated_at?: string | null;
 };
 
+export type CodeReviewItem = {
+  id: string;
+  project_id: UUID;
+  framework?: string | null;
+  technology?: string | null;
+  status: string; // ready_for_review | approved | merged | rejected | archived
+  risk_level: string; // low | medium | high | blocked
+  confidence?: number | null;
+  files_count?: number | null;
+  estimated_seo_impact?: string | null;
+  estimated_performance_impact?: string | null;
+  seo_before?: number | null;
+  seo_after_predicted?: number | null;
+  pr_url?: string | null;
+  pr_status?: string | null;
+  commit_sha?: string | null;
+  merge_sha?: string | null;
+  deployment_status?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
+  created_at?: string | null;
+};
+
+export type CodeReviewDiffLine = { type: 'add' | 'remove' | 'context'; text: string };
+
+export type CodeReviewFile = {
+  id: string;
+  surface: string;
+  target_file: string;
+  language?: string | null;
+  is_new_file?: boolean;
+  old_code: string;
+  new_code: string;
+  diff: CodeReviewDiffLine[];
+  lines_added: number;
+  lines_removed: number;
+  risk: string;
+  confidence?: number | null;
+  explanation: { problem: string; consequence: string; fix: string };
+  expected_result: {
+    is_prediction: boolean;
+    disclaimer: string;
+    crawling_improvement: string;
+    rich_result_improvement: string;
+    metadata_quality: string;
+    indexability: string;
+    lighthouse_seo: string;
+  };
+  validation_notes?: Record<string, string> | null;
+};
+
 export type GeneratedPatch = {
   id: UUID;
   project_id: UUID;

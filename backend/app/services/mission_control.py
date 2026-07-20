@@ -59,6 +59,7 @@ class MissionControlService:
         technology = await self._technology_block(tenant_id, projects)
         generated_patches = await self._generated_patches_block(tenant_id, projects)
         patch_pipeline = await self._patch_pipeline_block(tenant_id, projects)
+        code_review = await self._code_review_block(tenant_id)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -103,6 +104,7 @@ class MissionControlService:
             "technology": technology,
             "generated_patches": generated_patches,
             "patch_pipeline": patch_pipeline,
+            "code_review": code_review,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -464,6 +466,16 @@ class MissionControlService:
             return await PatchPipelineService(self.db).summary(target, tenant_id)
         except Exception:
             return {"has_run": False, "status": None, "current_stage": None, "stages": []}
+
+    async def _code_review_block(self, tenant_id: UUID) -> Dict[str, Any]:
+        """Human approval widgets: pending reviews, approved/rejected today,
+        average review/merge time, average confidence, risk breakdown."""
+        from app.services.code_review import CodeReviewService
+
+        try:
+            return await CodeReviewService(self.db).mission_control_summary(tenant_id)
+        except Exception:
+            return {"pending_reviews": 0, "approved_today": 0, "rejected_today": 0}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a

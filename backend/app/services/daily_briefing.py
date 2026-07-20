@@ -88,6 +88,14 @@ class DailyBriefingService:
         except Exception:
             pipeline = {"has_run": False}
 
+        from app.services.code_review import CodeReviewService
+
+        try:
+            code_review = await CodeReviewService(self.db).briefing_summary(project_id, tenant_id)
+        except Exception:
+            code_review = {"pending_reviews": 0, "waiting_for_approval": [], "recently_merged": [],
+                           "recently_rejected": [], "top_high_risk": []}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -135,6 +143,7 @@ class DailyBriefingService:
                 "pr_status": pipeline.get("pr_status") if pipeline.get("has_run") else None,
                 "current_stage": pipeline.get("current_stage") if pipeline.get("has_run") else None,
             },
+            "code_review": code_review,
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)
