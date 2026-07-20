@@ -363,6 +363,37 @@ export type TechnologyScores = {
   indexability?: number;
 };
 
+export type TechnologyInsight = {
+  category: string;
+  name: string;
+  confidence?: number;
+  evidence?: string[];
+  purpose?: string;
+  seo_impact?: number;
+  performance_impact?: number;
+  seo_impact_reason?: string;
+  performance_impact_reason?: string;
+};
+
+export type ExplainedScore = {
+  key: string;
+  label: string;
+  value?: number;
+  explanation: string;
+};
+
+export type FrameworkStrategy = {
+  primary_framework?: string | null;
+  primary_framework_key?: string | null;
+  secondary_framework?: string | null;
+  rendering?: string | null;
+  recommended_strategy?: string;
+  recommendations?: string[];
+  explained_scores?: ExplainedScore[];
+  technology_insights?: TechnologyInsight[];
+  profile?: Record<string, unknown> | null;
+};
+
 export type TechnologyFingerprint = {
   project_id: UUID;
   status: string; // detecting | complete | failed | not_analyzed
@@ -370,12 +401,14 @@ export type TechnologyFingerprint = {
   source?: string | null;
   source_url?: string | null;
   primary_framework?: string | null;
+  secondary_framework?: string | null;
   primary_cms?: string | null;
   primary_language?: string | null;
   rendering?: string | null;
   hosting?: string | null;
   cdn?: string | null;
   scores: TechnologyScores;
+  strategy?: FrameworkStrategy;
   technologies: TechnologyItem[];
   by_category?: Record<string, TechnologyItem[]>;
   detected_at?: string | null;

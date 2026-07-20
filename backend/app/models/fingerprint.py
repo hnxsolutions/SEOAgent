@@ -65,6 +65,12 @@ class TechnologyFingerprint(Base):
     #  security, indexability}
     scores = Column(JSONB, nullable=False, default=dict)
 
+    # Framework Strategy Engine output: primary/secondary framework, rendering
+    # mode, recommended SEO strategy, per-tech insights, recommendations, and
+    # explained scores (composed from the Framework Knowledge Base).
+    strategy = Column(JSONB, nullable=True)
+    secondary_framework = Column(String(255), nullable=True)
+
     # Denormalized headline values for quick display + filtering.
     primary_framework = Column(String(255), nullable=True)
     primary_cms = Column(String(255), nullable=True)

@@ -90,6 +90,7 @@ class SeoBrainService:
         plan = await self.get_master_plan(project_id, tenant_id, limit=10)
         pending = await self._pending_approvals(project_id, tenant_id)
         modules = await self._module_summaries(project_id, tenant_id)
+        framework = await self._framework_strategy(project_id, tenant_id)
 
         health = self._health_score(plan, modules)
         current_stage, current_status = self._run_stage(latest_run)
@@ -111,7 +112,28 @@ class SeoBrainService:
             "code_fixable_count": plan["code_fixable_count"],
             "next_action": self._next_action(plan, pending),
             "modules": modules,
+            "framework_strategy": framework,
         }
+
+    async def _framework_strategy(self, project_id: UUID, tenant_id: UUID) -> Dict[str, Any]:
+        """Technology + framework strategy the Brain uses to pick framework-safe
+        fixes. Composes the Technology Fingerprint (which already queries the
+        Framework Knowledge Base). Degrades gracefully when not analyzed."""
+        try:
+            from app.services.fingerprint import FingerprintService
+
+            summary = await FingerprintService(self.db).summary(project_id, tenant_id)
+            strategy = summary.get("strategy") or {}
+            return {
+                "detected": bool(summary.get("detected")),
+                "primary_framework": summary.get("primary_framework"),
+                "secondary_framework": summary.get("secondary_framework"),
+                "rendering": summary.get("rendering"),
+                "recommended_strategy": strategy.get("recommended_strategy"),
+                "recommendations": strategy.get("recommendations", []),
+            }
+        except Exception:
+            return {"detected": False}
 
     # -- auto dispatch to the repo agent ------------------------------------
 
