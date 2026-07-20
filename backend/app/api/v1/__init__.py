@@ -25,6 +25,7 @@ from app.api.v1.routes import (
     verification,
     deployments,
     briefing,
+    site_validation,
     mission_control,
     telemetry,
     pagespeed,
@@ -68,6 +69,7 @@ api_router.include_router(robots.router, prefix="/robots", tags=["Robots.txt Int
 api_router.include_router(verification.router, prefix="/verification", tags=["After-Merge Verification"])
 api_router.include_router(deployments.router, prefix="/deployments", tags=["Deployment Intelligence"])
 api_router.include_router(briefing.router, prefix="/briefing", tags=["Daily Executive Briefing"])
+api_router.include_router(site_validation.router, prefix="/site-validation", tags=["Live Site Validation"])
 api_router.include_router(mission_control.router, prefix="/mission-control", tags=["Mission Control"])
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["Scheduler Telemetry"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])

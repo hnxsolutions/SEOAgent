@@ -103,7 +103,21 @@ _RULES = [
     ("content", CATEGORY_CONTENT, "high", 120, False, 55),
     ("alt", CATEGORY_CONTENT, "low", 20, True, 70),
     ("image", CATEGORY_PERFORMANCE, "medium", 40, True, 60),
-    # Performance
+    # Performance / Core Web Vitals (Lighthouse opportunity ids)
+    ("render-blocking", CATEGORY_PERFORMANCE, "medium", 45, True, 65),
+    ("unused-javascript", CATEGORY_PERFORMANCE, "high", 90, False, 55),
+    ("unused-css", CATEGORY_PERFORMANCE, "medium", 45, True, 60),
+    ("unminified", CATEGORY_PERFORMANCE, "low", 20, True, 70),
+    ("modern-image-formats", CATEGORY_PERFORMANCE, "medium", 40, True, 60),
+    ("webp", CATEGORY_PERFORMANCE, "medium", 40, True, 60),
+    ("offscreen-images", CATEGORY_PERFORMANCE, "low", 25, True, 65),
+    ("uses-text-compression", CATEGORY_PERFORMANCE, "low", 20, True, 70),
+    ("uses-long-cache-ttl", CATEGORY_PERFORMANCE, "low", 20, True, 65),
+    ("server-response-time", CATEGORY_PERFORMANCE, "high", 90, False, 55),
+    ("font-display", CATEGORY_PERFORMANCE, "low", 15, True, 70),
+    ("lcp", CATEGORY_PERFORMANCE, "high", 90, False, 55),
+    ("cls", CATEGORY_PERFORMANCE, "medium", 45, False, 55),
+    ("inp", CATEGORY_PERFORMANCE, "high", 90, False, 55),
     ("core_web_vitals", CATEGORY_PERFORMANCE, "high", 90, False, 60),
     ("performance", CATEGORY_PERFORMANCE, "high", 90, False, 55),
 ]

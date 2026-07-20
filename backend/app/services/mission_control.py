@@ -20,7 +20,7 @@ from app.core.qdrant import get_qdrant_status
 from app.core.redis import get_redis_status
 from app.models.audit import SEOAuditRun
 from app.models.briefing import Notification
-from app.models.deployment import Deployment
+from app.models.deployment import Deployment, DeploymentStatus
 from app.models.project import Project
 from app.models.repo_agent import PullRequestRecord, PullRequestStatus, SeoCodePatch, SeoCodePatchStatus
 from app.models.seo_run import SeoRun, SeoRunStatus
@@ -50,6 +50,7 @@ class MissionControlService:
         learning = await LearningEngine(self.db).learning_stats(tenant_id)
         verification = await self._verification_summary(tenant_id)
         deployment = await self._deployment_summary(tenant_id)
+        site_validation = await self._site_validation(tenant_id, projects)
         notifications = await self._notifications(tenant_id)
         recommendations = await self._recommendations(tenant_id, projects, current_activity)
         timeline = await self._timeline(tenant_id, projects, current_activity)
@@ -109,6 +110,7 @@ class MissionControlService:
             },
             "verification": verification,
             "deployment": deployment,
+            "site_validation": site_validation,
             "scheduler": self._scheduler_status(),
             "timeline": timeline,
         }
@@ -307,18 +309,44 @@ class MissionControlService:
         }
 
     async def _deployment_summary(self, tenant_id: UUID) -> Dict[str, Any]:
+        from app.deployment.adapters import provider_health
+        from app.services.deployment import DeploymentEngine
+
         recent = (await self.db.execute(
             select(Deployment).where(Deployment.tenant_id == tenant_id)
-            .order_by(Deployment.created_at.desc()).limit(5)
+            .order_by(Deployment.created_at.desc()).limit(8)
         )).scalars().all()
+        last_success = (await self.db.execute(
+            select(Deployment).where(
+                Deployment.tenant_id == tenant_id, Deployment.status == DeploymentStatus.success,
+            ).order_by(Deployment.completed_at.desc().nullslast()).limit(1)
+        )).scalars().first()
+        active = [d for d in recent if self._enum(d.status) in ("pending", "building")]
         return {
             "recent": [
                 {"provider": self._enum(d.provider), "status": self._enum(d.status),
                  "url": d.deployment_url, "duration_seconds": d.duration_seconds,
                  "created_at": d.created_at.isoformat() if d.created_at else None}
-                for d in recent
+                for d in recent[:5]
             ],
+            "active_count": len(active),
+            "last_success_at": last_success.completed_at.isoformat() if last_success and last_success.completed_at else None,
+            "stats": await DeploymentEngine(self.db).deployment_stats(tenant_id),
+            "provider_health": provider_health(),
         }
+
+    async def _site_validation(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """Most recent live-site validation across the tenant (any project)."""
+        from app.models.site_validation import SiteValidation
+        from app.services.site_validation import SiteValidationService
+
+        latest = (await self.db.execute(
+            select(SiteValidation).where(SiteValidation.tenant_id == tenant_id)
+            .order_by(SiteValidation.created_at.desc()).limit(1)
+        )).scalars().first()
+        if not latest:
+            return {"status": "no_data"}
+        return await SiteValidationService(self.db).summary(latest.project_id, tenant_id)
 
     async def _notifications(self, tenant_id: UUID) -> Dict[str, Any]:
         svc = NotificationService(self.db)

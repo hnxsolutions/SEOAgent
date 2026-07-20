@@ -1476,7 +1476,23 @@ export type MissionControlOverview = {
   notifications: { unread_count: number; items: AppNotification[] };
   learning: Record<string, any>;
   verification: Record<string, number>;
-  deployment: { recent: Array<Record<string, any>> };
+  deployment: {
+    recent: Array<Record<string, any>>;
+    active_count?: number;
+    last_success_at?: string | null;
+    stats?: { success_rate?: number | null; failure_rate?: number | null; avg_duration_seconds?: number | null; by_status?: Record<string, number>; provider_reliability?: Record<string, any> };
+    provider_health?: Array<{ provider: string; configured: boolean }>;
+  };
+  site_validation?: {
+    status: string;
+    url?: string;
+    reachable?: boolean;
+    http_status?: number | null;
+    is_https?: boolean;
+    passed?: number | null;
+    total?: number | null;
+    checks?: Record<string, { passed: boolean; detail: string }>;
+  };
   scheduler: Record<string, any>;
   timeline: Array<{ time: string | null; event: string; category: string }>;
   pipeline?: {

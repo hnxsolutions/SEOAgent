@@ -138,6 +138,17 @@ class Settings(BaseSettings):
     PAGESPEED_TIMEOUT_SECONDS: float = 90.0
     DEPLOYMENT_DEFAULT_PROVIDER: str = "custom_webhook"
     DEPLOYMENT_SETTLE_SECONDS: int = 0  # extra wait after deploy success before verifying
+    # Deployment provider credentials (all optional; adapters degrade gracefully
+    # and never fabricate provider data when a token is missing).
+    VERCEL_TOKEN: Optional[str] = None
+    VERCEL_PROJECT_ID: Optional[str] = None
+    NETLIFY_TOKEN: Optional[str] = None
+    NETLIFY_SITE_ID: Optional[str] = None
+    CLOUDFLARE_API_TOKEN: Optional[str] = None
+    CLOUDFLARE_ACCOUNT_ID: Optional[str] = None
+    CLOUDFLARE_PAGES_PROJECT: Optional[str] = None
+    AWS_AMPLIFY_APP_ID: Optional[str] = None
+    AWS_REGION: Optional[str] = None
     FEATURE_CRAWLER_ENABLED: bool = True
     FEATURE_SERP_ANALYSIS_ENABLED: bool = True
     FEATURE_AI_VISIBILITY_ENABLED: bool = True

@@ -56,6 +56,12 @@ class DailyBriefingService:
         ai_confidence = learning.get("success_rate")
         timeline = await self._build_timeline(project_id, tenant_id)
 
+        from app.services.pagespeed import PagespeedService
+        from app.services.site_validation import SiteValidationService
+
+        core_web_vitals = await PagespeedService(self.db).summary(project_id, tenant_id)
+        site_validation = await SiteValidationService(self.db).summary(project_id, tenant_id)
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -91,6 +97,8 @@ class DailyBriefingService:
             },
             "deployments": [self._deploy_item(d) for d in deployments[:5]],
             "pull_requests": prs,
+            "core_web_vitals": core_web_vitals,
+            "site_validation": site_validation,
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)

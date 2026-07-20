@@ -361,6 +361,42 @@ class PlannerRepository:
         )
         return list(result.scalars().all())
 
+    async def list_pagespeed_opportunities(self, project_id: UUID, tenant_id: UUID, limit: int = 30) -> List[dict]:
+        """Opportunities from the latest completed PageSpeed run (mobile preferred).
+
+        Returns lightweight dicts (opportunities are stored as JSONB on the run,
+        they have no own id) tagged with the originating PagespeedRun id for
+        traceability.
+        """
+        from app.models.pagespeed import PagespeedRun, PagespeedStatus, PagespeedStrategy
+
+        run = None
+        for strat in (PagespeedStrategy.mobile, PagespeedStrategy.desktop):
+            run = (await self.db.execute(
+                select(PagespeedRun).where(
+                    PagespeedRun.project_id == project_id,
+                    PagespeedRun.tenant_id == tenant_id,
+                    PagespeedRun.strategy == strat,
+                    PagespeedRun.status == PagespeedStatus.completed,
+                ).order_by(PagespeedRun.created_at.desc()).limit(1)
+            )).scalars().first()
+            if run:
+                break
+        if not run or not run.opportunities:
+            return []
+        out = []
+        for opp in run.opportunities[:limit]:
+            out.append({
+                "id": opp.get("id"),
+                "title": opp.get("title"),
+                "description": opp.get("description"),
+                "savings_ms": opp.get("savings_ms"),
+                "run_id": run.id,
+                "url": run.url,
+                "strategy": run.strategy.value if hasattr(run.strategy, "value") else run.strategy,
+            })
+        return out
+
     async def list_gsc_opportunities(self, project_id: UUID, tenant_id: UUID, limit: int = 200) -> List[SearchConsoleOpportunity]:
         result = await self.db.execute(
             select(SearchConsoleOpportunity)

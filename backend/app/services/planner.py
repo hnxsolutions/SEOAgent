@@ -268,6 +268,7 @@ class PlannerService:
             "has_repo_connection": await self.repository.has_repo_connection(run.project_id, run.tenant_id),
             "has_knowledge": await self.repository.has_knowledge(run.project_id, run.tenant_id),
             "audit_issues": await self.repository.list_audit_issues(run.project_id, run.tenant_id),
+            "pagespeed_opportunities": await self.repository.list_pagespeed_opportunities(run.project_id, run.tenant_id),
             "gsc_opportunities": await self.repository.list_gsc_opportunities(run.project_id, run.tenant_id),
             "keyword_baselines": await self.repository.list_keyword_baselines(run.project_id, run.tenant_id),
             "content_suggestions": await self.repository.list_content_suggestions(run.project_id, run.tenant_id),
@@ -286,6 +287,7 @@ class PlannerService:
         candidates.extend(self._tasks_from_serp_snapshots(signals["gsc_opportunities"]))
         candidates.extend(self._tasks_from_keyword_baselines(signals["keyword_baselines"]))
         candidates.extend(self._tasks_from_audit(signals["audit_issues"]))
+        candidates.extend(self._tasks_from_pagespeed(signals["pagespeed_opportunities"]))
         candidates.extend(self._tasks_from_content(signals["content_suggestions"]))
         candidates.extend(self._tasks_from_geo(signals["geo_recommendations"]))
         candidates.extend(self._tasks_from_internal_links(signals["internal_link_recommendations"]))
@@ -562,6 +564,64 @@ class PlannerService:
                     priority_score=self._score_from_severity(getattr(issue, "severity", None), getattr(issue, "score_impact", 0)),
                     estimated_impact=self._impact_from_severity(getattr(issue, "severity", None)),
                     effort=SeoTaskEffort.low if task_type in {SeoTaskType.metadata_rewrite, SeoTaskType.schema_addition} else SeoTaskEffort.medium,
+                )
+            )
+        return candidates
+
+    # Lighthouse opportunity id -> (human action, code-fixable-ish, effort).
+    _PAGESPEED_ACTIONS = {
+        "modern-image-formats": ("Convert images to WebP/AVIF", SeoTaskEffort.medium),
+        "uses-webp-images": ("Convert images to WebP/AVIF", SeoTaskEffort.medium),
+        "offscreen-images": ("Lazy-load offscreen images", SeoTaskEffort.low),
+        "unused-javascript": ("Remove or split unused JavaScript", SeoTaskEffort.high),
+        "unused-css-rules": ("Remove unused CSS", SeoTaskEffort.medium),
+        "render-blocking-resources": ("Defer render-blocking CSS/JS", SeoTaskEffort.medium),
+        "uses-text-compression": ("Enable Brotli/Gzip compression", SeoTaskEffort.low),
+        "uses-long-cache-ttl": ("Improve static asset cache headers", SeoTaskEffort.low),
+        "uses-responsive-images": ("Serve appropriately sized images", SeoTaskEffort.medium),
+        "efficient-animated-content": ("Replace GIFs with video", SeoTaskEffort.medium),
+        "unminified-javascript": ("Minify JavaScript", SeoTaskEffort.low),
+        "unminified-css": ("Minify CSS", SeoTaskEffort.low),
+        "server-response-time": ("Reduce server response time (TTFB)", SeoTaskEffort.high),
+        "uses-rel-preload": ("Preload key requests (e.g. fonts)", SeoTaskEffort.low),
+        "font-display": ("Set font-display: swap", SeoTaskEffort.low),
+        "layout-shift-elements": ("Reduce layout shift (reserve space)", SeoTaskEffort.medium),
+    }
+
+    def _tasks_from_pagespeed(self, opportunities) -> List[TaskCandidate]:
+        """Turn Core Web Vitals (PageSpeed) opportunities into planner tasks that
+        sit alongside audit/robots/sitemap/GSC tasks."""
+        import uuid as _uuid
+
+        candidates = []
+        for opp in opportunities or []:
+            opp_id = opp.get("id") if isinstance(opp, dict) else getattr(opp, "id", "")
+            savings = (opp.get("savings_ms") if isinstance(opp, dict) else getattr(opp, "savings_ms", None)) or 0
+            action, effort = self._PAGESPEED_ACTIONS.get(opp_id, (None, SeoTaskEffort.medium))
+            title = opp.get("title") if isinstance(opp, dict) else getattr(opp, "title", None)
+            title = action or title or f"Improve performance: {str(opp_id).replace('-', ' ')}"
+            # Larger savings -> higher priority / impact.
+            if savings >= 1000:
+                priority_score, impact = 78, SeoTaskImpact.high
+            elif savings >= 400:
+                priority_score, impact = 62, SeoTaskImpact.medium
+            else:
+                priority_score, impact = 45, SeoTaskImpact.low
+            candidates.append(
+                TaskCandidate(
+                    task_type=SeoTaskType.technical_seo_fix,
+                    title=title,
+                    description=(opp.get("description") if isinstance(opp, dict) else getattr(opp, "description", None))
+                    or "Resolve this Core Web Vitals / PageSpeed opportunity to improve performance.",
+                    source_type=SeoTaskSourceType.core_web_vitals,
+                    # Stable per-opportunity id (not the run id) so each distinct
+                    # opportunity is its own task and re-analysis updates it in place
+                    # instead of collapsing every opportunity onto one task.
+                    source_reference_id=_uuid.uuid5(_uuid.NAMESPACE_URL, f"cwv:{opp_id}") if opp_id else None,
+                    target_page_url=opp.get("url") if isinstance(opp, dict) else getattr(opp, "url", None),
+                    priority_score=priority_score,
+                    estimated_impact=impact,
+                    effort=effort,
                 )
             )
         return candidates
