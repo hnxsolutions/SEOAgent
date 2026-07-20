@@ -73,12 +73,14 @@ class FingerprintService:
             "detected": fp.status == FingerprintStatus.complete,
             "source": self._enum(fp.source),
             "primary_framework": fp.primary_framework,
+            "secondary_framework": fp.secondary_framework,
             "primary_cms": fp.primary_cms,
             "primary_language": fp.primary_language,
             "rendering": fp.rendering,
             "hosting": fp.hosting,
             "cdn": fp.cdn,
             "scores": fp.scores or {},
+            "strategy": fp.strategy or {},
             "technologies": fp.technologies or [],
             "by_category": self._group(fp.technologies or []),
             "detected_at": fp.detected_at.isoformat() if fp.detected_at else None,
@@ -122,6 +124,7 @@ class FingerprintService:
                 source = FingerprintSource.hybrid
 
             self._apply(fp, result, source)
+            self._apply_strategy(fp)
             fp.status = FingerprintStatus.complete
             fp.error = None
             fp.detected_at = datetime.utcnow()
@@ -258,6 +261,24 @@ class FingerprintService:
         fp.cdn = result.cdn
         fp.content_hash = result.content_hash
         fp.source = source
+
+    def _apply_strategy(self, fp: TechnologyFingerprint) -> None:
+        """Compose the Framework Strategy from the fingerprint + Knowledge Base
+        and persist it (primary/secondary framework, rendering, recommended
+        strategy, per-tech insights, recommendations, explained scores)."""
+        from app.services.framework_strategy import FrameworkStrategyEngine
+
+        engine = FrameworkStrategyEngine()
+        strategy = engine.build(
+            primary_framework=fp.primary_framework,
+            primary_cms=fp.primary_cms,
+            rendering=fp.rendering,
+            technologies=fp.technologies or [],
+            scores=fp.scores or {},
+        )
+        strategy["technology_insights"] = engine.technology_insights(fp.technologies or [])
+        fp.strategy = strategy
+        fp.secondary_framework = strategy.get("secondary_framework")
 
     # -- helpers ------------------------------------------------------------
 

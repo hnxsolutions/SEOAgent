@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -279,7 +280,27 @@ class PlannerService:
             "repo_issues": await self.repository.list_repo_issues(run.project_id, run.tenant_id),
             "rank_summary": await self._rank_summary(run.project_id, run.tenant_id),
             "impact_summary": await self._impact_summary(run.project_id, run.tenant_id),
+            "framework": await self._detected_framework(run.project_id, run.tenant_id),
         }
+
+    async def _detected_framework(self, project_id: UUID, tenant_id: UUID) -> Optional[str]:
+        """The project's detected framework/CMS from the Technology Fingerprint,
+        used to turn generic tasks into framework-specific ones (never hardcoded
+        here — the Knowledge Base is queried during enrichment)."""
+        try:
+            from app.models.fingerprint import TechnologyFingerprint
+
+            fp = (await self.db.execute(
+                select(TechnologyFingerprint).where(
+                    TechnologyFingerprint.project_id == project_id,
+                    TechnologyFingerprint.tenant_id == tenant_id,
+                )
+            )).scalars().first()
+            if not fp:
+                return None
+            return fp.primary_cms or fp.primary_framework
+        except Exception:
+            return None
 
     def _task_candidates(self, signals: dict) -> List[TaskCandidate]:
         candidates: List[TaskCandidate] = []
@@ -294,6 +315,7 @@ class PlannerService:
         candidates.extend(self._tasks_from_blogs(signals["blog_topics"], has_knowledge=signals["has_knowledge"]))
         candidates.extend(self._tasks_from_repo(signals["repo_patches"], signals["repo_issues"]))
         candidates.extend(self._tasks_from_project_context(signals["project_context"]))
+        candidates = self._apply_framework_strategy(candidates, signals.get("framework"))
         if not candidates:
             candidates.append(
                 TaskCandidate(
@@ -309,6 +331,32 @@ class PlannerService:
                     effort=SeoTaskEffort.low,
                 )
             )
+        return candidates
+
+    def _apply_framework_strategy(self, candidates: List[TaskCandidate], framework: Optional[str]) -> List[TaskCandidate]:
+        """Turn generic tasks into framework-specific ones by querying the
+        Framework Knowledge Base (e.g. "Improve Metadata" -> Next.js
+        generateMetadata() / WordPress Yoast). No framework rules are hardcoded
+        here; the KB is the single source of truth."""
+        if not framework:
+            return candidates
+        from app.framework_kb import get_framework_profile, task_action_for
+
+        profile = get_framework_profile(framework)
+        if not profile:
+            return candidates
+        for c in candidates:
+            action = task_action_for(framework, self._enum_value(c.task_type))
+            if not action:
+                continue
+            # Prefix the framework action so the task is unmistakably specific,
+            # and append the "how" to the description. Titles stay <=255 chars.
+            tag = f"[{profile.display_name}] {action.action}: "
+            if not c.title.startswith(f"[{profile.display_name}]"):
+                c.title = (tag + c.title)[:255]
+            c.description = f"{c.description}\n\nFramework strategy ({profile.display_name}): {action.detail}"
+            if action.safe_files:
+                c.description += f" SEO-safe targets: {', '.join(action.safe_files[:3])}."
         return candidates
 
     def _tasks_from_project_context(self, context: dict) -> List[TaskCandidate]:
