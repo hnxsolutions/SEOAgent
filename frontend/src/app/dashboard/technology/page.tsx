@@ -1,13 +1,14 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Cpu, RefreshCw, ShieldCheck, Gauge, Search, Eye, Layers } from 'lucide-react';
+import { useState } from 'react';
+import { Cpu, RefreshCw, ShieldCheck, Gauge, Search, Eye, Layers, Code2, CheckCircle2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/dashboard/DashboardStates';
 import { Button } from '@/components/ui/button';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
-import type { TechnologyFingerprint, TechnologyItem, TechnologyInsight } from '@/types/dashboard';
+import type { TechnologyFingerprint, TechnologyItem, TechnologyInsight, GeneratedPatch, UUID } from '@/types/dashboard';
 
 function Stars({ value }: { value?: number }) {
   const n = Math.max(0, Math.min(5, value ?? 0));
@@ -271,6 +272,9 @@ export default function TechnologyPage() {
             </section>
           ) : null}
 
+          {/* Generated SEO patches */}
+          <GeneratedPatchesSection projectId={projectId} framework={data?.primary_framework ?? strategy?.primary_framework ?? ''} />
+
           {/* Full stack cards */}
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {orderedCats.map((cat) => (
@@ -289,5 +293,114 @@ function Metric({ label, value }: { label: string; value: ReactNode }) {
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 truncate text-lg font-semibold text-slate-900" title={typeof value === 'string' ? value : undefined}>{value}</p>
     </div>
+  );
+}
+
+function ValidationBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    passed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    failed: 'bg-rose-50 text-rose-700 border-rose-200',
+    gated: 'bg-amber-50 text-amber-700 border-amber-200',
+    pending: 'bg-slate-50 text-slate-600 border-slate-200',
+  };
+  return <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${map[status] ?? map.pending}`}>{status}</span>;
+}
+
+function GeneratedPatchesSection({ projectId, framework }: { projectId: UUID; framework: string }) {
+  const queryClient = useQueryClient();
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const query = useQuery({
+    queryKey: ['framework-patches', projectId],
+    queryFn: () => dashboardApi.frameworkPatches.list(projectId),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const generateMutation = useMutation({
+    mutationFn: () => dashboardApi.frameworkPatches.generate(projectId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['framework-patches', projectId] });
+    },
+  });
+
+  const patches: GeneratedPatch[] = query.data?.items ?? [];
+  const readyCount = patches.filter((p) => p.ready_for_pr).length;
+
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+            <Code2 className="h-4 w-4" /> Generated SEO Patches
+            {patches.length > 0 ? (
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-normal text-emerald-700">
+                {readyCount} ready for PR
+              </span>
+            ) : null}
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Real, framework-native SEO code for {framework || 'your stack'} — metadata, robots, sitemap, schema, Open Graph.
+            SEO-safe only: never touches UI, design, or business logic.
+          </p>
+        </div>
+        <Button type="button" onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending}>
+          <Code2 className={`mr-2 h-4 w-4 ${generateMutation.isPending ? 'animate-pulse' : ''}`} />
+          {generateMutation.isPending ? 'Generating…' : 'Generate SEO Patches'}
+        </Button>
+      </div>
+
+      {generateMutation.data && generateMutation.data.status !== 'generated' ? (
+        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {generateMutation.data.note ?? 'Could not generate patches yet.'}
+        </p>
+      ) : null}
+
+      {patches.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">
+          No patches yet. Click “Generate SEO Patches” to produce framework-safe code for the surfaces your site is missing.
+        </p>
+      ) : (
+        <div className="mt-4 space-y-2">
+          {patches.map((p) => (
+            <div key={p.id} className="rounded-lg border">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+                onClick={() => setOpenId(openId === p.id ? null : p.id)}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {p.ready_for_pr ? <CheckCircle2 className="h-4 w-4 flex-none text-emerald-600" /> : null}
+                  <span className="truncate font-medium text-slate-900">{p.surface}</span>
+                  <span className="truncate text-xs text-muted-foreground">{p.target_file}</span>
+                </span>
+                <span className="flex flex-none items-center gap-2">
+                  <ValidationBadge status={p.validation_status} />
+                  {p.confidence != null ? <span className="text-xs text-muted-foreground">{p.confidence}%</span> : null}
+                </span>
+              </button>
+              {openId === p.id ? (
+                <div className="border-t px-4 py-3">
+                  <p className="mb-2 text-xs text-muted-foreground">{p.explanation}</p>
+                  <pre className="max-h-72 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+                    <code>{p.generated_code}</code>
+                  </pre>
+                  {p.notes ? <p className="mt-2 text-xs text-amber-700">{p.notes}</p> : null}
+                  {p.validation_notes ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {Object.entries(p.validation_notes).map(([k, v]) => (
+                        <span key={k} className="rounded border bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600" title={String(v)}>
+                          {k}: {String(v).startsWith('gated') ? 'gated' : String(v).startsWith('passed') ? 'passed' : String(v)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

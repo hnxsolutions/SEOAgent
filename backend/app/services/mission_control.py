@@ -57,6 +57,7 @@ class MissionControlService:
 
         search_console = await self._search_console_block(tenant_id, projects)
         technology = await self._technology_block(tenant_id, projects)
+        generated_patches = await self._generated_patches_block(tenant_id, projects)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -99,6 +100,7 @@ class MissionControlService:
             "stage_analytics": stage_analytics,
             "search_console": search_console,
             "technology": technology,
+            "generated_patches": generated_patches,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -423,6 +425,25 @@ class MissionControlService:
             return await FingerprintService(self.db).summary(target, tenant_id)
         except Exception:
             return {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
+
+    async def _generated_patches_block(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """Generated SEO Patch section — framework, counts, ready-for-PR. Prefers
+        a project that already has generated patches; degrades gracefully."""
+        from app.models.generated_patch import GeneratedSeoPatch
+        from app.services.framework_patch_generator import FrameworkPatchGeneratorService
+
+        if not projects:
+            return {"total": 0, "ready_for_pr": 0, "framework": None, "by_status": {}}
+        try:
+            row = (await self.db.execute(
+                select(GeneratedSeoPatch.project_id).where(
+                    GeneratedSeoPatch.tenant_id == tenant_id
+                ).order_by(GeneratedSeoPatch.created_at.desc()).limit(1)
+            )).scalar()
+            target = row or projects[-1].id
+            return await FrameworkPatchGeneratorService(self.db).summary(target, tenant_id)
+        except Exception:
+            return {"total": 0, "ready_for_pr": 0, "framework": None, "by_status": {}}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a
