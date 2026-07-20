@@ -416,6 +416,30 @@ export type TechnologyFingerprint = {
   note?: string;
 };
 
+export type GeneratedPatch = {
+  id: UUID;
+  project_id: UUID;
+  framework: string;
+  surface: string;
+  patch_type: string;
+  target_file: string;
+  language?: string | null;
+  generated_code: string;
+  is_new_file?: boolean | null;
+  code_fixable?: boolean | null;
+  explanation?: string | null;
+  notes?: string | null;
+  safe?: boolean | null;
+  safety_reason?: string | null;
+  validation_status: string; // pending | passed | failed | gated
+  validation_notes?: Record<string, string> | null;
+  seo_before?: number | null;
+  performance_before?: number | null;
+  ready_for_pr?: boolean | null;
+  confidence?: number | null;
+  created_at?: string | null;
+};
+
 export type IndexQueueItem = {
   id: UUID;
   project_id: UUID;

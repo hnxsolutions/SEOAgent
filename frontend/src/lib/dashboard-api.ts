@@ -73,6 +73,7 @@ import type {
   IndexQueueSummary,
   IndexQueueSubmitResult,
   TechnologyFingerprint,
+  GeneratedPatch,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -432,6 +433,17 @@ export const dashboardApi = {
     analyze: (projectId: UUID, force = true) =>
       unwrap<TechnologyFingerprint>(
         api.post(`/fingerprint/projects/${projectId}/analyze`, undefined, { params: { force } })
+      ),
+  },
+
+  frameworkPatches: {
+    generate: (projectId: UUID, surfaces?: string[]) =>
+      unwrap<{ status: string; generated: number; framework?: string; note?: string }>(
+        api.post(`/framework-patches/projects/${projectId}/generate`, { surfaces: surfaces ?? null })
+      ),
+    list: (projectId: UUID) =>
+      unwrap<{ items: GeneratedPatch[]; total: number }>(
+        api.get(`/framework-patches/projects/${projectId}`)
       ),
   },
 
