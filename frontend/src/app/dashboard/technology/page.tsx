@@ -2,13 +2,13 @@
 
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { Cpu, RefreshCw, ShieldCheck, Gauge, Search, Eye, Layers, Code2, CheckCircle2 } from 'lucide-react';
+import { Cpu, RefreshCw, ShieldCheck, Gauge, Search, Eye, Layers, Code2, CheckCircle2, GitBranch } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/dashboard/DashboardStates';
 import { Button } from '@/components/ui/button';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
-import type { TechnologyFingerprint, TechnologyItem, TechnologyInsight, GeneratedPatch, UUID } from '@/types/dashboard';
+import type { TechnologyFingerprint, TechnologyItem, TechnologyInsight, GeneratedPatch, PatchPipelineStage, UUID } from '@/types/dashboard';
 
 function Stars({ value }: { value?: number }) {
   const n = Math.max(0, Math.min(5, value ?? 0));
@@ -275,6 +275,9 @@ export default function TechnologyPage() {
           {/* Generated SEO patches */}
           <GeneratedPatchesSection projectId={projectId} framework={data?.primary_framework ?? strategy?.primary_framework ?? ''} />
 
+          {/* Autonomous patch pipeline */}
+          <PatchPipelineSection projectId={projectId} />
+
           {/* Full stack cards */}
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {orderedCats.map((cat) => (
@@ -284,6 +287,103 @@ export default function TechnologyPage() {
         </>
       )}
     </div>
+  );
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  generate: 'Patch Generated', apply: 'Applying Patch', branch: 'Creating Branch',
+  commit: 'Commit Created', pull_request: 'PR Ready', deploy: 'Deployment',
+  verify: 'Verification', learn: 'Learning Updated',
+};
+
+function StageDot({ status }: { status: string }) {
+  const color =
+    status === 'succeeded' ? 'bg-emerald-500' :
+    status === 'failed' ? 'bg-rose-500' :
+    status === 'rolled_back' ? 'bg-orange-500' :
+    status === 'blocked' ? 'bg-amber-500' :
+    status === 'gated' ? 'bg-slate-300' :
+    status === 'skipped' ? 'bg-slate-300' :
+    status === 'pending' ? 'bg-slate-200' : 'bg-sky-500';
+  return <span className={`inline-block h-2.5 w-2.5 flex-none rounded-full ${color}`} />;
+}
+
+function PatchPipelineSection({ projectId }: { projectId: UUID }) {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ['patch-pipeline', projectId],
+    queryFn: () => dashboardApi.patchPipeline.summary(projectId),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+  const runMutation = useMutation({
+    mutationFn: () => dashboardApi.patchPipeline.run(projectId),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['patch-pipeline', projectId] }); },
+  });
+
+  const summary = query.data;
+  const stages: PatchPipelineStage[] = summary?.stages ?? [];
+  const statusTone: Record<string, string> = {
+    succeeded: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    blocked: 'text-amber-700 bg-amber-50 border-amber-200',
+    rolled_back: 'text-orange-700 bg-orange-50 border-orange-200',
+    failed: 'text-rose-700 bg-rose-50 border-rose-200',
+    running: 'text-sky-700 bg-sky-50 border-sky-200',
+  };
+
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+            <GitBranch className="h-4 w-4" /> Patch Pipeline
+            {summary?.status ? (
+              <span className={`rounded-full border px-2 py-0.5 text-xs font-normal ${statusTone[summary.status] ?? 'text-slate-600 bg-slate-50 border-slate-200'}`}>
+                {summary.status}
+              </span>
+            ) : null}
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Autonomous lifecycle: apply → branch → commit → PR → deploy → verify → learn.
+            Runs only on a connected repository; SEO-safe files only.
+          </p>
+        </div>
+        <Button type="button" onClick={() => runMutation.mutate()} disabled={runMutation.isPending}>
+          <GitBranch className={`mr-2 h-4 w-4 ${runMutation.isPending ? 'animate-pulse' : ''}`} />
+          {runMutation.isPending ? 'Running…' : 'Run Pipeline'}
+        </Button>
+      </div>
+
+      {!summary?.has_run && !runMutation.data ? (
+        <p className="mt-4 text-sm text-muted-foreground">
+          No pipeline run yet. Generate SEO patches above, then click “Run Pipeline”.
+        </p>
+      ) : (
+        <ol className="mt-4 space-y-2">
+          {stages.map((s) => (
+            <li key={s.name} className="flex items-start gap-3">
+              <span className="mt-1"><StageDot status={s.status} /></span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-slate-900">{STAGE_LABELS[s.name] ?? s.name}</span>
+                  <span className="flex flex-none items-center gap-2 text-xs text-muted-foreground">
+                    {s.status}
+                    {s.finished_at ? <span>{new Date(s.finished_at).toLocaleTimeString()}</span> : null}
+                  </span>
+                </div>
+                {s.detail ? <p className="truncate text-xs text-muted-foreground" title={s.detail}>{s.detail}</p> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {summary?.pr_url ? (
+        <a href={summary.pr_url} target="_blank" rel="noreferrer" className="mt-3 inline-block text-sm text-sky-700 underline">
+          View draft pull request →
+        </a>
+      ) : null}
+    </section>
   );
 }
 

@@ -74,6 +74,8 @@ import type {
   IndexQueueSubmitResult,
   TechnologyFingerprint,
   GeneratedPatch,
+  PatchPipelineRun,
+  PatchPipelineSummary,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -445,6 +447,13 @@ export const dashboardApi = {
       unwrap<{ items: GeneratedPatch[]; total: number }>(
         api.get(`/framework-patches/projects/${projectId}`)
       ),
+  },
+
+  patchPipeline: {
+    run: (projectId: UUID) =>
+      unwrap<PatchPipelineRun>(api.post(`/patch-pipeline/projects/${projectId}/run`)),
+    summary: (projectId: UUID) =>
+      unwrap<PatchPipelineSummary>(api.get(`/patch-pipeline/projects/${projectId}/summary`)),
   },
 
   sitemaps: {
