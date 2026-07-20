@@ -76,6 +76,18 @@ class DailyBriefingService:
         except Exception:
             technology = {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
 
+        from app.services.framework_patch_generator import FrameworkPatchGeneratorService
+        from app.services.patch_pipeline import PatchPipelineService
+
+        try:
+            patches = await FrameworkPatchGeneratorService(self.db).summary(project_id, tenant_id)
+        except Exception:
+            patches = {"total": 0, "ready_for_pr": 0}
+        try:
+            pipeline = await PatchPipelineService(self.db).summary(project_id, tenant_id)
+        except Exception:
+            pipeline = {"has_run": False}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -115,6 +127,14 @@ class DailyBriefingService:
             "site_validation": site_validation,
             "index_queue": index_queue,
             "technology": self._technology_briefing(technology),
+            "patch_pipeline": {
+                "patches_generated": patches.get("total", 0),
+                "patches_ready_for_pr": patches.get("ready_for_pr", 0),
+                "last_run_status": pipeline.get("status") if pipeline.get("has_run") else None,
+                "patches_applied": pipeline.get("patches_applied") if pipeline.get("has_run") else 0,
+                "pr_status": pipeline.get("pr_status") if pipeline.get("has_run") else None,
+                "current_stage": pipeline.get("current_stage") if pipeline.get("has_run") else None,
+            },
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)

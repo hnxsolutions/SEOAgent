@@ -416,6 +416,51 @@ export type TechnologyFingerprint = {
   note?: string;
 };
 
+export type PatchPipelineStage = {
+  name: string;
+  status: string; // pending | running | succeeded | failed | rolled_back | blocked | gated | skipped
+  started_at?: string | null;
+  finished_at?: string | null;
+  detail?: string | null;
+};
+
+export type PatchPipelineRun = {
+  id: UUID;
+  project_id: UUID;
+  framework?: string | null;
+  status: string;
+  current_stage?: string | null;
+  stages: PatchPipelineStage[];
+  branch_name?: string | null;
+  commit_sha?: string | null;
+  diff_summary?: string | null;
+  pr_url?: string | null;
+  pr_status?: string | null;
+  validation_status?: string | null;
+  patches_total?: number | null;
+  patches_applied?: number | null;
+  patches_failed?: number | null;
+  ready_for_pr?: boolean | null;
+  error?: string | null;
+  updated_at?: string | null;
+};
+
+export type PatchPipelineSummary = {
+  has_run: boolean;
+  status?: string | null;
+  current_stage?: string | null;
+  framework?: string | null;
+  branch_name?: string | null;
+  commit_sha?: string | null;
+  pr_url?: string | null;
+  pr_status?: string | null;
+  validation_status?: string | null;
+  patches_total?: number | null;
+  patches_applied?: number | null;
+  stages?: PatchPipelineStage[];
+  updated_at?: string | null;
+};
+
 export type GeneratedPatch = {
   id: UUID;
   project_id: UUID;

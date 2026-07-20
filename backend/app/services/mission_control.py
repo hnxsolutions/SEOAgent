@@ -58,6 +58,7 @@ class MissionControlService:
         search_console = await self._search_console_block(tenant_id, projects)
         technology = await self._technology_block(tenant_id, projects)
         generated_patches = await self._generated_patches_block(tenant_id, projects)
+        patch_pipeline = await self._patch_pipeline_block(tenant_id, projects)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -101,6 +102,7 @@ class MissionControlService:
             "search_console": search_console,
             "technology": technology,
             "generated_patches": generated_patches,
+            "patch_pipeline": patch_pipeline,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -444,6 +446,24 @@ class MissionControlService:
             return await FrameworkPatchGeneratorService(self.db).summary(target, tenant_id)
         except Exception:
             return {"total": 0, "ready_for_pr": 0, "framework": None, "by_status": {}}
+
+    async def _patch_pipeline_block(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """Live Patch Pipeline panel data — latest lifecycle run + stage status."""
+        from app.models.patch_pipeline import PatchPipeline
+        from app.services.patch_pipeline import PatchPipelineService
+
+        if not projects:
+            return {"has_run": False, "status": None, "current_stage": None, "stages": []}
+        try:
+            row = (await self.db.execute(
+                select(PatchPipeline.project_id).where(
+                    PatchPipeline.tenant_id == tenant_id
+                ).order_by(PatchPipeline.created_at.desc()).limit(1)
+            )).scalar()
+            target = row or projects[-1].id
+            return await PatchPipelineService(self.db).summary(target, tenant_id)
+        except Exception:
+            return {"has_run": False, "status": None, "current_stage": None, "stages": []}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a
