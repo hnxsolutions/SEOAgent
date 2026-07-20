@@ -52,7 +52,12 @@ async def run_due(
     """Manually trigger due verifications for a project (the scheduler also does
     this automatically). Runs in the background."""
     tenant_id = _tenant_id(current_user)
-    background_tasks.add_task(run_due_verifications_background, tenant_id)
+    from app.queue.client import enqueue_or_background
+
+    enqueue_or_background(
+        background_tasks, "app.queue.jobs.run_due_verifications", run_due_verifications_background,
+        tenant_id, max_retries=1,
+    )
     return {"status": "processing", "project_id": str(project_id)}
 
 

@@ -478,6 +478,8 @@ export default function SearchConsolePage() {
 
       <SitemapsPanel projectId={projectId} />
 
+      <IndexQueuePanel projectId={projectId} />
+
       <section className="space-y-4">
         <div className="flex flex-col gap-3 rounded-lg border bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -692,6 +694,178 @@ function SitemapsPanel({ projectId }: { projectId?: UUID }) {
           </ul>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function IndexQueuePanel({ projectId }: { projectId?: UUID }) {
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  const summaryQuery = useQuery({
+    queryKey: ['index-queue-summary', projectId],
+    queryFn: () => dashboardApi.indexQueue.summary(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const queueQuery = useQuery({
+    queryKey: ['index-queue', projectId],
+    queryFn: () => dashboardApi.indexQueue.queue(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+
+  const summary = summaryQuery.data;
+  const items = queueQuery.data?.items ?? [];
+
+  const refetchAll = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['index-queue-summary', projectId] });
+    await queryClient.invalidateQueries({ queryKey: ['index-queue', projectId] });
+  };
+
+  const run = async (label: string, fn: () => Promise<unknown>) => {
+    setNotice(undefined);
+    setError(undefined);
+    try {
+      await fn();
+      await refetchAll();
+      setNotice(label);
+    } catch (err) {
+      setError(extractApiError(err, `${label} failed.`));
+    }
+  };
+
+  const discoverMutation = useMutation({ mutationFn: () => dashboardApi.indexQueue.discover(projectId!) });
+  const approveAllMutation = useMutation({ mutationFn: () => dashboardApi.indexQueue.approveAll(projectId!) });
+  const submitMutation = useMutation({ mutationFn: () => dashboardApi.indexQueue.submit(projectId!) });
+  const rowMutation = useMutation({
+    mutationFn: ({ id, action }: { id: UUID; action: 'approve' | 'reject' }) =>
+      action === 'approve' ? dashboardApi.indexQueue.approve(id) : dashboardApi.indexQueue.reject(id),
+  });
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-lg border bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Auto Index Queue</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Discover indexable URLs from the latest crawl and blog drafts, approve them, then submit via the official
+            Search Console Sitemaps API. Google offers no per-URL indexing API for general pages, so submission
+            (re)submits your sitemap and is credential-gated on a connected Google account.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!projectId || discoverMutation.isPending}
+            onClick={() => run('URLs discovered.', () => discoverMutation.mutateAsync())}
+          >
+            {discoverMutation.isPending ? 'Discovering…' : 'Discover'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!projectId || approveAllMutation.isPending}
+            onClick={() => run('Eligible URLs approved.', () => approveAllMutation.mutateAsync())}
+          >
+            {approveAllMutation.isPending ? 'Approving…' : 'Approve all eligible'}
+          </Button>
+          <Button
+            type="button"
+            disabled={!projectId || submitMutation.isPending}
+            onClick={() =>
+              run('Submit requested.', async () => {
+                const result = await submitMutation.mutateAsync();
+                if (result.status === 'submitted') {
+                  setNotice(`Sitemap submitted to Search Console (${result.submitted} URLs marked submitted).`);
+                } else if (result.status === 'nothing_to_submit') {
+                  setNotice('Nothing to submit — approve URLs first.');
+                } else {
+                  setError(result.note || result.error || 'Submission is not available yet.');
+                }
+              })
+            }
+          >
+            {submitMutation.isPending ? 'Submitting…' : 'Submit via sitemap'}
+          </Button>
+        </div>
+      </div>
+
+      <ActionNotice message={notice} />
+      <ActionNotice message={error} tone="error" />
+
+      <section className="grid gap-4 sm:grid-cols-4">
+        <SummaryBlock label="Pending" value={summary?.pending ?? 0} />
+        <SummaryBlock label="Approved" value={summary?.approved ?? 0} />
+        <SummaryBlock label="Submitted" value={summary?.submitted ?? 0} />
+        <SummaryBlock label="Total" value={summary?.total ?? 0} />
+      </section>
+
+      <div className="overflow-hidden rounded-lg border bg-white">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+            <tr>
+              <th className="px-4 py-2">URL</th>
+              <th className="px-4 py-2">Source</th>
+              <th className="px-4 py-2">Eligible</th>
+              <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {queueQuery.isLoading ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">Loading queue…</td>
+              </tr>
+            ) : items.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                  No URLs yet. Click Discover to pull indexable URLs from the latest crawl and blog drafts.
+                </td>
+              </tr>
+            ) : (
+              items.map((item) => (
+                <tr key={item.id} className="border-t">
+                  <td className="max-w-[320px] truncate px-4 py-2" title={item.reason || item.url}>
+                    {item.url}
+                    {item.reason ? (
+                      <span className="ml-2 text-xs text-amber-700">({item.reason})</span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2">{formatLabel(item.source)}</td>
+                  <td className="px-4 py-2">{item.eligible ? 'Yes' : 'No'}</td>
+                  <td className="px-4 py-2"><StatusBadge status={item.status} /></td>
+                  <td className="px-4 py-2">
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!item.eligible || item.status === 'approved' || rowMutation.isPending}
+                        onClick={() => run('URL approved.', () => rowMutation.mutateAsync({ id: item.id, action: 'approve' }))}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={item.status === 'rejected' || rowMutation.isPending}
+                        onClick={() => run('URL rejected.', () => rowMutation.mutateAsync({ id: item.id, action: 'reject' }))}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

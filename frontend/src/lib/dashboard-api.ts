@@ -10,6 +10,7 @@ import type {
   NotificationList,
   AppNotification,
   MissionControlOverview,
+  QueueStats,
   PagespeedRun,
   VerificationList,
   LearningStats,
@@ -68,6 +69,10 @@ import type {
   RankTrackingSummary,
   RepoConnection,
   RepoScanRun,
+  IndexQueueItem,
+  IndexQueueSummary,
+  IndexQueueSubmitResult,
+  TechnologyFingerprint,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -157,6 +162,9 @@ export const dashboardApi = {
   },
   missionControl: {
     overview: () => unwrap<MissionControlOverview>(api.get(`/mission-control/overview`)),
+  },
+  queue: {
+    stats: () => unwrap<QueueStats>(api.get(`/queue/stats`)),
   },
   pagespeed: {
     analyze: (projectId: UUID) =>
@@ -392,6 +400,38 @@ export const dashboardApi = {
     complete: (id: UUID) =>
       unwrap<SearchConsoleOpportunity>(
         api.post(`/search-console/opportunities/${id}/mark-completed`)
+      ),
+  },
+
+  indexQueue: {
+    discover: (projectId: UUID) =>
+      unwrap<{ discovered: number; total_candidates: number }>(
+        api.post(`/index-queue/projects/${projectId}/discover`)
+      ),
+    queue: (projectId: UUID, status?: string) =>
+      unwrap<{ items: IndexQueueItem[]; total: number }>(
+        api.get(`/index-queue/projects/${projectId}/queue`, {
+          params: { limit: 500, ...(status ? { status } : {}) },
+        })
+      ),
+    summary: (projectId: UUID) =>
+      unwrap<IndexQueueSummary>(api.get(`/index-queue/projects/${projectId}/summary`)),
+    approve: (urlId: UUID) =>
+      unwrap<IndexQueueItem>(api.post(`/index-queue/${urlId}/approve`)),
+    reject: (urlId: UUID) =>
+      unwrap<IndexQueueItem>(api.post(`/index-queue/${urlId}/reject`)),
+    approveAll: (projectId: UUID) =>
+      unwrap<{ approved: number }>(api.post(`/index-queue/projects/${projectId}/approve-all`)),
+    submit: (projectId: UUID) =>
+      unwrap<IndexQueueSubmitResult>(api.post(`/index-queue/projects/${projectId}/submit`)),
+  },
+
+  technology: {
+    get: (projectId: UUID) =>
+      unwrap<TechnologyFingerprint>(api.get(`/fingerprint/projects/${projectId}`)),
+    analyze: (projectId: UUID, force = true) =>
+      unwrap<TechnologyFingerprint>(
+        api.post(`/fingerprint/projects/${projectId}/analyze`, undefined, { params: { force } })
       ),
   },
 

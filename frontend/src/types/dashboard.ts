@@ -346,6 +346,75 @@ export type SearchConsoleSummary = {
   top_opportunities: SearchConsoleOpportunity[];
 };
 
+export type TechnologyItem = {
+  category: string;
+  name: string;
+  version?: string | null;
+  confidence: number;
+  evidence: string[];
+};
+
+export type TechnologyScores = {
+  framework_health?: number;
+  seo_readiness?: number;
+  performance_readiness?: number;
+  accessibility?: number;
+  security?: number;
+  indexability?: number;
+};
+
+export type TechnologyFingerprint = {
+  project_id: UUID;
+  status: string; // detecting | complete | failed | not_analyzed
+  detected?: boolean;
+  source?: string | null;
+  source_url?: string | null;
+  primary_framework?: string | null;
+  primary_cms?: string | null;
+  primary_language?: string | null;
+  rendering?: string | null;
+  hosting?: string | null;
+  cdn?: string | null;
+  scores: TechnologyScores;
+  technologies: TechnologyItem[];
+  by_category?: Record<string, TechnologyItem[]>;
+  detected_at?: string | null;
+  error?: string | null;
+  note?: string;
+};
+
+export type IndexQueueItem = {
+  id: UUID;
+  project_id: UUID;
+  url: string;
+  source: string;
+  status: string;
+  eligible: boolean;
+  reason?: string | null;
+  submitted_via?: string | null;
+  discovered_at?: string | null;
+  approved_at?: string | null;
+  submitted_at?: string | null;
+};
+
+export type IndexQueueSummary = {
+  by_status?: Record<string, number>;
+  pending: number;
+  approved: number;
+  submitted: number;
+  indexed?: number;
+  total: number;
+};
+
+export type IndexQueueSubmitResult = {
+  status: string; // submitted | not_connected | submit_failed | nothing_to_submit
+  submitted: number;
+  via?: string;
+  sitemap_url?: string;
+  error?: string;
+  note?: string;
+};
+
 export type SearchConsoleImport = {
   id: UUID;
   project_id?: UUID | null;
@@ -1550,4 +1619,13 @@ export type PagespeedRun = {
   diagnostics?: Array<Record<string, any>> | null;
   error_message?: string | null;
   created_at?: string | null;
+};
+
+export type QueueStats = {
+  status: string;
+  totals?: { pending: number; running: number; failed: number; finished: number };
+  queues?: Array<{ name: string; priority: string; pending: number; running: number; failed: number; finished: number }>;
+  workers?: Array<{ name: string; state: string; current_job?: string | null; successful_jobs?: number; failed_jobs?: number; last_heartbeat?: string | null; queues?: string[] }>;
+  worker_count?: number;
+  dead_letter?: number;
 };

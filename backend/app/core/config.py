@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # pipeline (crawl -> audit -> semantic -> content -> planner) in the
     # background so the user does not have to click "Run SEO Analysis".
     AUTO_RUN_SEO_ON_PROJECT_CREATE: bool = True
+    # Durable background queue (RQ over the existing seo_queue + worker). When
+    # enabled, background jobs are enqueued instead of run in-process; the caller
+    # falls back to BackgroundTasks if the queue is unavailable.
+    QUEUE_ENABLED: bool = True
+    QUEUE_JOB_TIMEOUT_SECONDS: int = 1800
     # After a repo-agent PR is merged, wait this long before running the
     # follow-up SEO analysis that verifies whether the fix actually worked.
     VERIFICATION_DELAY_MINUTES: int = 10

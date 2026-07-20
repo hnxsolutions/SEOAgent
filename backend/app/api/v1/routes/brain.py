@@ -62,7 +62,12 @@ async def brain_run_cycle(
         run = await SeoRunService(db).start_run(project_id, tenant_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    background_tasks.add_task(run_brain_cycle_background, run.id, project_id, tenant_id)
+    from app.queue.client import enqueue_or_background
+
+    enqueue_or_background(
+        background_tasks, "app.queue.jobs.run_brain_cycle", run_brain_cycle_background,
+        run.id, project_id, tenant_id, max_retries=0,
+    )
     return {"status": "started", "seo_run_id": str(run.id), "project_id": str(project_id)}
 
 
@@ -88,7 +93,12 @@ async def brain_dispatch_code_fixes(
             "detail": "Connect a repository (POST /repos/connections) before auto-dispatch.",
             "project_id": str(project_id),
         }
-    background_tasks.add_task(dispatch_code_fixes_background, connection.id, tenant_id)
+    from app.queue.client import enqueue_or_background
+
+    enqueue_or_background(
+        background_tasks, "app.queue.jobs.dispatch_code_fixes", dispatch_code_fixes_background,
+        connection.id, tenant_id, max_retries=1,
+    )
     return {
         "status": "dispatching",
         "connection_id": str(connection.id),

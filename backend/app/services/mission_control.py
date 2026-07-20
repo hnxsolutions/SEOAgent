@@ -55,6 +55,9 @@ class MissionControlService:
         recommendations = await self._recommendations(tenant_id, projects, current_activity)
         timeline = await self._timeline(tenant_id, projects, current_activity)
 
+        search_console = await self._search_console_block(tenant_id, projects)
+        technology = await self._technology_block(tenant_id, projects)
+
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
         telemetry = {
@@ -94,6 +97,8 @@ class MissionControlService:
             "telemetry": telemetry,
             "pipeline": pipeline,
             "stage_analytics": stage_analytics,
+            "search_console": search_console,
+            "technology": technology,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -373,6 +378,51 @@ class MissionControlService:
             return await DailyBriefingService(self.db)._build_timeline(target, tenant_id)
         except Exception:
             return []
+
+    async def _search_console_block(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """GSC connection status + Auto Index Queue summary (credential-gated;
+        degrades gracefully when Search Console is not connected)."""
+        from app.models.search_console import GSCConnection
+        from app.services.index_queue import IndexQueueService
+
+        connected = int((await self.db.execute(
+            select(func.count(GSCConnection.id)).where(GSCConnection.tenant_id == tenant_id)
+        )).scalar() or 0)
+
+        index_queue = {"pending": 0, "approved": 0, "submitted": 0, "total": 0}
+        if projects:
+            try:
+                index_queue = await IndexQueueService(self.db).summary(projects[-1].id, tenant_id)
+            except Exception:
+                pass
+        return {
+            "connected": connected > 0,
+            "connections": connected,
+            "index_queue": index_queue,
+            "note": None if connected else "Connect Google Search Console to enable sitemap submission and indexing status.",
+        }
+
+    async def _technology_block(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """Technology Overview (business-friendly stack summary + readiness
+        scores). Prefers a project that already has a completed fingerprint so
+        Mission Control shows real detected technology; degrades gracefully to a
+        not-analyzed shape otherwise."""
+        from app.models.fingerprint import FingerprintStatus, TechnologyFingerprint
+        from app.services.fingerprint import FingerprintService
+
+        if not projects:
+            return {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
+        try:
+            fp = (await self.db.execute(
+                select(TechnologyFingerprint).where(
+                    TechnologyFingerprint.tenant_id == tenant_id,
+                    TechnologyFingerprint.status == FingerprintStatus.complete,
+                ).order_by(TechnologyFingerprint.detected_at.desc()).limit(1)
+            )).scalars().first()
+            target = fp.project_id if fp else projects[-1].id
+            return await FingerprintService(self.db).summary(target, tenant_id)
+        except Exception:
+            return {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a

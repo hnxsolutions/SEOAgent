@@ -15,9 +15,12 @@ from app.services.telemetry import run_with_telemetry
 logger = structlog.get_logger(__name__)
 
 
-async def run_seo_run_background(run_id: UUID, tenant_id: UUID) -> None:
+async def run_seo_run_background(run_id: UUID, tenant_id: UUID, reraise: bool = False) -> None:
     """Execute a one-click SEO run with its own fresh DB session, recorded in
-    scheduler telemetry (crawl->audit->semantic->content->planner)."""
+    scheduler telemetry (crawl->audit->semantic->content->planner).
+
+    reraise=True (set by the RQ worker path) lets a final failure propagate so
+    RQ dead-letters the job; the BackgroundTasks fallback keeps reraise=False."""
     async def _body():
         db = get_db_session()
         try:
@@ -30,4 +33,5 @@ async def run_seo_run_background(run_id: UUID, tenant_id: UUID) -> None:
         tenant_id=tenant_id, project_id=None,
         # A full pipeline is expensive; don't auto-retry the whole thing.
         max_retries=0,
+        reraise=reraise,
     )

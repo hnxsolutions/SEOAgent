@@ -18,12 +18,12 @@ from app.services.daily_briefing import DailyBriefingService
 logger = structlog.get_logger(__name__)
 
 
-async def generate_daily_briefings_background(use_llm: bool = True, limit: int = 200) -> int:
+async def generate_daily_briefings_background(use_llm: bool = True, limit: int = 200, reraise: bool = False) -> int:
     from app.services.telemetry import run_with_telemetry
 
     return await run_with_telemetry(
         "daily_briefing", "briefing", lambda: _generate_daily_briefings(use_llm, limit),
-        max_retries=0,
+        max_retries=0, reraise=reraise,
     ) or 0
 
 

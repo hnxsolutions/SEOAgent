@@ -33,7 +33,12 @@ async def start_project_seo_run(
         run = await service.start_run(project_id, current_user["tenant_id"])
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    background_tasks.add_task(run_seo_run_background, run.id, current_user["tenant_id"])
+    from app.queue.client import enqueue_or_background
+
+    enqueue_or_background(
+        background_tasks, "app.queue.jobs.run_seo_run", run_seo_run_background,
+        run.id, current_user["tenant_id"], max_retries=0,
+    )
     return run
 
 

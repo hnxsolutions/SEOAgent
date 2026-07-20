@@ -67,6 +67,9 @@ def _build_client(monkeypatch, tenant_id, *, auto_run, start_run_raises=False, s
     monkeypatch.setattr(projects_routes, "SeoRunService", FakeSeoRunService)
     monkeypatch.setattr(projects_routes, "run_seo_run_background", fake_background)
     monkeypatch.setattr(projects_routes.settings, "AUTO_RUN_SEO_ON_PROJECT_CREATE", auto_run)
+    # Force the BackgroundTasks fallback path so the dispatch is deterministic in
+    # tests (no dependency on a live Redis/RQ queue).
+    monkeypatch.setattr(projects_routes.settings, "QUEUE_ENABLED", False)
 
     app = FastAPI()
     app.include_router(projects_routes.router)

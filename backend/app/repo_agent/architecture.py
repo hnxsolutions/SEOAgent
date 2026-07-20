@@ -40,6 +40,24 @@ ARCHITECTURE_EXTENSIONS = {
     ".yml",
 }
 
+# Files/areas the SEO engine must NEVER modify. These enforce the product rule
+# that the agent only makes SEO-safe changes and never touches UI, business
+# logic, authentication, payments, CRM, or the database. A patch whose path
+# matches any of these is hard-rejected as unsafe_skip before any generation.
+PROTECTED_TOKENS = (
+    "checkout", "payment", "billing", "invoice", "subscription", "pricing/checkout",
+    "cart", "auth", "login", "signin", "sign-in", "signup", "sign-up", "logout",
+    "oauth", "password", "session", "crm", "admin", "dashboard", "account",
+    "middleware", "migration", "migrations", "schema.prisma", "database", "prisma",
+    ".generated.", "__generated__",
+)
+# Path *segments* (exact directory/file names) that are protected. Segment
+# matching avoids false positives from substrings inside benign SEO filenames.
+PROTECTED_SEGMENTS = {
+    "api", "db", "auth", "admin", "crm", "payments", "checkout", "migrations",
+    "webhooks", "hooks", "middleware",
+}
+
 CONFIG_NAMES = {
     "astro.config.mjs",
     "astro.config.ts",
@@ -800,7 +818,9 @@ class RepoArchitectureDetector:
             any(part in IGNORE_DIRS for part in parts)
             or lower.endswith(".min.js")
             or lower.endswith(".min.css")
-            or any(token in lower for token in ["checkout", "payment", "cart", ".generated.", "__generated__"])
+            or lower.endswith(".sql")
+            or any(part in PROTECTED_SEGMENTS for part in parts)
+            or any(token in lower for token in PROTECTED_TOKENS)
         )
 
     def _languages(self, files: Iterable[Path]) -> dict:

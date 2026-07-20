@@ -28,6 +28,9 @@ from app.api.v1.routes import (
     site_validation,
     mission_control,
     telemetry,
+    queue,
+    index_queue,
+    fingerprint,
     pagespeed,
     indexing,
     keyword_baselines,
@@ -72,6 +75,9 @@ api_router.include_router(briefing.router, prefix="/briefing", tags=["Daily Exec
 api_router.include_router(site_validation.router, prefix="/site-validation", tags=["Live Site Validation"])
 api_router.include_router(mission_control.router, prefix="/mission-control", tags=["Mission Control"])
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["Scheduler Telemetry"])
+api_router.include_router(queue.router, prefix="/queue", tags=["Durable Queue"])
+api_router.include_router(index_queue.router, prefix="/index-queue", tags=["Auto Index Queue"])
+api_router.include_router(fingerprint.router, prefix="/fingerprint", tags=["Technology Fingerprint"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])

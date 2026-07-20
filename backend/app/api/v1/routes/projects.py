@@ -44,7 +44,12 @@ async def create_project(
     if settings.AUTO_RUN_SEO_ON_PROJECT_CREATE:
         try:
             run = await SeoRunService(db).start_run(project.id, current_user["tenant_id"])
-            background_tasks.add_task(run_seo_run_background, run.id, current_user["tenant_id"])
+            from app.queue.client import enqueue_or_background
+
+            enqueue_or_background(
+                background_tasks, "app.queue.jobs.run_seo_run", run_seo_run_background,
+                run.id, current_user["tenant_id"], max_retries=0,
+            )
             logger.info(
                 "auto_seo_run_enqueued_on_project_create",
                 project_id=str(project.id),

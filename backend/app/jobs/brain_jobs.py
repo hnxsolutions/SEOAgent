@@ -17,7 +17,7 @@ from app.services.sitemap import SitemapIntelligenceService
 logger = structlog.get_logger(__name__)
 
 
-async def dispatch_code_fixes_background(connection_id: UUID, tenant_id: UUID) -> None:
+async def dispatch_code_fixes_background(connection_id: UUID, tenant_id: UUID, reraise: bool = False) -> None:
     """Auto-dispatch: scan the connected repo and generate patches for every
     code-fixable issue. Reuses the repo agent (which already filters to safe,
     code-generatable issue types and leaves patches 'proposed' for admin
@@ -36,7 +36,7 @@ async def dispatch_code_fixes_background(connection_id: UUID, tenant_id: UUID) -
             await db.close()
 
     await run_with_telemetry(
-        "repo_dispatch", "repo_agent", _body, tenant_id=tenant_id, max_retries=1
+        "repo_dispatch", "repo_agent", _body, tenant_id=tenant_id, max_retries=1, reraise=reraise
     )
 
 
