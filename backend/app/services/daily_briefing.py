@@ -69,6 +69,13 @@ class DailyBriefingService:
         except Exception:
             index_queue = {"pending": 0, "approved": 0, "submitted": 0, "indexed": 0, "total": 0}
 
+        from app.services.fingerprint import FingerprintService
+
+        try:
+            technology = await FingerprintService(self.db).summary(project_id, tenant_id)
+        except Exception:
+            technology = {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -107,6 +114,7 @@ class DailyBriefingService:
             "core_web_vitals": core_web_vitals,
             "site_validation": site_validation,
             "index_queue": index_queue,
+            "technology": self._technology_briefing(technology),
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)
@@ -178,6 +186,44 @@ class DailyBriefingService:
         ranking = "significant" if len(high_impact) >= 3 else "moderate" if high_impact else "minor"
         roi = "high" if code_fixable and high_impact else "medium" if code_fixable else "low"
         return {"traffic": traffic, "ranking": ranking, "roi": roi, "code_fixable": len(code_fixable)}
+
+    @staticmethod
+    def _technology_briefing(technology: Dict[str, Any]) -> Dict[str, Any]:
+        """Business-friendly technology summary + SEO recommendations + risks.
+
+        Recommendations are SEO-only (never UI/business-logic); each is tied to a
+        readiness gap detected in the fingerprint."""
+        if not technology or not technology.get("detected"):
+            return {
+                "detected": False,
+                "status": technology.get("status", "not_analyzed") if technology else "not_analyzed",
+                "note": "Technology not analyzed yet. Run Re-analyze Technology to enable framework-aware SEO.",
+                "recommendations": [],
+                "risks": [],
+            }
+        scores = technology.get("scores", {}) or {}
+        recs: List[str] = []
+        risks: List[str] = []
+        if scores.get("seo_readiness", 100) < 80:
+            recs.append("Add missing SEO meta (title/description/canonical/Open Graph/JSON-LD) via framework-safe patches.")
+        if scores.get("performance_readiness", 100) < 70:
+            recs.append("Improve performance: enable compression/CDN caching and modern image formats (no UI change).")
+        if scores.get("indexability", 100) < 90:
+            risks.append("Indexability reduced — robots.txt disallow or meta noindex may be blocking pages.")
+        if scores.get("security", 100) < 60:
+            risks.append("Security headers (HSTS/CSP) missing or HTTP in use.")
+        return {
+            "detected": True,
+            "framework": technology.get("primary_framework"),
+            "cms": technology.get("primary_cms"),
+            "language": technology.get("primary_language"),
+            "hosting": technology.get("hosting"),
+            "cdn": technology.get("cdn"),
+            "rendering": technology.get("rendering"),
+            "scores": scores,
+            "recommendations": recs,
+            "risks": risks,
+        }
 
     @staticmethod
     def _trend(latest, prev) -> str:

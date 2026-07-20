@@ -56,6 +56,7 @@ class MissionControlService:
         timeline = await self._timeline(tenant_id, projects, current_activity)
 
         search_console = await self._search_console_block(tenant_id, projects)
+        technology = await self._technology_block(tenant_id, projects)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -97,6 +98,7 @@ class MissionControlService:
             "pipeline": pipeline,
             "stage_analytics": stage_analytics,
             "search_console": search_console,
+            "technology": technology,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -399,6 +401,28 @@ class MissionControlService:
             "index_queue": index_queue,
             "note": None if connected else "Connect Google Search Console to enable sitemap submission and indexing status.",
         }
+
+    async def _technology_block(self, tenant_id: UUID, projects) -> Dict[str, Any]:
+        """Technology Overview (business-friendly stack summary + readiness
+        scores). Prefers a project that already has a completed fingerprint so
+        Mission Control shows real detected technology; degrades gracefully to a
+        not-analyzed shape otherwise."""
+        from app.models.fingerprint import FingerprintStatus, TechnologyFingerprint
+        from app.services.fingerprint import FingerprintService
+
+        if not projects:
+            return {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
+        try:
+            fp = (await self.db.execute(
+                select(TechnologyFingerprint).where(
+                    TechnologyFingerprint.tenant_id == tenant_id,
+                    TechnologyFingerprint.status == FingerprintStatus.complete,
+                ).order_by(TechnologyFingerprint.detected_at.desc()).limit(1)
+            )).scalars().first()
+            target = fp.project_id if fp else projects[-1].id
+            return await FingerprintService(self.db).summary(target, tenant_id)
+        except Exception:
+            return {"status": "not_analyzed", "detected": False, "scores": {}, "technologies": []}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a

@@ -72,6 +72,7 @@ import type {
   IndexQueueItem,
   IndexQueueSummary,
   IndexQueueSubmitResult,
+  TechnologyFingerprint,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -423,6 +424,15 @@ export const dashboardApi = {
       unwrap<{ approved: number }>(api.post(`/index-queue/projects/${projectId}/approve-all`)),
     submit: (projectId: UUID) =>
       unwrap<IndexQueueSubmitResult>(api.post(`/index-queue/projects/${projectId}/submit`)),
+  },
+
+  technology: {
+    get: (projectId: UUID) =>
+      unwrap<TechnologyFingerprint>(api.get(`/fingerprint/projects/${projectId}`)),
+    analyze: (projectId: UUID, force = true) =>
+      unwrap<TechnologyFingerprint>(
+        api.post(`/fingerprint/projects/${projectId}/analyze`, undefined, { params: { force } })
+      ),
   },
 
   sitemaps: {

@@ -30,6 +30,7 @@ from app.api.v1.routes import (
     telemetry,
     queue,
     index_queue,
+    fingerprint,
     pagespeed,
     indexing,
     keyword_baselines,
@@ -76,6 +77,7 @@ api_router.include_router(mission_control.router, prefix="/mission-control", tag
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["Scheduler Telemetry"])
 api_router.include_router(queue.router, prefix="/queue", tags=["Durable Queue"])
 api_router.include_router(index_queue.router, prefix="/index-queue", tags=["Auto Index Queue"])
+api_router.include_router(fingerprint.router, prefix="/fingerprint", tags=["Technology Fingerprint"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])

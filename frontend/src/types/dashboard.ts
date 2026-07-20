@@ -346,6 +346,43 @@ export type SearchConsoleSummary = {
   top_opportunities: SearchConsoleOpportunity[];
 };
 
+export type TechnologyItem = {
+  category: string;
+  name: string;
+  version?: string | null;
+  confidence: number;
+  evidence: string[];
+};
+
+export type TechnologyScores = {
+  framework_health?: number;
+  seo_readiness?: number;
+  performance_readiness?: number;
+  accessibility?: number;
+  security?: number;
+  indexability?: number;
+};
+
+export type TechnologyFingerprint = {
+  project_id: UUID;
+  status: string; // detecting | complete | failed | not_analyzed
+  detected?: boolean;
+  source?: string | null;
+  source_url?: string | null;
+  primary_framework?: string | null;
+  primary_cms?: string | null;
+  primary_language?: string | null;
+  rendering?: string | null;
+  hosting?: string | null;
+  cdn?: string | null;
+  scores: TechnologyScores;
+  technologies: TechnologyItem[];
+  by_category?: Record<string, TechnologyItem[]>;
+  detected_at?: string | null;
+  error?: string | null;
+  note?: string;
+};
+
 export type IndexQueueItem = {
   id: UUID;
   project_id: UUID;

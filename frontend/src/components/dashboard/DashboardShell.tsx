@@ -23,6 +23,7 @@ import {
   Sparkles,
   Gauge,
   Target,
+  Cpu,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -380,6 +381,7 @@ function ProjectSelector({
 
 const navItems = [
   { label: 'Mission Control', href: '/dashboard/mission-control', icon: Gauge },
+  { label: 'Technology', href: '/dashboard/technology', icon: Cpu },
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
   { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
   { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },
