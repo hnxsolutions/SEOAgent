@@ -76,6 +76,8 @@ import type {
   GeneratedPatch,
   PatchPipelineRun,
   PatchPipelineSummary,
+  CodeReviewItem,
+  CodeReviewFile,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -454,6 +456,27 @@ export const dashboardApi = {
       unwrap<PatchPipelineRun>(api.post(`/patch-pipeline/projects/${projectId}/run`)),
     summary: (projectId: UUID) =>
       unwrap<PatchPipelineSummary>(api.get(`/patch-pipeline/projects/${projectId}/summary`)),
+  },
+
+  codeReview: {
+    prepare: (projectId: UUID) =>
+      unwrap<{ status: string; review_id?: string; files?: number; risk?: string; note?: string }>(
+        api.post(`/code-review/projects/${projectId}/prepare`)
+      ),
+    list: (status?: string) =>
+      unwrap<{ items: CodeReviewItem[]; total: number }>(
+        api.get('/code-review', { params: status ? { status } : undefined })
+      ),
+    get: (reviewId: string) =>
+      unwrap<{ review: CodeReviewItem; files: CodeReviewFile[] }>(api.get(`/code-review/${reviewId}`)),
+    approve: (reviewId: string) =>
+      unwrap<{ status: string; merged: boolean; merge_sha?: string | null; deployment_status?: string }>(
+        api.post(`/code-review/${reviewId}/approve`)
+      ),
+    reject: (reviewId: string, reason: string) =>
+      unwrap<{ status: string }>(api.post(`/code-review/${reviewId}/reject`, { reason })),
+    archive: (reviewId: string) =>
+      unwrap<{ status: string }>(api.post(`/code-review/${reviewId}/archive`)),
   },
 
   sitemaps: {

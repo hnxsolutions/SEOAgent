@@ -9,6 +9,7 @@ import {
   FileText,
   FileWarning,
   GitBranch,
+  GitPullRequest,
   BadgeCheck,
   KeyRound,
   LayoutDashboard,
@@ -382,6 +383,7 @@ function ProjectSelector({
 const navItems = [
   { label: 'Mission Control', href: '/dashboard/mission-control', icon: Gauge },
   { label: 'Technology', href: '/dashboard/technology', icon: Cpu },
+  { label: 'Code Review', href: '/dashboard/code-review', icon: GitPullRequest },
   { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
   { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
   { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },

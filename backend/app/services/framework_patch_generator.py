@@ -149,12 +149,19 @@ class FrameworkPatchGeneratorService:
             pages = (await self.db.execute(
                 select(CrawlPage).where(CrawlPage.crawl_job_id == job.id).limit(50)
             )).scalars().all()
+            from urllib.parse import urlparse
+
             paths = []
             for p in pages:
                 url = getattr(p, "normalized_url", None) or getattr(p, "url", "")
-                path = "/" + url.split("://", 1)[-1].split("/", 1)[-1] if "://" in url else url
-                if getattr(p, "status_code", 200) == 200 and not getattr(p, "noindex", False):
-                    paths.append(path if path.startswith("/") else "/" + path)
+                if not url or getattr(p, "status_code", 200) != 200 or getattr(p, "noindex", False):
+                    continue
+                # Treat scheme-less values (bare host) as a full URL so the host
+                # never leaks into the path.
+                raw = url if "://" in url else "https://" + url.lstrip("/")
+                path = urlparse(raw).path
+                path = "/" + path.strip("/") if path.strip("/") else "/"
+                paths.append(path)
             uniq = sorted(set(paths))[:30]
             return uniq or ["/"]
         except Exception:
@@ -221,17 +228,30 @@ class FrameworkPatchGeneratorService:
         return GeneratedPatchValidation.passed, notes
 
     async def _confidence(self, framework_key: str, tenant_id: UUID) -> int:
-        """Reuse the Learning Engine's evidence-based confidence where available;
-        otherwise a conservative per-framework base."""
+        """Evidence-based confidence: the Learning Engine's verification history,
+        adjusted by human code-review outcomes for this framework (approvals
+        raise, rejections lower it), falling back to a conservative base."""
+        base = _BASE_CONFIDENCE.get(framework_key, 70)
         try:
             from app.services.learning import LearningEngine
 
             learned = await LearningEngine(self.db).evidence_confidence("metadata_update", tenant_id)
             if learned:
-                return int(learned)
+                base = int(learned)
         except Exception:
             pass
-        return _BASE_CONFIDENCE.get(framework_key, 70)
+        # Blend in human review evidence for this framework.
+        try:
+            from app.services.code_review import CodeReviewService
+
+            ev = await CodeReviewService(self.db).framework_evidence(tenant_id, framework_key)
+            total = ev["approved"] + ev["rejected"]
+            if total:
+                ratio = ev["approved"] / total          # 0..1
+                base = int(round(base * 0.7 + (60 + ratio * 40) * 0.3))
+        except Exception:
+            pass
+        return max(30, min(99, base))
 
     @staticmethod
     def _explain(content, ctx: PatchContext) -> str:
