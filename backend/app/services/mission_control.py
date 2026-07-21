@@ -60,6 +60,7 @@ class MissionControlService:
         generated_patches = await self._generated_patches_block(tenant_id, projects)
         patch_pipeline = await self._patch_pipeline_block(tenant_id, projects)
         code_review = await self._code_review_block(tenant_id)
+        deployment_verification = await self._deployment_verification_block(tenant_id)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -105,6 +106,7 @@ class MissionControlService:
             "generated_patches": generated_patches,
             "patch_pipeline": patch_pipeline,
             "code_review": code_review,
+            "deployment_verification": deployment_verification,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -476,6 +478,16 @@ class MissionControlService:
             return await CodeReviewService(self.db).mission_control_summary(tenant_id)
         except Exception:
             return {"pending_reviews": 0, "approved_today": 0, "rejected_today": 0}
+
+    async def _deployment_verification_block(self, tenant_id: UUID) -> Dict[str, Any]:
+        """Post-merge widgets: deployments today, success rate, avg SEO/perf/CWV
+        improvement, avg verification time, learning trend, verification queue."""
+        from app.services.verification_pipeline import VerificationPipelineService
+
+        try:
+            return await VerificationPipelineService(self.db).mission_control_summary(tenant_id)
+        except Exception:
+            return {"deployments_today": 0, "deployment_success_rate": None, "verification_queue": 0}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a

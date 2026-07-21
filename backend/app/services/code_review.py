@@ -170,8 +170,10 @@ class CodeReviewService:
         await self.db.commit()
         await self.db.refresh(review)
 
-        if merged:
-            await self._trigger_post_merge(review, tenant_id)
+        # Continue the loop automatically: verify the deployed/live site. Runs the
+        # measurable parts (live site + PageSpeed + SEO before/after + learning)
+        # even when merge is gated, so the admin gets real evidence. Best-effort.
+        await self._trigger_post_merge(review, tenant_id)
 
         await self._notify(tenant_id, review.project_id, NotificationLevel.success,
                            "Patch approved" + (" & merged" if merged else ""),
@@ -281,15 +283,17 @@ class CodeReviewService:
             return None
 
     async def _trigger_post_merge(self, review: CodeReview, tenant_id: UUID) -> None:
-        """After a real merge: hand off to the verification engine (which chains
-        PageSpeed / Core Web Vitals / Search Console / sitemap / learning). Only
-        runs when a merge actually happened — never fabricated."""
+        """Continue the loop automatically: run the post-merge verification
+        pipeline (detect deployment -> verify live site -> PageSpeed / CWV ->
+        Search Console -> compare before/after -> learning). Measures the REAL
+        deployed site; merge/deploy/GSC steps degrade gracefully. Best-effort:
+        never breaks the approve response."""
         try:
-            from app.services.verification import VerificationEngine  # reused engine
+            from app.services.verification_pipeline import VerificationPipelineService
 
-            _ = VerificationEngine  # documents the reuse point; scheduler drives real PRs
-            review.deployment_status = "verifying"
+            review.deployment_status = review.deployment_status or "verifying"
             await self.db.commit()
+            await VerificationPipelineService(self.db).run(review.project_id, tenant_id, review_id=review.id)
         except Exception as exc:
             logger.warning("code_review_post_merge_failed", review_id=str(review.id), error=str(exc))
 
