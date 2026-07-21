@@ -108,6 +108,13 @@ class DailyBriefingService:
         except Exception:
             operations = {"health": {}, "next_best_actions": [], "changes": []}
 
+        from app.services.seo_growth import SeoGrowthEngine
+
+        try:
+            growth = await SeoGrowthEngine(self.db).briefing_summary(project_id, tenant_id)
+        except Exception:
+            growth = {"new_opportunities": 0, "priority_keywords": [], "missing_topics": [], "recommended_blogs": []}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -157,6 +164,7 @@ class DailyBriefingService:
             },
             "code_review": code_review,
             "operations": operations,
+            "growth": growth,
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)

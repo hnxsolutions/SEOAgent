@@ -85,6 +85,13 @@ import type {
   OpsChange,
   OpsTimelineEntry,
   OpsOverview,
+  GrowthSummary,
+  GrowthKeyword,
+  GrowthGap,
+  GrowthCluster,
+  GrowthBlogPost,
+  GrowthCalendar,
+  GrowthEeat,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -483,6 +490,27 @@ export const dashboardApi = {
     timeline: (projectId: UUID) =>
       unwrap<{ timeline: OpsTimelineEntry[] }>(api.get(`/operations/projects/${projectId}/timeline`)),
     overview: () => unwrap<OpsOverview>(api.get('/operations/overview')),
+  },
+
+  growth: {
+    summary: (projectId: UUID) =>
+      unwrap<GrowthSummary>(api.get(`/growth/projects/${projectId}/summary`)),
+    keywords: (projectId: UUID) =>
+      unwrap<{ keywords: GrowthKeyword[] }>(api.get(`/growth/projects/${projectId}/keywords`)),
+    contentGaps: (projectId: UUID) =>
+      unwrap<{ content_gaps: GrowthGap[] }>(api.get(`/growth/projects/${projectId}/content-gaps`)),
+    clusters: (projectId: UUID) =>
+      unwrap<{ clusters: GrowthCluster[] }>(api.get(`/growth/projects/${projectId}/clusters`)),
+    roadmap: (projectId: UUID) =>
+      unwrap<{ roadmap: GrowthBlogPost[] }>(api.get(`/growth/projects/${projectId}/roadmap`)),
+    calendar: (projectId: UUID, days = 90) =>
+      unwrap<GrowthCalendar>(api.get(`/growth/projects/${projectId}/calendar`, { params: { days } })),
+    eeat: (projectId: UUID) =>
+      unwrap<GrowthEeat>(api.get(`/growth/projects/${projectId}/eeat`)),
+    analyze: (projectId: UUID) =>
+      unwrap<{ snapshot_id: string; growth_score: number | null; keyword_opportunities: number; content_gaps: number; blog_roadmap: number }>(
+        api.post(`/growth/projects/${projectId}/analyze`)
+      ),
   },
 
   deploymentVerification: {

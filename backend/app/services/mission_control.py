@@ -62,6 +62,7 @@ class MissionControlService:
         code_review = await self._code_review_block(tenant_id)
         deployment_verification = await self._deployment_verification_block(tenant_id)
         operations = await self._operations_block(tenant_id)
+        growth = await self._growth_block(tenant_id)
 
         tq = TelemetryQuery(self.db)
         telemetry_stats = await tq.stats(tenant_id)
@@ -109,6 +110,7 @@ class MissionControlService:
             "code_review": code_review,
             "deployment_verification": deployment_verification,
             "operations": operations,
+            "growth": growth,
             "core_web_vitals": core_web_vitals,
             "current_activity": current_activity,
             "projects": project_cards,
@@ -500,6 +502,16 @@ class MissionControlService:
             return await SeoOperationsEngine(self.db).ceo_overview(tenant_id)
         except Exception:
             return {"projects_total": 0, "projects_monitored": 0, "average_health": None}
+
+    async def _growth_block(self, tenant_id: UUID) -> Dict[str, Any]:
+        """SEO Growth widgets: average growth score, keyword opportunities,
+        estimated monthly clicks (clearly an estimate)."""
+        from app.services.seo_growth import SeoGrowthEngine
+
+        try:
+            return await SeoGrowthEngine(self.db).mission_control_summary(tenant_id)
+        except Exception:
+            return {"average_growth_score": None, "keyword_opportunities": 0, "is_estimate": True}
 
     def _scheduler_status(self) -> Dict[str, Any]:
         # The scheduler runs on a fixed interval; detailed per-job telemetry is a

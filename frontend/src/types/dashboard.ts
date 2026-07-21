@@ -486,6 +486,91 @@ export type OpsOverview = {
   verifications: number;
 };
 
+export type GrowthKeyword = {
+  keyword: string;
+  intent: string;
+  difficulty: string;
+  source: string;
+  impressions?: number | null;
+  ctr?: number | null;
+  position?: number | null;
+  priority: number;
+  estimate?: { is_estimate: boolean; estimated_monthly_clicks?: number | null; note?: string };
+  opportunity_type?: string | null;
+};
+
+export type GrowthGap = {
+  type: string;
+  title: string;
+  why: string;
+  target_keyword?: string | null;
+  priority: number;
+};
+
+export type GrowthCluster = {
+  pillar: string;
+  pillar_title: string;
+  supporting_keywords: string[];
+  article_count: number;
+};
+
+export type GrowthBlogPost = {
+  topic: string;
+  target_keyword: string;
+  secondary_keywords: string[];
+  search_intent: string;
+  suggested_url: string;
+  suggested_title: string;
+  suggested_h1: string;
+  suggested_meta: string;
+  suggested_schema: string;
+  suggested_internal_links: string[];
+  priority: number;
+  difficulty: string;
+  business_value?: string;
+  estimated_traffic?: number | null;
+  source: string;
+};
+
+export type GrowthCalendarSlot = {
+  publish_date: string;
+  title: string;
+  target_keyword: string;
+  url: string;
+  priority: number;
+  business_value?: string;
+};
+
+export type GrowthCalendar = {
+  window_days: number;
+  cadence: string;
+  slots: GrowthCalendarSlot[];
+  planned: number;
+};
+
+export type GrowthEeat = {
+  score: number;
+  checks: Record<string, boolean>;
+  suggestions: string[];
+};
+
+export type GrowthSummary = {
+  growth_score: number | null;
+  dimensions: Record<string, number | null>;
+  opportunity_score: number | null;
+  explanations: Record<string, string>;
+  top_keywords: GrowthKeyword[];
+  content_gaps: GrowthGap[];
+  traffic_forecast: {
+    is_estimate: boolean;
+    estimated_monthly_clicks?: number | null;
+    keywords_with_data?: number;
+    keyword_opportunities?: number;
+    confidence?: string;
+    note?: string;
+  };
+};
+
 export type TimelineEntry = { time: string; event: string };
 
 export type VerdictCell = { before?: number | null; after?: number | null; verdict: string };
