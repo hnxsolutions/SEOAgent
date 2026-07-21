@@ -461,6 +461,39 @@ export type PatchPipelineSummary = {
   updated_at?: string | null;
 };
 
+export type TimelineEntry = { time: string; event: string };
+
+export type VerdictCell = { before?: number | null; after?: number | null; verdict: string };
+
+export type DeploymentVerificationRun = {
+  id: string;
+  has_run?: boolean;
+  status: string; // pending | running | succeeded | failed | gated
+  deployment_provider?: string | null;
+  deployment_status?: string | null;
+  deployment_url?: string | null;
+  live_site?: {
+    url?: string | null;
+    reachable?: boolean;
+    http_status?: number | null;
+    passed_count?: number | null;
+    checks?: Record<string, unknown> | null;
+    error?: string;
+  } | null;
+  seo_before?: number | null;
+  seo_after?: number | null;
+  seo_comparison?: Record<string, VerdictCell | string> | null;
+  pagespeed_before?: { status?: string; metrics?: Record<string, number | null> } | null;
+  pagespeed_after?: { status?: string; metrics?: Record<string, number | null> } | null;
+  cwv_comparison?: Record<string, VerdictCell> | null;
+  gsc_status?: string | null;
+  learning_outcome?: { direction?: string; confidence_delta?: number; reason?: string; evidence?: string } | null;
+  timeline?: TimelineEntry[];
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type CodeReviewItem = {
   id: string;
   project_id: UUID;

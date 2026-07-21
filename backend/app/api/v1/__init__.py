@@ -34,6 +34,7 @@ from app.api.v1.routes import (
     framework_patches,
     patch_pipeline,
     code_review,
+    deployment_verification,
     pagespeed,
     indexing,
     keyword_baselines,
@@ -84,6 +85,7 @@ api_router.include_router(fingerprint.router, prefix="/fingerprint", tags=["Tech
 api_router.include_router(framework_patches.router, prefix="/framework-patches", tags=["Framework Patch Generator"])
 api_router.include_router(patch_pipeline.router, prefix="/patch-pipeline", tags=["Autonomous Patch Pipeline"])
 api_router.include_router(code_review.router, prefix="/code-review", tags=["Code Review / Approval"])
+api_router.include_router(deployment_verification.router, prefix="/deployment-verification", tags=["Deployment Verification"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])

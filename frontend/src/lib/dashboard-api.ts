@@ -78,6 +78,7 @@ import type {
   PatchPipelineSummary,
   CodeReviewItem,
   CodeReviewFile,
+  DeploymentVerificationRun,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -456,6 +457,19 @@ export const dashboardApi = {
       unwrap<PatchPipelineRun>(api.post(`/patch-pipeline/projects/${projectId}/run`)),
     summary: (projectId: UUID) =>
       unwrap<PatchPipelineSummary>(api.get(`/patch-pipeline/projects/${projectId}/summary`)),
+  },
+
+  deploymentVerification: {
+    run: (projectId: UUID) =>
+      unwrap<DeploymentVerificationRun>(api.post(`/deployment-verification/projects/${projectId}/run`)),
+    summary: (projectId: UUID) =>
+      unwrap<DeploymentVerificationRun & { has_run: boolean }>(
+        api.get(`/deployment-verification/projects/${projectId}/summary`)
+      ),
+    list: (projectId: UUID) =>
+      unwrap<{ items: DeploymentVerificationRun[]; total: number }>(
+        api.get(`/deployment-verification/projects/${projectId}`)
+      ),
   },
 
   codeReview: {

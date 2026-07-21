@@ -49,6 +49,7 @@ from app.models.fingerprint import TechnologyFingerprint
 from app.models.generated_patch import GeneratedSeoPatch
 from app.models.patch_pipeline import PatchPipeline
 from app.models.code_review import CodeReview
+from app.models.deployment_verification import DeploymentVerification
 from app.models.site_validation import SiteValidation
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
@@ -143,4 +144,5 @@ __all__ = [
     "GeneratedSeoPatch",
     "PatchPipeline",
     "CodeReview",
+    "DeploymentVerification",
 ]
