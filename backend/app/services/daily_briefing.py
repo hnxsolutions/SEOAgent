@@ -96,6 +96,18 @@ class DailyBriefingService:
             code_review = {"pending_reviews": 0, "waiting_for_approval": [], "recently_merged": [],
                            "recently_rejected": [], "top_high_risk": []}
 
+        from app.services.seo_operations import SeoOperationsEngine
+
+        try:
+            ops = SeoOperationsEngine(self.db)
+            operations = {
+                "health": await ops.health(project_id, tenant_id),
+                "next_best_actions": await ops.next_best_actions(project_id, tenant_id, limit=5),
+                "changes": await ops.changes(project_id, tenant_id),
+            }
+        except Exception:
+            operations = {"health": {}, "next_best_actions": [], "changes": []}
+
         sections: Dict[str, Any] = {
             "overall_health": state["overall_health"],
             "ai_confidence": ai_confidence,
@@ -144,6 +156,7 @@ class DailyBriefingService:
                 "current_stage": pipeline.get("current_stage") if pipeline.get("has_run") else None,
             },
             "code_review": code_review,
+            "operations": operations,
         }
 
         summary, source = await self._executive_summary(state, sections, use_llm=use_llm)
