@@ -382,6 +382,7 @@ function ProjectSelector({
 
 const navItems = [
   { label: 'Mission Control', href: '/dashboard/mission-control', icon: Gauge },
+  { label: 'SEO Operations', href: '/dashboard/operations', icon: Activity },
   { label: 'Technology', href: '/dashboard/technology', icon: Cpu },
   { label: 'Code Review', href: '/dashboard/code-review', icon: GitPullRequest },
   { label: 'Deployment Verification', href: '/dashboard/deployment-verification', icon: BadgeCheck },

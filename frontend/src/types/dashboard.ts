@@ -461,6 +461,31 @@ export type PatchPipelineSummary = {
   updated_at?: string | null;
 };
 
+export type OpsDimension = { key: string; label: string; score: number | null; explanation: string };
+export type OpsHealth = {
+  overall: number | null;
+  grade: string | null;
+  dimensions: OpsDimension[];
+  measured_dimensions: number;
+  total_dimensions: number;
+  measured_at?: string;
+};
+export type OpsAction = { action: string; why: string; priority: number; category: string };
+export type OpsLifecycleStage = { name: string; label: string; status: string };
+export type OpsChange = { field: string; before?: unknown; after?: unknown; direction: string; delta?: number };
+export type OpsTimelineEntry = { time: string; bucket: string; event: string; kind: string };
+export type OpsOverview = {
+  projects_total: number;
+  projects_monitored: number;
+  projects_improving: number;
+  projects_declining: number;
+  average_health: number | null;
+  overall_seo_health: number | null;
+  pending_reviews: number;
+  deployments: number;
+  verifications: number;
+};
+
 export type TimelineEntry = { time: string; event: string };
 
 export type VerdictCell = { before?: number | null; after?: number | null; verdict: string };

@@ -79,6 +79,12 @@ import type {
   CodeReviewItem,
   CodeReviewFile,
   DeploymentVerificationRun,
+  OpsHealth,
+  OpsAction,
+  OpsLifecycleStage,
+  OpsChange,
+  OpsTimelineEntry,
+  OpsOverview,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
@@ -457,6 +463,26 @@ export const dashboardApi = {
       unwrap<PatchPipelineRun>(api.post(`/patch-pipeline/projects/${projectId}/run`)),
     summary: (projectId: UUID) =>
       unwrap<PatchPipelineSummary>(api.get(`/patch-pipeline/projects/${projectId}/summary`)),
+  },
+
+  operations: {
+    health: (projectId: UUID) =>
+      unwrap<OpsHealth>(api.get(`/operations/projects/${projectId}/health`)),
+    nextActions: (projectId: UUID) =>
+      unwrap<{ actions: OpsAction[] }>(api.get(`/operations/projects/${projectId}/next-actions`)),
+    lifecycle: (projectId: UUID) =>
+      unwrap<{ current_stage: string; stages: OpsLifecycleStage[] }>(
+        api.get(`/operations/projects/${projectId}/lifecycle`)
+      ),
+    monitor: (projectId: UUID) =>
+      unwrap<{ snapshot_id: string; overall: number | null; changes: OpsChange[]; changed: number }>(
+        api.post(`/operations/projects/${projectId}/monitor`)
+      ),
+    changes: (projectId: UUID) =>
+      unwrap<{ changes: OpsChange[] }>(api.get(`/operations/projects/${projectId}/changes`)),
+    timeline: (projectId: UUID) =>
+      unwrap<{ timeline: OpsTimelineEntry[] }>(api.get(`/operations/projects/${projectId}/timeline`)),
+    overview: () => unwrap<OpsOverview>(api.get('/operations/overview')),
   },
 
   deploymentVerification: {
