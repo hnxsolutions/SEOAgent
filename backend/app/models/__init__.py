@@ -70,6 +70,9 @@ from app.models.repo_agent import (
 )
 from app.models.serp import SERPAnalysis, SERPResult, SerpSnapshot, SerpSnapshotAsset, SerpSnapshotResult
 from app.models.agent import AgentRun
+from app.models.website_profile import WebsiteProfile, WebsiteProfileSnapshot
+from app.models.content_cluster import ContentCluster, ContentClusterNode
+from app.models.content_refresh import ContentRefreshProposal
 
 __all__ = [
     "User",
@@ -149,4 +152,9 @@ __all__ = [
     "DeploymentVerification",
     "OpsHealthSnapshot",
     "GrowthSnapshot",
+    "WebsiteProfile",
+    "WebsiteProfileSnapshot",
+    "ContentCluster",
+    "ContentClusterNode",
+    "ContentRefreshProposal",
 ]

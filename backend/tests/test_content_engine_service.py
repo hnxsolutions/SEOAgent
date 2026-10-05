@@ -151,7 +151,8 @@ async def test_draft_next_skips_rather_than_writing_something_worthless():
 
 
 @pytest.mark.asyncio
-async def test_draft_next_refuses_to_cannibalise_a_published_article():
+async def test_draft_next_refuses_to_cannibalise_a_published_article(monkeypatch):
+    """A clash with a published article stops the draft and says what to do."""
     topic = SimpleNamespace(
         id=uuid4(), title="Local SEO guide for small businesses",
         status=None, reason=None, priority_score=80,
@@ -161,11 +162,27 @@ async def test_draft_next_refuses_to_cannibalise_a_published_article():
     service._project = _async(SimpleNamespace(id=uuid4()))
     service._active_plan = _async(SimpleNamespace(id=uuid4()))
     service._next_topic = _async(topic)
-    service._published_titles = _async([("Local SEO guide small business", "/local-seo")])
+
+    import app.services.content_clusters as clusters
+
+    class Clashing:
+        def __init__(self, _db):
+            pass
+
+        async def check_cannibalisation(self, *_a, **_k):
+            return {
+                "verdict": clusters.CannibalisationVerdict.POTENTIAL_CANNIBALIZATION,
+                "conflict": {"title": "Local SEO guide small business", "kind": "published article"},
+                "reason": "Overlaps 80% with the published article.",
+                "recommended_action": "Update that article instead.",
+            }
+
+    monkeypatch.setattr(clusters, "ContentClusterService", Clashing)
 
     result = await service.draft_next(uuid4(), uuid4())
 
     assert result["drafted"] is False
+    assert result["verdict"] == "POTENTIAL_CANNIBALIZATION"
     assert result["cannibalised_by"] == "Local SEO guide small business"
     # The topic is closed out with an explanation, not silently dropped.
     assert "Update that article instead" in topic.reason
@@ -180,7 +197,17 @@ async def test_a_failing_model_leaves_the_topic_for_next_time(monkeypatch):
     service._project = _async(SimpleNamespace(id=uuid4()))
     service._active_plan = _async(SimpleNamespace(id=uuid4()))
     service._next_topic = _async(topic)
-    service._published_titles = _async([])
+
+    import app.services.content_clusters as clusters
+
+    class Clear:
+        def __init__(self, _db):
+            pass
+
+        async def check_cannibalisation(self, *_a, **_k):
+            return {"verdict": clusters.CannibalisationVerdict.CLEAR, "conflict": None}
+
+    monkeypatch.setattr(clusters, "ContentClusterService", Clear)
 
     class BrokenBlogService:
         def __init__(self, _db):

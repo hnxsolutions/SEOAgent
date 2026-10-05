@@ -220,21 +220,27 @@ class ContentEngineService:
                 ),
             }
 
-        # Re-check cannibalisation at drafting time: a topic queued last week may
-        # have been covered by an article written since.
-        published = await self._published_titles(project_id, tenant_id)
-        clash = find_cannibalisation(topic.title, published)
-        if clash is not None:
+        # Re-check cannibalisation at drafting time against every source — a
+        # topic queued last week may have been covered by an article written
+        # since, or may duplicate a page that was always there.
+        from app.services.content_clusters import (
+            CannibalisationVerdict,
+            ContentClusterService,
+        )
+
+        verdict = await ContentClusterService(self.db).check_cannibalisation(
+            project_id, tenant_id, topic.title
+        )
+        if verdict["verdict"] != CannibalisationVerdict.CLEAR:
             topic.status = BlogTopicStatus.rejected
-            topic.reason = (
-                f"Skipped — \"{clash.existing}\" already covers this intent "
-                f"({clash.overlap:.0%} overlap). Update that article instead."
-            )
+            topic.reason = f"{verdict['reason']}\n\n{verdict['recommended_action']}"
             await self.db.commit()
             return {
                 "drafted": False,
                 "reason": topic.reason,
-                "cannibalised_by": clash.existing,
+                "verdict": verdict["verdict"],
+                "cannibalised_by": (verdict.get("conflict") or {}).get("title"),
+                "recommended_action": verdict["recommended_action"],
             }
 
         from app.services.blogs import BlogService
@@ -379,7 +385,21 @@ class ContentEngineService:
             buckets[label] = buckets.get(label, 0) + 1
 
             if label in ("NEEDS_UPDATE", "UNDERPERFORMING"):
+                # Persist it. A finding that lives only in a job summary is gone
+                # the moment nobody is reading the log; a proposal outlives the
+                # job and can be approved later.
+                record = await self._persist_proposal(
+                    project_id=project_id,
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    label=label,
+                    why=why,
+                    stats=stats,
+                    prior=prior,
+                )
                 proposals.append({
+                    "proposal_id": str(record.id) if record else None,
+                    "already_open": record is None,
                     "draft_id": str(draft.id),
                     "title": draft.title,
                     "slug": draft.slug,
@@ -392,6 +412,8 @@ class ContentEngineService:
                         "Refresh proposal — requires approval. Nothing has been changed."
                     ),
                 })
+
+        await self.db.commit()
 
         return {
             "status": "completed",
@@ -643,6 +665,76 @@ class ContentEngineService:
         if not cleaned:
             return "Untitled topic"
         return (cleaned[0].upper() + cleaned[1:])[:255]
+
+    async def _persist_proposal(
+        self,
+        *,
+        project_id: UUID,
+        tenant_id: UUID,
+        draft,
+        label: str,
+        why: str,
+        stats: Dict[str, Any],
+        prior: Dict[str, Any],
+    ):
+        """Write one refresh proposal, or nothing if one is already open.
+
+        Priority is the traffic genuinely at stake, not the size of the
+        percentage drop: a 60% fall on 40 impressions matters less than a 25%
+        fall on 9,000, and ranking by percentage puts the wrong work first.
+        """
+        from app.models.content_refresh import RefreshReason
+        from app.services.content_refresh import ContentRefreshService
+
+        impressions = int(stats.get("impressions") or 0)
+        previous = int(prior.get("impressions") or 0)
+
+        if label == "NEEDS_UPDATE":
+            reason = RefreshReason.declining_impressions
+            changes = [
+                {"section": "whole article", "action": "Refresh and expand",
+                 "why": "Impressions have fallen against the previous period."},
+                {"section": "title & meta", "action": "Rewrite for the queries it now ranks for",
+                 "why": "Declining impressions often follow a drifting intent match."},
+            ]
+        else:
+            reason = RefreshReason.low_ctr
+            changes = [
+                {"section": "title & meta description", "action": "Rewrite to earn the click",
+                 "why": "The page is being seen in search but not clicked."},
+                {"section": "opening paragraph", "action": "Answer the query in the first sentence",
+                 "why": "Improves both CTR and answer-engine extractability."},
+            ]
+
+        drop = (previous - impressions) / previous if previous else 0.0
+        priority = min(100.0, (impressions / 50.0) + (drop * 40.0))
+
+        return await ContentRefreshService(self.db).propose(
+            project_id=project_id,
+            tenant_id=tenant_id,
+            blog_draft_id=draft.id,
+            page_url=draft.slug,
+            title=draft.title or "Untitled",
+            reason=reason,
+            summary=why,
+            evidence={
+                "classification": label,
+                "current": {
+                    "impressions": impressions,
+                    "clicks": int(stats.get("clicks") or 0),
+                    "position": stats.get("position"),
+                },
+                "previous": {
+                    "impressions": previous,
+                    "clicks": int(prior.get("clicks") or 0),
+                },
+                "source": "Google Search Console",
+                "window_days": 28,
+            },
+            proposed_changes=changes,
+            priority=priority,
+            commit=False,
+        )
 
     async def _gsc_by_page(
         self,
