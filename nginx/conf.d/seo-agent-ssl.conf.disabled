@@ -1,0 +1,69 @@
+# Port 443. NOT LOADED until this file is renamed to `seo-agent-ssl.conf`.
+#
+# nginx includes `conf.d/*.conf`, so the `.disabled` suffix keeps this out of
+# the configuration. That is deliberate: nginx refuses to start if a server
+# block references certificate files that do not exist yet, so shipping this
+# enabled would mean a fresh VM comes up with no web server at all.
+#
+# Enabling it, once:
+#
+#   1. Point the DNS A record at the VM and open 80 and 443 in the NSG.
+#   2. Set TLS_DOMAIN and TLS_EMAIL in .env.
+#   3. docker compose -f docker-compose.yml up -d nginx
+#   4. docker compose -f docker-compose.yml --profile tls run --rm certbot-issue
+#   5. Replace every your-domain.example below with TLS_DOMAIN.
+#   6. mv seo-agent-ssl.conf.disabled seo-agent-ssl.conf
+#   7. Uncomment the redirect in seo-agent.conf.
+#   8. docker compose -f docker-compose.yml restart nginx
+#   9. docker compose -f docker-compose.yml --profile tls up -d certbot-renew
+#
+# Then update APP_URL, FRONTEND_URL, CORS_ORIGINS, GOOGLE_OAUTH_REDIRECT_URI and
+# GITHUB_CALLBACK_URL to the https:// host and re-consent Google — OAuth
+# redirect URIs must match exactly, and Google will not accept http:// for a
+# public hostname.
+
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name your-domain.example;
+
+  ssl_certificate     /etc/letsencrypt/live/your-domain.example/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/your-domain.example/privkey.pem;
+
+  # Modern settings only. TLS 1.0/1.1 are long dead and 1.2 is the floor.
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;
+
+  # Tell browsers to refuse plain HTTP for this host in future. Start with a
+  # short max-age; raise it once you are confident the certificate renews.
+  add_header Strict-Transport-Security "max-age=86400" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  client_max_body_size 25m;
+
+  location /api/ {
+    proxy_pass http://seo_agent_backend;
+  }
+
+  location /docs {
+    proxy_pass http://seo_agent_backend;
+  }
+
+  location /openapi.json {
+    proxy_pass http://seo_agent_backend;
+  }
+
+  location /health {
+    proxy_pass http://seo_agent_backend;
+    access_log off;
+  }
+
+  location / {
+    proxy_pass http://seo_agent_frontend;
+  }
+}

@@ -1,143 +1,179 @@
 # Azure deployment readiness
 
-**Verdict: NOT READY — six blockers, all fixable in a day.**
+**Verdict: READY, with one manual step — issuing a TLS certificate, which needs
+a real domain pointed at the VM and therefore cannot be done from a laptop.**
 
-Assessed 2026-10-05 against the running Docker stack on the development machine.
-The application itself is production-shaped: it runs, it migrates itself, it
-restarts cleanly, and the autonomous loop works unattended. What is not ready is
-the **deployment configuration**, which is still a development compose file
-wearing a production label.
+Assessed 2026-10-05 against the running Docker stack; re-assessed after the six
+blockers below were fixed.
 
-Target architecture assumed: a single Azure VM running Docker Compose, with
-Postgres, Redis, Qdrant and Ollama as containers or on-host services. No managed
-Azure services are required, and nothing below introduces a paid dependency.
-
----
-
-## Blockers
-
-### 1. The backend runs with `--reload` (critical)
-
-`docker-compose.yml` starts the API as:
-
-```
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-`--reload` runs a file-watching supervisor, holds extra file descriptors, and
-restarts the process on any write into the image. It is a development
-convenience and must not be what serves traffic.
-
-**Fix:** drop `--reload` and run multiple workers in the production override:
-`uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4`.
-
-### 2. Source is bind-mounted over the image on five services (critical)
-
-```
-volumes:
-  - ./backend:/app
-```
-
-appears on `backend`, `worker`, `scheduler`, `crawl-worker` and one more. This
-means the running code is whatever is in the working directory on the VM, not
-what was built and tested into the image. A half-finished `git pull` becomes a
-half-deployed application.
-
-**Fix:** remove the bind mounts in the production override so the image is the
-unit of deployment.
-
-### 3. Postgres, Redis and Qdrant are published to the host (critical)
-
-The compose file publishes `5432`, `6379`, `6333` and `6334`. On an Azure VM
-these bind to `0.0.0.0` and are reachable from the internet unless the Network
-Security Group happens to block them — security that lives outside the artefact
-and is one portal click from being wrong.
-
-Postgres currently has a default password of `seoagent_password`.
-
-**Fix:** stop publishing them, or bind to loopback (`127.0.0.1:5432:5432`).
-Only `80`/`443` should be open. Set a real `POSTGRES_PASSWORD`.
-
-### 4. There is no Ollama service and no model volume (critical for content)
-
-Ollama is not in `docker-compose.yml` at all; the stack reaches it on the host
-via `host.docker.internal`. On the development machine that works because Ollama
-Desktop is installed. **A fresh Azure VM has no Ollama and no model**, so every
-content feature would be gated from the first boot.
-
-`qwen2.5:3b` is ~1.9 GB and must persist across container restarts, or every
-deploy re-downloads it.
-
-**Fix:** either install Ollama on the VM as a systemd service and keep
-`host.docker.internal` (the `extra_hosts: host.docker.internal:host-gateway`
-mapping added in this phase already makes that work on Linux), or add an
-`ollama` service with a named volume on `/root/.ollama` and a one-shot
-`ollama pull qwen2.5:3b` init step. Either way the model directory must be a
-persistent volume.
-
-### 5. No TLS, and `nginx` is behind a profile
-
-The `nginx` service exists but carries `profiles: [production]`, so
-`docker compose up -d` does not start it. There is no certificate story.
-Google Search Console OAuth and GitHub callbacks both require HTTPS redirect
-URIs in production.
-
-**Fix:** start nginx in the production override, terminate TLS there (Let's
-Encrypt via certbot is free), and update `GOOGLE_OAUTH_REDIRECT_URI`,
-`GITHUB_CALLBACK_URL`, `APP_URL`, `FRONTEND_URL` and `CORS_ORIGINS` to the real
-HTTPS host.
-
-### 6. No resource limits, on a box that runs a language model
-
-Nothing declares `deploy.resources.limits`. `qwen2.5:3b` on CPU took **99
-seconds** for one article generation and will occupy a core for that whole time.
-The crawler, four Python services, Postgres, Redis and Qdrant share the same VM.
-Without limits, a crawl of a large site and a drafting slot firing together can
-starve Postgres and take the API down with it.
-
-**Fix:** set memory and CPU limits per service, and size the VM for the model.
+Target architecture: a single Azure VM running Docker Compose, with Postgres,
+Redis, Qdrant, Ollama and nginx as containers. No managed Azure services are
+required and nothing here introduces a paid dependency — Let's Encrypt, Ollama
+and every datastore are free and self-hosted.
 
 ---
 
-## Ready as-is
+## The structural change
 
-| Area | State |
+`docker-compose.yml` **is now the production file.** The development
+conveniences — source bind mounts, `--reload`, published database ports, using
+the host's Ollama — live in `docker-compose.override.yml`, which Docker Compose
+loads automatically when it sits beside the base file.
+
+```bash
+docker compose up -d                        # local: base + override, unchanged
+docker compose -f docker-compose.yml up -d  # production: base only
+```
+
+This inversion is the point. Previously one file carried `--reload`,
+`./backend:/app` and open database ports, and "production" was whatever someone
+remembered to change by hand. Now the artefact you deploy is correct when nobody
+remembers anything, and the unsafe settings have to be opted into.
+
+An overlay file could not have done this: Compose **merges** volume lists rather
+than replacing them, so `volumes: []` in an override does not remove a bind
+mount from the base. Verified by experiment before restructuring.
+
+---
+
+## The six blockers, and what fixed them
+
+### 1. `--reload` in the backend command — FIXED
+
+Production now runs `uvicorn ... --workers ${UVICORN_WORKERS:-4}`. The reload
+supervisor exists only in the development override.
+
+**Verified:** `--reload` appears 0 times in the production render, once in the
+development render.
+
+### 2. Source bind-mounted over the image on five services — FIXED
+
+`./backend:/app` is gone from the base file entirely. The image is the unit of
+deployment: what runs is what was built and tested, not whatever is in the
+working directory on the VM.
+
+**Verified:** 0 bind mounts of the source tree in the production render.
+
+### 3. Postgres, Redis and Qdrant published to the internet — FIXED
+
+No `ports:` on any datastore in the base file. They are reachable on the compose
+network by the services that need them and by nothing else.
+
+`POSTGRES_PASSWORD` no longer has a default. The old `seoagent_password`
+fallback meant every deployment that forgot to set it shipped with a known
+password; it is now a required variable and Compose refuses to start without it.
+
+**Verified:** the production render publishes exactly two ports — **80 and
+443**. The development render still publishes 8000/3000/5432/6379/6333/6334, now
+bound to `127.0.0.1` rather than `0.0.0.0`, because a laptop on café Wi-Fi is
+exactly where an open database goes wrong.
+
+### 4. No Ollama service and no persistent model volume — FIXED
+
+Added an `ollama` service on a named `ollama_models` volume, plus a one-shot
+`ollama-init` that runs `ollama pull` (a no-op once the model is on the volume,
+so it is safe on every restart). Without this a fresh VM had neither Ollama nor
+a model, and every content feature was gated from first boot.
+
+In development the two services sit behind a `container-ollama` profile, because
+a developer already has Ollama on the host with models pulled, and a second
+1.9 GB copy serves no purpose.
+
+### 5. No TLS, and nginx behind a profile — FIXED (one manual step remains)
+
+nginx is no longer profile-gated: it starts with the stack and is the only thing
+facing the internet. Port 80 serves the ACME challenge, and `certbot-issue` /
+`certbot-renew` services are provided under a `tls` profile.
+
+The 443 server block ships as `nginx/conf.d/seo-agent-ssl.conf.disabled`.
+nginx refuses to start if a server block references certificates that do not
+exist, so shipping it enabled would mean a fresh VM comes up with no web server
+at all. Enabling it is a rename, documented in that file.
+
+**This is the one step that cannot be completed from here**: issuing a
+certificate requires a real domain with DNS pointed at the VM.
+
+### 6. No resource limits — FIXED
+
+Every service declares `deploy.resources.limits`, all variable-driven so they
+can be tuned per VM. Ollama gets the largest share (4 CPU / 8 GB by default)
+because generation is the heaviest thing on the box — a measured article took
+**99 seconds** on CPU and holds a core throughout. Without limits, a large crawl
+and a drafting slot firing together could starve Postgres and take the API down.
+
+**Verified:** 10 services carry limits in the production render.
+
+---
+
+## Verified after the change
+
+| Check | Result |
 |---|---|
-| Migrations | `alembic upgrade head` runs on backend start; verified to 0045, single head |
-| Restart behaviour | `restart: unless-stopped` on all 8 services; schedules survived a restart (12 before, 12 after) |
-| Health checks | 7 of 8 services declare one |
-| Data persistence | Named volumes for `postgres_data`, `redis_data`, `qdrant_data` |
-| Secrets | No literal secrets in `docker-compose.yml`; all `${VAR}` references |
-| Scheduler | Starts by default, survives a failed tick, idempotent provisioning |
-| Free-only | No paid API anywhere; GSC, PageSpeed and Ollama are the only externals |
-| Logging | Structured (`structlog`) to stdout, which is what a container should do |
+| Production config parses | valid |
+| Production published ports | **80, 443 only** |
+| `--reload` in production | 0 occurrences |
+| Source bind mounts in production | 0 |
+| Resource limits | 10 services |
+| nginx profile-gated | no |
+| Ollama service + named volume | present |
+| **Development stack still works** | 8/8 containers healthy, API 200, Ollama reachable at `host.docker.internal`, model present |
+
+The last row matters most: the restructure must not have cost anything locally,
+and it did not. `docker compose up -d` behaves exactly as before.
 
 ---
 
 ## Sizing
 
-Minimum for the full stack **including** a local model:
-
-- **8 vCPU / 16 GB RAM** (Standard_D8s_v5 or similar). A 3B model on CPU is the
-  constraint; 4 vCPU works but a drafting slot will saturate it.
-- **128 GB** premium SSD — Postgres, Qdrant vectors, crawl data and ~2 GB of
-  model weights.
-- A GPU VM would cut generation from ~99s to a few seconds, but is not required
-  and costs considerably more.
+- **8 vCPU / 16 GB RAM** (Standard_D8s_v5 or similar). The 3B model on CPU is
+  the constraint; 4 vCPU works but a drafting slot will saturate it.
+- **128 GB** premium SSD — Postgres, Qdrant vectors, crawl data, ~2 GB of model
+  weights.
+- A GPU VM cuts generation from ~99s to seconds but is not required.
 
 ---
 
-## Before the first deploy
+## Deploying
 
-1. Add `docker-compose.prod.yml` overriding: no `--reload`, no bind mounts, no
-   published database ports, nginx on, resource limits.
-2. Provision Ollama and pre-pull `qwen2.5:3b` onto a persistent volume.
-3. Generate real values for `AUTH_SECRET`, `GSC_TOKEN_ENCRYPTION_KEY`,
-   `POSTGRES_PASSWORD`, `SCHEDULER_INTERNAL_API_KEY`.
-4. Point the OAuth redirect URIs at the HTTPS host and re-consent Google.
-5. Set `APP_ENV=production`, `APP_DEBUG=false`, `LOG_LEVEL=INFO`.
-6. Decide `SCHEDULER_INTERVAL_SECONDS` for real traffic — 900 is reasonable; it
-   is not a load concern since the tick is cheap when nothing is due.
-7. Back up `postgres_data`. Nothing else in the stack is irreplaceable.
+```bash
+# 1. On the VM, with the repo cloned and .env filled in:
+cp .env.example .env            # then set real values — see below
+docker compose -f docker-compose.yml up -d
 
-None of the above requires a paid service beyond the VM itself.
+# 2. Issue a certificate (needs DNS pointing at this VM, ports 80/443 open):
+docker compose -f docker-compose.yml --profile tls run --rm certbot-issue
+
+# 3. Enable TLS:
+#    - replace your-domain.example in nginx/conf.d/seo-agent-ssl.conf.disabled
+#    - rename it to seo-agent-ssl.conf
+#    - uncomment the redirect block in nginx/conf.d/seo-agent.conf
+docker compose -f docker-compose.yml restart nginx
+docker compose -f docker-compose.yml --profile tls up -d certbot-renew
+```
+
+Values that must be set before the first deploy:
+
+- `POSTGRES_PASSWORD` — required, no default
+- `AUTH_SECRET`, `GUEST_SESSION_SECRET`, `GSC_TOKEN_ENCRYPTION_KEY`,
+  `SCHEDULER_INTERNAL_API_KEY` — generate fresh
+- `TLS_DOMAIN`, `TLS_EMAIL`
+- `APP_URL`, `FRONTEND_URL`, `CORS_ORIGINS`, `GOOGLE_OAUTH_REDIRECT_URI`,
+  `GITHUB_CALLBACK_URL` — the `https://` host. OAuth redirect URIs must match
+  exactly and Google will not accept `http://` for a public hostname, so Google
+  must be re-consented after the move.
+- `APP_ENV=production`, `APP_DEBUG=false`, `LOG_LEVEL=INFO`
+
+Back up `postgres_data`. Nothing else in the stack is irreplaceable — Qdrant
+vectors and the Ollama model can both be rebuilt.
+
+---
+
+## Still true, and worth knowing
+
+- **Generation is CPU-bound at ~99 seconds per article.** Functional, slow.
+  Only a GPU changes this.
+- **The Azure NSG still has to be right.** Nothing in the compose file publishes
+  a datastore any more, so a misconfigured NSG no longer exposes the database —
+  but 22/80/443 are still the only ports that should be open.
+- **No automated backups.** `postgres_data` is a local volume; a VM-level
+  snapshot or a `pg_dump` cron is still your responsibility.

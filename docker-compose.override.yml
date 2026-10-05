@@ -1,0 +1,99 @@
+# Development conveniences. Loaded AUTOMATICALLY by `docker compose up -d`.
+#
+# Everything unsafe for production lives here and nowhere else: source bind
+# mounts, --reload, published database ports, and reaching Ollama on the host
+# instead of running it as a service.
+#
+# To deploy, skip this file explicitly:
+#
+#   docker compose -f docker-compose.yml up -d
+#
+# Keep it that way round. When the safe configuration is the default, forgetting
+# a flag gives you a slow deployment, not an exposed database.
+
+services:
+  # Published on loopback only. Even in development there is no reason for a
+  # database to be reachable from the local network, and a laptop on a café
+  # Wi-Fi is exactly where that goes wrong.
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+
+  qdrant:
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+
+  # A developer already has Ollama installed on the host with models pulled, so
+  # running a second copy in a container would download another 1.9 GB to do the
+  # same job. These two stay out of the way unless explicitly started.
+  ollama:
+    profiles:
+      - container-ollama
+
+  ollama-init:
+    profiles:
+      - container-ollama
+
+  backend:
+    environment:
+      # Back to the host's Ollama. host.docker.internal:host-gateway is mapped
+      # in the base file, so this also works on Linux.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      # Live code, so an edit is visible without a rebuild.
+      - ./backend:/app
+      # Anonymous volume so the container's bytecode cache does not land in the
+      # working directory and confuse the host's interpreter.
+      - /app/__pycache__
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+
+  scheduler:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+
+  crawl-worker:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+
+  crawl-worker-2:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+
+  frontend:
+    build:
+      args:
+        # Development hits the backend directly rather than through nginx.
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+  # nginx is not wanted locally: the frontend and backend are already published
+  # on their own ports, and binding 80 tends to collide with something else.
+  nginx:
+    profiles:
+      - proxy
