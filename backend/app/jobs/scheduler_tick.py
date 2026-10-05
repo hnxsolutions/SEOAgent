@@ -55,6 +55,23 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     except Exception:  # pragma: no cover - defensive; never break the tick
         payload["deployments_polled"] = 0
 
+    # Master orchestration: snapshot every project's health and detect what
+    # changed since the last snapshot. SeoOperationsEngine.monitor_all already
+    # existed and was reachable only from an authenticated HTTP endpoint, which
+    # meant the "24x7 autonomous" engine ran exactly when a human clicked. It is
+    # idempotent per project per day, so running it every tick is safe.
+    try:
+        from app.core.database import get_db_session
+        from app.services.seo_operations import SeoOperationsEngine
+
+        db3 = get_db_session()
+        try:
+            payload["operations_monitored"] = await SeoOperationsEngine(db3).monitor_all(None)
+        finally:
+            await db3.close()
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["operations_monitored"] = None
+
     # Autonomous daily executive briefing (one per project per day; upsert-safe).
     from app.jobs.briefing_jobs import generate_daily_briefings_background
 

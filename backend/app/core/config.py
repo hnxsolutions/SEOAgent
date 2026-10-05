@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     # pipeline (crawl -> audit -> semantic -> content -> planner) in the
     # background so the user does not have to click "Run SEO Analysis".
     AUTO_RUN_SEO_ON_PROJECT_CREATE: bool = True
+    # Autonomy: give a new project its recurring cadence (daily GSC + health,
+    # weekly audit/scan/linking/performance, monthly strategy, plus drafting
+    # slots) the moment it is created. Idempotent; see schedule_provisioning.
+    AUTO_PROVISION_SCHEDULES_ON_PROJECT_CREATE: bool = True
+    # Articles drafted per week by default. Each one is its own weekly schedule
+    # on a different weekday, so the cadence is visible as rows, not as a count.
+    DEFAULT_BLOGS_PER_WEEK: int = 2
+    # Pages the recurring/one-click SEO run crawls. The crawler itself supports
+    # up to 10,000; this is the default working set, not a hard ceiling.
+    SEO_RUN_MAX_PAGES: int = 100
+    # How deep a monthly deep audit goes, when it is worth paying for the time.
+    SEO_DEEP_RUN_MAX_PAGES: int = 1000
     # Durable background queue (RQ over the existing seo_queue + worker). When
     # enabled, background jobs are enqueued instead of run in-process; the caller
     # falls back to BackgroundTasks if the queue is unavailable.

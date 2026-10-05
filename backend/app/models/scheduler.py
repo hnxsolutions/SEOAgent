@@ -11,12 +11,28 @@ from app.core.database import Base
 
 
 class SeoScheduleType(str, enum.Enum):
+    """Every recurring job the autonomous agent can run for one project.
+
+    The first six predate autonomous provisioning and are unchanged. The rest
+    were added so that adding a domain is genuinely the last manual step: the
+    agent now schedules its own health monitoring, content research, drafting,
+    performance review and refresh detection rather than waiting to be asked.
+    """
+
     daily_gsc_sync = "daily_gsc_sync"
     weekly_full_seo = "weekly_full_seo"
     weekly_blog_planning = "weekly_blog_planning"
     weekly_repo_scan = "weekly_repo_scan"
     weekly_indexing_monitor = "weekly_indexing_monitor"
     monthly_deep_audit = "monthly_deep_audit"
+
+    # --- autonomous additions -------------------------------------------
+    daily_health_monitor = "daily_health_monitor"
+    content_opportunity_scan = "content_opportunity_scan"
+    blog_generation = "blog_generation"
+    weekly_content_performance = "weekly_content_performance"
+    weekly_internal_link_scan = "weekly_internal_link_scan"
+    monthly_content_strategy = "monthly_content_strategy"
 
 
 class SeoScheduleFrequency(str, enum.Enum):

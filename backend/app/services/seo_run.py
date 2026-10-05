@@ -70,7 +70,19 @@ class SeoRunService:
     async def list_runs(self, project_id: UUID, tenant_id: UUID, limit: int = 25, offset: int = 0) -> list[SeoRun]:
         return await self.repository.list_runs(project_id, tenant_id, limit=limit, offset=offset)
 
-    async def execute_run(self, run_id: UUID, tenant_id: UUID) -> SeoRun:
+    async def execute_run(
+        self,
+        run_id: UUID,
+        tenant_id: UUID,
+        *,
+        max_pages: Optional[int] = None,
+    ) -> SeoRun:
+        """Run the pipeline.
+
+        `max_pages` lets a deep monthly audit reach further than the weekly one
+        without a second code path; omitted, it falls back to
+        ``SEO_RUN_MAX_PAGES``.
+        """
         run = await self.repository.get_run(run_id, tenant_id)
         if not run:
             raise ValueError("SEO run not found")
@@ -84,7 +96,7 @@ class SeoRunService:
             if not project:
                 raise ValueError("Project not found")
 
-            crawl = await self._run_crawl(run, project.domain, tenant_id)
+            crawl = await self._run_crawl(run, project.domain, tenant_id, max_pages=max_pages)
             current_stage = SeoRunStage.audit
             audit = await self._run_audit(run, crawl.id, tenant_id)
             current_stage = SeoRunStage.semantic_index
@@ -110,7 +122,30 @@ class SeoRunService:
         except Exception as exc:
             return await self._fail_run(run_id, tenant_id, current_stage, exc)
 
-    async def _run_crawl(self, run: SeoRun, project_domain: str, tenant_id: UUID):
+    async def _run_crawl(
+        self,
+        run: SeoRun,
+        project_domain: str,
+        tenant_id: UUID,
+        *,
+        max_pages: Optional[int] = None,
+    ):
+        """Crawl the site.
+
+        The page budget was hardcoded at 5 — a demo setting that shipped as the
+        production default, so every audit, every planner task and every content
+        gap on a real site was computed from five pages. It is now configurable
+        and defaults to ``SEO_RUN_MAX_PAGES``.
+
+        `respect_robots_txt` is on. It was off, which is indefensible for an
+        agent that crawls other people's sites on a schedule — and a crawler
+        that ignores robots.txt will eventually get the product blocked.
+        """
+        from app.core.config import settings
+
+        budget = int(max_pages or settings.SEO_RUN_MAX_PAGES)
+        budget = max(1, min(budget, 10000))
+
         await self._set_stage(run, SeoRunStage.crawl, SeoRunStageStatus.running)
         crawl_service = self.crawl_service_factory(self.db)
         crawl = await crawl_service.create_crawl_job(
@@ -119,10 +154,12 @@ class SeoRunService:
             project_id=run.project_id,
             name=f"SEO run {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
             priority=CrawlPriority.normal,
-            max_pages=5,
-            depth=1,
+            max_pages=budget,
+            # Deep enough to reach a service or blog page from the homepage;
+            # depth 1 only ever saw the homepage's direct links.
+            depth=3,
             render_javascript=False,
-            respect_robots_txt=False,
+            respect_robots_txt=True,
         )
         await self.repository.attach_ids(run, crawl_id=crawl.id)
         await self.db.commit()

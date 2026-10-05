@@ -201,19 +201,29 @@ class SeoOperationsEngine:
         return {"snapshot_id": str(snapshot.id), "overall": health.get("overall"),
                 "changes": changes, "changed": len(changes)}
 
-    async def monitor_all(self, tenant_id: UUID) -> Dict[str, Any]:
-        """Multi-project daily monitoring — each project independent/isolated."""
-        projects = (await self.db.execute(
-            select(Project).where(Project.tenant_id == tenant_id, Project.is_active.is_(True))
-        )).scalars().all()
+    async def monitor_all(self, tenant_id: Optional[UUID] = None) -> Dict[str, Any]:
+        """Multi-project daily monitoring — each project independent/isolated.
+
+        `tenant_id=None` monitors every active project across every tenant, which
+        is what the scheduler tick needs: it runs as the system, not as a signed-in
+        user. Each project keeps its own tenant_id, so isolation is unchanged —
+        only the selection is widened. The API route still passes a tenant.
+        """
+        query = select(Project).where(Project.is_active.is_(True))
+        if tenant_id is not None:
+            query = query.where(Project.tenant_id == tenant_id)
+        projects = (await self.db.execute(query)).scalars().all()
         ran = 0
+        failed = 0
         for p in projects:
             try:
-                await self.monitor(p.id, tenant_id)
+                # Always the project's own tenant, never the caller's.
+                await self.monitor(p.id, p.tenant_id)
                 ran += 1
             except Exception as exc:
+                failed += 1
                 logger.warning("ops_monitor_project_failed", project_id=str(p.id), error=str(exc))
-        return {"projects_monitored": ran}
+        return {"projects_monitored": ran, "projects_failed": failed}
 
     async def changes(self, project_id: UUID, tenant_id: UUID) -> List[Dict[str, Any]]:
         snaps = (await self.db.execute(

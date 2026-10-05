@@ -154,10 +154,14 @@ services:
         condition: service_healthy
     networks:
       - seo-agent-network
-    profiles:
-      - scheduler
+    # No profile: the autonomous loop is the product, so `docker compose up -d`
+    # must start it. It was profile-gated, which meant every default deployment
+    # ran with the agent's heartbeat switched off — schedules existed and were
+    # never executed. Set SCHEDULER_ENABLED=false to opt out instead.
     command: >
-      sh -c "while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50}; sleep ${SCHEDULER_INTERVAL_SECONDS:-3600}; done"
+      sh -c "if [ \"${SCHEDULER_ENABLED:-true}\" != \"true\" ]; then echo 'scheduler disabled via SCHEDULER_ENABLED'; sleep infinity; fi;
+      while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50} || echo 'tick failed; continuing';
+      sleep ${SCHEDULER_INTERVAL_SECONDS:-900}; done"
     restart: unless-stopped
     healthcheck:
       disable: true
