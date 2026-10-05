@@ -107,6 +107,13 @@ import type {
   SEOIssueListResponse,
   UUID,
   WeeklyReport,
+  ContentEngineOverview,
+  ContentOpportunity,
+  ContentSlot,
+  ContentClusterView,
+  ContentPerformanceView,
+  WebsiteProfileView,
+  RefreshProposalView,
 } from '@/types/dashboard';
 
 type Envelope<T, K extends string> = Record<K, T[]> & {
@@ -490,6 +497,57 @@ export const dashboardApi = {
     timeline: (projectId: UUID) =>
       unwrap<{ timeline: OpsTimelineEntry[] }>(api.get(`/operations/projects/${projectId}/timeline`)),
     overview: () => unwrap<OpsOverview>(api.get('/operations/overview')),
+  },
+
+  contentEngine: {
+    overview: (projectId: UUID) =>
+      unwrap<ContentEngineOverview>(api.get(`/content-engine/projects/${projectId}/overview`)),
+    opportunities: (projectId: UUID) =>
+      unwrap<{ topics: ContentOpportunity[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/opportunities`),
+      ),
+    scan: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/scan-opportunities`),
+      ),
+    calendar: (projectId: UUID) =>
+      unwrap<{ slots: ContentSlot[]; blogs_per_week: number }>(
+        api.get(`/content-engine/projects/${projectId}/calendar`),
+      ),
+    setCadence: (projectId: UUID, count: number) =>
+      unwrap<Record<string, unknown>>(
+        api.put(`/content-engine/projects/${projectId}/blogs-per-week`, null, { params: { count } }),
+      ),
+    draftNext: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(api.post(`/content-engine/projects/${projectId}/draft-next`)),
+    clusters: (projectId: UUID) =>
+      unwrap<{ clusters: ContentClusterView[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/clusters`),
+      ),
+    rebuildClusters: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/clusters/rebuild`),
+      ),
+    profile: (projectId: UUID) =>
+      unwrap<WebsiteProfileView>(api.get(`/content-engine/projects/${projectId}/profile`)),
+    buildProfile: (projectId: UUID, force = false) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/profile/build`, null, { params: { force } }),
+      ),
+    refreshProposals: (projectId: UUID) =>
+      unwrap<{ proposals: RefreshProposalView[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/refresh-proposals`),
+      ),
+    actOnProposal: (proposalId: UUID, action: string, reason?: string) =>
+      unwrap<RefreshProposalView>(
+        api.post(`/content-engine/refresh-proposals/${proposalId}/${action}`, null, {
+          params: reason ? { reason } : undefined,
+        }),
+      ),
+    performance: (projectId: UUID) =>
+      unwrap<ContentPerformanceView>(
+        api.get(`/content-engine/projects/${projectId}/content-performance`),
+      ),
   },
 
   growth: {

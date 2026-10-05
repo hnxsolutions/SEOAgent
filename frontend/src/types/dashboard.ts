@@ -1928,3 +1928,115 @@ export type QueueStats = {
   worker_count?: number;
   dead_letter?: number;
 };
+
+/* -------------------------------------------------------------------------- */
+/* Autonomous content engine                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** A field the agent knows, and how it came to know it. */
+export interface ProfileField<T = unknown> {
+  value: T;
+  /** 'user' = stated by the owner, 'inferred' = the agent's reading, 'unknown' = neither. */
+  source: 'user' | 'inferred' | 'unknown';
+  confirmed: boolean;
+  confidence: number | null;
+  evidence: string | null;
+}
+
+export interface WebsiteProfileView {
+  available: boolean;
+  reason?: string;
+  profile_id?: string;
+  version?: number;
+  confidence?: number;
+  used_llm?: string;
+  generated_at?: string | null;
+  fields?: Record<string, ProfileField>;
+  important_pages?: { url: string; title: string; role: string }[];
+}
+
+export interface ContentOpportunity {
+  id: string;
+  title: string;
+  target_keyword: string;
+  search_intent: string;
+  /** 0-100. Deliberately NOT search volume, which is not measurable for free. */
+  opportunity_score: number;
+  reason: string | null;
+  status: string;
+  created_at: string | null;
+}
+
+export interface ContentSlot {
+  day: string;
+  day_of_week: number;
+  hour: number;
+  next_run_at: string | null;
+  topic: string | null;
+  status: string;
+  enabled: boolean;
+}
+
+export interface ContentClusterNodeView {
+  id: string;
+  title: string;
+  status: string;
+  target_query: string | null;
+  url: string | null;
+  priority_score: number;
+  reason: string | null;
+}
+
+export interface ContentClusterView {
+  id: string;
+  name: string;
+  pillar_topic: string;
+  coverage: number;
+  priority_score: number;
+  node_count: number;
+  missing_count: number;
+  nodes: Record<string, ContentClusterNodeView[]>;
+}
+
+export interface RefreshProposalView {
+  id: string;
+  title: string;
+  page_url: string | null;
+  blog_draft_id: string | null;
+  reason: string;
+  status: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  proposed_changes: { section: string; action: string; why: string }[];
+  priority: number;
+  detected_at: string | null;
+  approved_at: string | null;
+  reviewed_by: string | null;
+  rejection_reason: string | null;
+  next_actions: string[];
+}
+
+export interface ContentPerformanceView {
+  status: string;
+  articles: number;
+  measured: number;
+  classifications: Record<string, number>;
+  refresh_proposals: Record<string, unknown>[];
+  note: string;
+}
+
+export interface ContentEngineOverview {
+  blogs_per_week: number;
+  topics_waiting: number;
+  drafts: number;
+  pending_approval: number;
+  published: number;
+  refresh_pending: number;
+  clusters: number;
+  cluster_gaps: number;
+  next_slot: { day: string; next_run_at: string | null } | null;
+  top_opportunity: { title: string; opportunity_score: number } | null;
+  profile_available: boolean;
+  /** Always unmeasured without a provider; the UI must show "Not measured". */
+  ai_visibility: { available: boolean; reason: string };
+}
