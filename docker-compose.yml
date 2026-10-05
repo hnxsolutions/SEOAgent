@@ -72,6 +72,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in this network. `localhost` inside a
+      # container is the container itself, so the default from .env made the
+      # model unreachable from every service that needed it — silently.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
       SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
@@ -80,6 +86,8 @@ services:
       - /app/__pycache__
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,12 +114,20 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in this network. `localhost` inside a
+      # container is the container itself, so the default from .env made the
+      # model unreachable from every service that needed it — silently.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
       SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
     volumes:
       - ./backend:/app
       - /app/__pycache__
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,12 +155,20 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in this network. `localhost` inside a
+      # container is the container itself, so the default from .env made the
+      # model unreachable from every service that needed it — silently.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
       SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
     volumes:
       - ./backend:/app
       - /app/__pycache__
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,6 +203,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in this network. `localhost` inside a
+      # container is the container itself, so the default from .env made the
+      # model unreachable from every service that needed it — silently.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       # Crawler-specific settings
       CRAWLER_MAX_CONCURRENT_PAGES: ${CRAWLER_MAX_CONCURRENT_PAGES:-5}
       CRAWLER_REQUEST_TIMEOUT: ${CRAWLER_REQUEST_TIMEOUT:-30}
@@ -188,6 +218,8 @@ services:
     volumes:
       - ./backend:/app
       - /app/__pycache__
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -214,6 +246,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in this network. `localhost` inside a
+      # container is the container itself, so the default from .env made the
+      # model unreachable from every service that needed it — silently.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       CRAWLER_MAX_CONCURRENT_PAGES: ${CRAWLER_MAX_CONCURRENT_PAGES:-5}
       CRAWLER_REQUEST_TIMEOUT: ${CRAWLER_REQUEST_TIMEOUT:-30}
       CRAWLER_RENDER_JAVASCRIPT: ${CRAWLER_RENDER_JAVASCRIPT:-true}
@@ -222,6 +260,8 @@ services:
     volumes:
       - ./backend:/app
       - /app/__pycache__
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

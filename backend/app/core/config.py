@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     CORS_ORIGINS: Any = ["http://localhost:3000", "http://127.0.0.1:3000"]
     
     # Local Ollama connector only; the app must stay self-hosted.
+    # Which local model backend serves generation. Only "ollama" ships; the
+    # setting exists so a self-hosted alternative can be swapped in without a
+    # code change. There is deliberately no paid fallback — if the local model
+    # is down, content work waits rather than silently costing money.
+    LLM_PROVIDER: str = "ollama"
+    # `localhost` is correct only when the backend runs on the same host as
+    # Ollama. In Docker it means the container itself, so compose overrides this
+    # with host.docker.internal; see the OLLAMA_BASE_URL note in docker-compose.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_DEFAULT_MODEL: str = "qwen2.5:3b"
     OLLAMA_TIMEOUT_SECONDS: float = 60.0

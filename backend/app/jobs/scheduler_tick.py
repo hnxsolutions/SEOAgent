@@ -44,7 +44,10 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     # no-op when no provider tokens are configured). Verification is only
     # accelerated once a deployment reaches Ready, never mid-deploy.
     try:
-        from app.core.database import get_db_session
+        # NB: `get_db_session` is imported at module scope on purpose. Importing
+        # it again here would rebind it as a local for the whole function and
+        # make the `async with get_db_session()` above raise UnboundLocalError —
+        # which is exactly what it did, silently, on every tick.
         from app.services.deployment import DeploymentEngine
 
         db2 = get_db_session()
@@ -61,7 +64,6 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     # meant the "24x7 autonomous" engine ran exactly when a human clicked. It is
     # idempotent per project per day, so running it every tick is safe.
     try:
-        from app.core.database import get_db_session
         from app.services.seo_operations import SeoOperationsEngine
 
         db3 = get_db_session()
