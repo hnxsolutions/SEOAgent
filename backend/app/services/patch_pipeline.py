@@ -35,7 +35,7 @@ from app.models.project import Project
 from app.models.repo_agent import RepoConnection
 from app.repo_agent.architecture import RepoArchitectureDetector
 from app.repo_agent.git_ops import GitCommandError, GitCommandRunner, ValidationRunner
-from app.repo_agent.scanner import resolve_repo_root, safe_child_path
+from app.repo_agent.scanner import repo_relative, resolve_repo_root, safe_child_path
 
 logger = structlog.get_logger(__name__)
 
@@ -43,8 +43,8 @@ logger = structlog.get_logger(__name__)
 class PatchPipelineService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.git = GitCommandRunner()
-        self.validation = ValidationRunner()
+        self.git = GitCommandRunner(autocrlf=settings.REPO_AGENT_GIT_AUTOCRLF)
+        self.validation = ValidationRunner(settings.REPO_AGENT_VALIDATION_TIMEOUT_SECONDS)
         self.safety = RepoArchitectureDetector()
 
     # -- entry --------------------------------------------------------------
@@ -185,7 +185,12 @@ class PatchPipelineService:
         try:
             self.git.add(root, applied_paths)
             pipeline.diff_summary = (self.git.diff_summary(root) or "")[:4000]
-            commit = self.git.commit(root, "SEO Agent: apply framework-safe SEO patches")
+            commit = self.git.commit(
+                root,
+                "SEO Agent: apply framework-safe SEO patches",
+                author_name=settings.REPO_AGENT_COMMIT_NAME,
+                author_email=settings.REPO_AGENT_COMMIT_EMAIL,
+            )
             if commit.returncode != 0:
                 raise GitCommandError(f"git commit failed: {commit.output}")
             pipeline.commit_sha = self.git.commit_sha(root)
@@ -260,13 +265,14 @@ class PatchPipelineService:
 
     @staticmethod
     def _resolve_target(root: Path, target_file: str) -> str:
-        """Strip parenthetical hints and map app/ -> src/app/ when the repo uses src/."""
+        """Strip parenthetical hints, then map the app/ prefix to the real one.
+
+        The app/ vs src/app/ mapping now lives in the scanner as
+        `repo_relative`, so this pipeline, the repo scanner and the architecture
+        detector cannot drift apart on where a repository keeps its routes.
+        """
         rel = target_file.split(" (")[0].strip().lstrip("/")
-        if rel.startswith("app/") and not (root / "app").exists() and (root / "src" / "app").exists():
-            return "src/" + rel
-        if rel.startswith("src/") and not (root / "src").exists() and (root / rel[4:]).parent.exists():
-            return rel[4:]
-        return rel
+        return repo_relative(root, rel)
 
     def _rollback(self, root: Path, connection) -> None:
         """Revert the working tree to the base branch — never leave partial edits."""
@@ -292,7 +298,12 @@ class PatchPipelineService:
             from app.repo_agent.git_ops import GitHubClient
 
             # Push the branch, then open a draft PR via the reused GitHub client.
-            push = self.git.push_branch(root, pipeline.branch_name)
+            push = self.git.push_branch(
+                root,
+                pipeline.branch_name,
+                token=settings.GITHUB_TOKEN,
+                username=settings.GITHUB_TOKEN_USERNAME,
+            )
             if push.returncode != 0:
                 raise GitCommandError(f"git push failed: {push.output}")
             client = GitHubClient()

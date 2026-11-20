@@ -9,6 +9,7 @@ from app.models.content_optimization import ContentOptimizationSuggestionType
 from app.models.planner import SeoTaskPriority, SeoTaskType
 from app.models.repo_agent import (
     RepoConnectionStatus,
+    RepoFilePurpose,
     RepoProvider,
     RepoScanRunStatus,
     SeoCodeIssueSource,
@@ -17,6 +18,7 @@ from app.models.repo_agent import (
     SeoCodePatchStatus,
 )
 from app.models.search_console import SearchConsoleOpportunityType
+from app.repo_agent.scanner import label_from_route, repo_relative
 from app.services.repo_agent import RepoAgentService
 
 
@@ -342,3 +344,123 @@ async def test_patch_approval_rejection_flow(tmp_path):
     rejected = await service.update_patch_status(patches[0].id, tenant_id, SeoCodePatchStatus.rejected)
 
     assert rejected.status == SeoCodePatchStatus.rejected
+
+
+def test_canonical_and_label_ignore_the_src_app_prefix():
+    """A src/-based repo must canonicalise to /company, not /src/app/company."""
+    service = RepoAgentService(FakeDB())
+
+    assert (
+        service._canonical_for_file("src/app/company/page.tsx", "https://example.com")
+        == "https://example.com/company"
+    )
+    assert (
+        service._canonical_for_file("app/company/page.tsx", "https://example.com")
+        == "https://example.com/company"
+    )
+    # Either root layout canonicalises to the site root.
+    assert (
+        service._canonical_for_file("src/app/layout.tsx", "https://example.com")
+        == "https://example.com"
+    )
+
+    assert label_from_route("src/app/company/page.tsx") == "Company"
+    assert label_from_route("app/company/page.tsx") == "Company"
+    assert label_from_route("src/app/layout.tsx", fallback="Website Page") == "Website Page"
+
+
+def test_sitemap_and_robots_patch_targets_follow_the_repository_layout(tmp_path):
+    """Patch targets must land in the app directory the repo actually uses."""
+    (tmp_path / "src" / "app").mkdir(parents=True)
+    assert repo_relative(tmp_path, "app/sitemap.ts") == "src/app/sitemap.ts"
+    assert repo_relative(tmp_path, "app/robots.ts") == "src/app/robots.ts"
+
+    root_based = tmp_path / "root-based"
+    (root_based / "app").mkdir(parents=True)
+    assert repo_relative(root_based, "app/sitemap.ts") == "app/sitemap.ts"
+    assert repo_relative(root_based, "src/app/robots.ts") == "app/robots.ts"
+
+
+def test_existing_sitemap_and_robots_review_zones_are_not_reported_missing():
+    """A review note about a file that exists is not a "missing artefact" issue."""
+    service = RepoAgentService(FakeDB())
+
+    for zone_type in ("sitemap_review", "robots_review"):
+        issue_type = service._architecture_issue_type({"zone_type": zone_type})
+        assert issue_type is not SeoCodeIssueType.missing_sitemap
+        assert issue_type is not SeoCodeIssueType.missing_robots
+        assert issue_type is not SeoCodeIssueType.route_not_in_sitemap
+
+    # A "create" zone still reports the artefact as missing.
+    assert (
+        service._architecture_issue_type({"zone_type": "robots_create"})
+        is SeoCodeIssueType.missing_robots
+    )
+    assert (
+        service._architecture_issue_type({"zone_type": "sitemap_create"})
+        is SeoCodeIssueType.route_not_in_sitemap
+    )
+
+
+def test_internal_paths_are_recognised_under_either_app_directory():
+    """The internal-route guard must not be bypassed by a src/ layout.
+
+    `_is_internal_patch_path` stripped only "app/", so src/app/admin/page.tsx
+    was read as the route "src/app/admin" whose first segment is "src" - not
+    internal - and an admin page could have been offered as a patch target.
+    """
+    service = RepoAgentService(FakeDB())
+
+    for internal in ("admin", "api", "_components", "dashboard"):
+        for prefix in ("app", "src/app"):
+            path = f"{prefix}/{internal}/page.tsx"
+            assert service._is_internal_patch_path(path) is True, path
+            nested = f"{prefix}/{internal}/settings/billing/page.tsx"
+            assert service._is_internal_patch_path(nested) is True, nested
+
+    # Ordinary marketing routes stay patchable under both layouts.
+    for public in ("app/company/page.tsx", "src/app/company/page.tsx", "src/app/page.tsx"):
+        assert service._is_internal_patch_path(public) is False, public
+
+
+def test_default_page_file_prefers_the_root_page_of_either_layout():
+    service = RepoAgentService(FakeDB())
+
+    def scanned(path, purpose=RepoFilePurpose.page):
+        return SimpleNamespace(file_path=path, detected_purpose=purpose)
+
+    src_files = [
+        scanned("src/app/company/page.tsx"),
+        scanned("src/app/layout.tsx", RepoFilePurpose.layout),
+        scanned("src/app/page.tsx"),
+    ]
+    assert service._default_page_file(src_files) == "src/app/page.tsx"
+
+    root_files = [scanned("app/company/page.tsx"), scanned("app/page.tsx")]
+    assert service._default_page_file(root_files) == "app/page.tsx"
+
+    # A root page wins over a root layout, and a layout is still better than
+    # an arbitrary inner page.
+    layout_only = [scanned("src/app/company/page.tsx"), scanned("src/app/layout.tsx", RepoFilePurpose.layout)]
+    assert service._default_page_file(layout_only) == "src/app/layout.tsx"
+
+
+def test_page_url_resolves_to_a_file_under_either_app_directory():
+    service = RepoAgentService(FakeDB())
+
+    def page(path):
+        return SimpleNamespace(file_path=path, detected_purpose=RepoFilePurpose.page, content="")
+
+    src_files = [page("src/app/page.tsx"), page("src/app/company/page.tsx")]
+    assert (
+        service._path_for_page_url("https://example.com/company", src_files)
+        == "src/app/company/page.tsx"
+    )
+    assert service._path_for_page_url("https://example.com/", src_files) == "src/app/page.tsx"
+
+    root_files = [page("app/page.tsx"), page("app/company/page.tsx")]
+    assert (
+        service._path_for_page_url("https://example.com/company", root_files)
+        == "app/company/page.tsx"
+    )
+    assert service._path_for_page_url("https://example.com/", root_files) == "app/page.tsx"

@@ -83,6 +83,31 @@ class ContentOptimizationRepository:
         )
         return list(result.scalars().all())
 
+    async def find_active_run(
+        self,
+        crawl_id: UUID,
+        tenant_id: UUID,
+    ) -> Optional[ContentOptimizationRun]:
+        """A generation for this crawl that has not finished, if there is one.
+
+        Used to stop a second run being started over the same pages. Both would
+        share one CPU-bound model, so neither finishes sooner, and they race to
+        write the same suggestions.
+        """
+        result = await self.db.execute(
+            select(ContentOptimizationRun)
+            .where(
+                ContentOptimizationRun.crawl_id == crawl_id,
+                ContentOptimizationRun.tenant_id == tenant_id,
+                ContentOptimizationRun.status.in_(
+                    [ContentOptimizationRunStatus.pending, ContentOptimizationRunStatus.running]
+                ),
+            )
+            .order_by(ContentOptimizationRun.created_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def create_run(self, crawl: CrawlJob, model: str) -> ContentOptimizationRun:
         run = ContentOptimizationRun(
             crawl_id=crawl.id,

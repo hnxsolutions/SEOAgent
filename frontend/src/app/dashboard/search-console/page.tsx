@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, ExternalLink, Play, RefreshCw, Save, Unplug } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Play, RefreshCw, Save, Unplug, UploadCloud } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
 import { extractApiError } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
-import type { UUID } from '@/types/dashboard';
+import type { GSCSubmitAllResult, UUID } from '@/types/dashboard';
 
 const allFilter = 'all';
 
@@ -163,6 +163,27 @@ export default function SearchConsolePage() {
     },
   });
 
+  const [submitAllResult, setSubmitAllResult] = useState<GSCSubmitAllResult | null>(null);
+
+  const submitAllMutation = useMutation({
+    mutationFn: () => dashboardApi.searchConsole.submitAll(projectId!),
+    onSuccess: async (result) => {
+      setSubmitAllResult(result);
+      setNotice(
+        result.status === 'blocked'
+          ? 'Nothing was submitted — see the details below.'
+          : result.status === 'partial'
+            ? 'Submitted to Search Console with some steps rejected.'
+            : 'Everything was submitted to Search Console.'
+      );
+      await invalidateSearchConsole(projectId, queryClient);
+    },
+    onError: (error) => {
+      setSubmitAllResult(null);
+      setNotice(error instanceof Error ? error.message : 'Submission could not be started.');
+    },
+  });
+
   const syncMutation = useMutation({
     mutationFn: () => dashboardApi.searchConsole.sync(projectId!),
     onSuccess: async (job) => {
@@ -255,16 +276,65 @@ export default function SearchConsolePage() {
           </Button>
           <Button
             type="button"
+            variant="outline"
             onClick={() => syncMutation.mutate()}
             disabled={syncMutation.isPending}
           >
             <Play className="mr-2 h-4 w-4" />
             Manual sync
           </Button>
+          {/* One action instead of four in a fixed order. It checks ownership
+              first, because Google refuses every write on an unverified
+              property and submitting blind returns one 403 per step with no
+              mention of verification. */}
+          <Button
+            type="button"
+            onClick={() => submitAllMutation.mutate()}
+            disabled={submitAllMutation.isPending || !projectId}
+          >
+            <UploadCloud className={`mr-2 h-4 w-4 ${submitAllMutation.isPending ? 'animate-pulse' : ''}`} />
+            {submitAllMutation.isPending ? 'Submitting…' : 'Submit everything to Google'}
+          </Button>
         </div>
       </div>
 
       <ActionNotice message={notice} />
+
+      {/* Per-step outcome. A blocked result explains the one precondition that
+          stopped everything; a partial one shows which step Google rejected
+          without hiding the steps that worked. */}
+      {submitAllResult ? (
+        <div
+          className={`rounded-lg border px-4 py-3 text-sm ${
+            submitAllResult.status === 'completed'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : submitAllResult.status === 'partial'
+                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                : 'border-rose-200 bg-rose-50 text-rose-900'
+          }`}
+        >
+          <p className="font-medium">
+            {submitAllResult.status === 'completed'
+              ? 'Submitted to Search Console'
+              : submitAllResult.status === 'partial'
+                ? 'Submitted, with some steps rejected'
+                : 'Nothing was submitted'}
+            {submitAllResult.site_url ? ` · ${submitAllResult.site_url}` : ''}
+          </p>
+          {submitAllResult.message ? <p className="mt-1">{submitAllResult.message}</p> : null}
+          {submitAllResult.steps.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {submitAllResult.steps.map((step) => (
+                <li key={step.step} className="flex gap-2">
+                  <span className="font-mono text-xs uppercase">{step.status}</span>
+                  <span>{formatLabel(step.step)}</span>
+                  {step.detail ? <span className="text-muted-foreground">— {step.detail}</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {unhealthyConnection ? (
         <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />

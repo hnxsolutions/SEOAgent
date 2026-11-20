@@ -184,7 +184,14 @@ export default function PlannerPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-slate-700">
-                  {run.tasks_created} tasks created, {run.high_priority_tasks} high priority
+                  {/* A planner run upserts: it refreshes findings that already
+                      have a task and creates one only for findings that do not.
+                      Showing just "0 tasks created" made a correct run over an
+                      unchanged site read as a run that did nothing. */}
+                  {run.tasks_created} new
+                  {run.tasks_refreshed ? `, ${run.tasks_refreshed} refreshed` : ''}
+                  {', '}
+                  {run.high_priority_tasks} high priority
                 </p>
                 {run.error_message ? (
                   <p className="mt-1 text-sm text-rose-700">{run.error_message}</p>

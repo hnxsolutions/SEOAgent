@@ -105,8 +105,13 @@ async def validate_draft(
     current_user: Annotated[dict, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """SEO and AEO scores for a draft, with the specific failures listed."""
-    await _require_project(db, project_id, _tenant_id(current_user))
+    """SEO and AEO scores for a draft, with the specific failures listed.
+
+    No `_require_project` call: this route is scoped to a draft, not a project,
+    and there is no project_id to check. Isolation is still enforced — the
+    service compares the draft's tenant_id and reports "Draft not found." for
+    anything belonging to someone else, which becomes the 404 below.
+    """
     result = await ContentEngineService(db).validate_draft(draft_id, _tenant_id(current_user))
     if result.get("seo_score") is None and "Draft not found." in (result.get("issues") or []):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found")

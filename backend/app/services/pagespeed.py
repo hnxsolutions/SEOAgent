@@ -7,6 +7,8 @@ of inventing numbers.
 """
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -21,6 +23,85 @@ from app.models.project import Project
 from app.pagespeed.parser import parse_pagespeed
 
 logger = structlog.get_logger(__name__)
+
+#: One retry, not more. A PSI analysis costs Google a full Lighthouse run and
+#: costs us up to a minute and a half of wall clock; hammering it turns a slow
+#: page into a very slow page. Measured failures split cleanly into transient
+#: (a retry succeeds) and structural (every attempt fails the same way), and a
+#: second attempt separates the two without a third adding anything.
+PAGESPEED_MAX_ATTEMPTS = 2
+
+#: Breathing room for the upstream before the second attempt.
+PAGESPEED_RETRY_BACKOFF_SECONDS = 5.0
+
+#: Lighthouse failure codes that mean "the analyser gave up", not "the site is
+#: broken". They arrive as HTTP 500 from PSI, which says nothing on its own.
+_LIGHTHOUSE_TIMEOUT_CODES = ("PROTOCOL_TIMEOUT", "TIMED_OUT", "NO_FCP")
+
+#: ...and the ones that mean Google could not load the page at all.
+_LIGHTHOUSE_FETCH_CODES = (
+    "ERRORED_DOCUMENT_REQUEST",
+    "FAILED_DOCUMENT_REQUEST",
+    "DNS_FAILURE",
+    "INVALID_URL",
+)
+
+
+def describe_upstream_error(status_code: int, body: str) -> str:
+    """Turn a PageSpeed failure into a sentence an operator can act on.
+
+    The raw body is a JSON envelope wrapping a Lighthouse error string. Printed
+    verbatim it fills the card with braces and quoted field names and tells the
+    reader nothing they can do about it — which is exactly what the dashboard
+    was showing. The distinction that matters is not the HTTP code but whether
+    Google could not *reach* the page or could not *finish analysing* it, so
+    that is what this says.
+    """
+    message = ""
+    try:
+        import json
+
+        message = str(json.loads(body).get("error", {}).get("message", ""))
+    except Exception:
+        message = body[:300]
+
+    upper = message.upper()
+
+    if any(code in upper for code in _LIGHTHOUSE_TIMEOUT_CODES):
+        return (
+            "Google's own analyser timed out on this page before it could finish. "
+            "That usually means the page is heavy enough to exhaust Lighthouse's "
+            "instrumentation budget — a very large stylesheet or script payload is "
+            "the common cause. Lighter pages on the same site normally still score. "
+            f"(Google reported: {message[:160]})"
+        )
+
+    if any(code in upper for code in _LIGHTHOUSE_FETCH_CODES):
+        return (
+            "Google could not load this page to analyse it. Check that the URL is "
+            "publicly reachable and is not blocking Google's fetcher. "
+            f"(Google reported: {message[:160]})"
+        )
+
+    return f"PageSpeed Insights could not analyse this page (HTTP {status_code}). {message[:240]}".strip()
+
+
+def describe_exception(exc: Exception, timeout_seconds: float) -> str:
+    """Name a transport failure that cannot name itself.
+
+    ``str()`` on an httpx timeout is the empty string, so the obvious
+    f-string produced "PageSpeed request failed: " — an error card with no
+    error in it, which is worse than no card at all because it looks like a
+    bug in the dashboard rather than a timeout.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"No response from the PageSpeed Insights API within {timeout_seconds:.0f}s. "
+            "A full analysis of a heavy page can legitimately take this long; "
+            "retrying usually succeeds."
+        )
+    detail = str(exc).strip()
+    return f"PageSpeed request failed: {type(exc).__name__}" + (f": {detail}" if detail else "")
 
 
 class PagespeedService:
@@ -39,27 +120,52 @@ class PagespeedService:
             raise ValueError("Project not found")
         url = self._project_url(project.domain)
         wanted = strategies or ["mobile", "desktop"]
+        timeout = float(settings.PAGESPEED_TIMEOUT_SECONDS)
+
+        # Mobile and desktop are independent analyses on Google's side, and this
+        # endpoint blocks the browser until both come back. Run one after the
+        # other they added up: two analyses that can each take two minutes meant
+        # a request nobody would wait out. Fetched together, the wait is the
+        # slower of the two rather than their sum.
+        #
+        # Only the HTTP calls overlap. The results are written one at a time
+        # below, because an AsyncSession is a single connection and driving it
+        # from concurrent tasks corrupts its state.
+        results = await asyncio.gather(
+            *(self._fetch_with_retry(url, strat, timeout) for strat in wanted)
+        )
+
         runs: List[PagespeedRun] = []
-        for strat in wanted:
-            runs.append(await self._analyze_one(project, tenant_id, url, strat))
+        for strat, (resp, exc) in zip(wanted, results):
+            runs.append(await self._persist_run(project, tenant_id, url, strat, resp, exc, timeout))
         return runs
 
-    async def _analyze_one(self, project: Project, tenant_id: UUID, url: str, strategy: str) -> PagespeedRun:
+    async def _persist_run(
+        self,
+        project: Project,
+        tenant_id: UUID,
+        url: str,
+        strategy: str,
+        resp: Optional[httpx.Response],
+        exc: Optional[Exception],
+        timeout: float,
+    ) -> PagespeedRun:
+        """Turn one fetched PSI result into a stored run."""
         run = PagespeedRun(
             tenant_id=tenant_id, project_id=project.id, url=url,
             strategy=PagespeedStrategy(strategy), status=PagespeedStatus.error,
         )
-        try:
-            params = {
-                "url": url,
-                "strategy": strategy,
-                "category": ["performance", "accessibility", "best-practices", "seo"],
-            }
-            if settings.GOOGLE_PAGESPEED_API_KEY:
-                params["key"] = settings.GOOGLE_PAGESPEED_API_KEY
-            async with httpx.AsyncClient(timeout=settings.PAGESPEED_TIMEOUT_SECONDS) as client:
-                resp = await client.get(settings.PAGESPEED_API_URL, params=params)
 
+        if resp is None:
+            run.status = PagespeedStatus.error
+            run.error_message = describe_exception(exc, timeout)[:1024]
+            logger.warning(
+                "pagespeed_request_failed",
+                url=url,
+                strategy=strategy,
+                error_type=type(exc).__name__,
+            )
+        else:
             if resp.status_code == 429:
                 run.status = PagespeedStatus.quota_exceeded
                 run.error_message = (
@@ -69,7 +175,13 @@ class PagespeedService:
                 logger.warning("pagespeed_quota_exceeded", url=url, strategy=strategy)
             elif resp.status_code != 200:
                 run.status = PagespeedStatus.error
-                run.error_message = f"PageSpeed API HTTP {resp.status_code}: {resp.text[:300]}"
+                run.error_message = describe_upstream_error(resp.status_code, resp.text)[:1024]
+                logger.warning(
+                    "pagespeed_upstream_error",
+                    url=url,
+                    strategy=strategy,
+                    status_code=resp.status_code,
+                )
             else:
                 parsed = parse_pagespeed(resp.json())
                 run.status = PagespeedStatus.completed
@@ -89,15 +201,61 @@ class PagespeedService:
                 run.field_inp_ms = parsed["field_inp_ms"]
                 run.opportunities = parsed["opportunities"]
                 run.diagnostics = parsed["diagnostics"]
-        except httpx.HTTPError as exc:
-            run.status = PagespeedStatus.error
-            run.error_message = f"PageSpeed request failed: {exc}"[:1024]
-            logger.warning("pagespeed_request_failed", url=url, strategy=strategy, error=str(exc))
 
         self.db.add(run)
         await self.db.commit()
         await self.db.refresh(run)
         return run
+
+    async def _fetch_with_retry(
+        self,
+        url: str,
+        strategy: str,
+        timeout: float,
+    ) -> tuple[Optional[httpx.Response], Optional[Exception]]:
+        """Ask PSI for one analysis, retrying the failures that are worth retrying.
+
+        Returns the response, or the transport exception when there was none.
+
+        A 5xx from PSI is usually Lighthouse giving up rather than Google being
+        down, and that is sometimes luck: the same page can fail one minute and
+        score the next. Retrying 4xx would be pointless (the request is wrong)
+        and retrying 429 would be rude (we are already over quota), so neither
+        is retried.
+        """
+        params = {
+            "url": url,
+            "strategy": strategy,
+            "category": ["performance", "accessibility", "best-practices", "seo"],
+        }
+        if settings.GOOGLE_PAGESPEED_API_KEY:
+            params["key"] = settings.GOOGLE_PAGESPEED_API_KEY
+
+        response: Optional[httpx.Response] = None
+        error: Optional[Exception] = None
+
+        for attempt in range(1, PAGESPEED_MAX_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(settings.PAGESPEED_API_URL, params=params)
+                error = None
+                if response.status_code < 500:
+                    return response, None
+            except httpx.HTTPError as exc:
+                response, error = None, exc
+
+            if attempt < PAGESPEED_MAX_ATTEMPTS:
+                logger.info(
+                    "pagespeed_retrying",
+                    url=url,
+                    strategy=strategy,
+                    attempt=attempt,
+                    status_code=response.status_code if response is not None else None,
+                    error_type=type(error).__name__ if error else None,
+                )
+                await asyncio.sleep(PAGESPEED_RETRY_BACKOFF_SECONDS)
+
+        return response, error
 
     async def latest(self, project_id: UUID, tenant_id: UUID) -> Dict[str, Any]:
         """Latest completed run per strategy for the project."""

@@ -9,6 +9,11 @@ from typing import Any, List, Optional
 from functools import lru_cache
 
 
+#: The shipped placeholder for SECRET_KEY. Named so the production guard can
+#: recognise it, and so nothing in the codebase compares against a bare literal.
+PLACEHOLDER_SECRET_KEY = "change-this-in-production"
+
+
 class Settings(BaseSettings):
     """Application settings"""
 
@@ -63,10 +68,44 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     
     # Security
-    SECRET_KEY: str = "change-this-in-production"
+    #
+    # The default is a placeholder, not a secret, and it is the same string in
+    # every copy of this repository — anyone could mint a valid token for a
+    # deployment still using it. `_reject_placeholder_secret` below refuses to
+    # boot on it in production so it can never ship by accident; development
+    # keeps working without configuration.
+    SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Password reset
+    #
+    # Short on purpose. A reset link is a bearer credential that takes over an
+    # account, and it sits in an inbox that may be shared, forwarded or already
+    # compromised — which is the usual reason someone is resetting in the first
+    # place. Thirty minutes is enough to read an email and act on it.
+    PASSWORD_RESET_TOKEN_TTL_MINUTES: int = 30
+    #: Minimum length enforced on a new password at reset time.
+    PASSWORD_MIN_LENGTH: int = 8
+
+    # Email delivery over SMTP, using the standard library's smtplib — no extra
+    # package, and no third-party sending account required.
+    #
+    # Five settings, and no switch for encryption: the port decides it. 465 is
+    # implicit TLS, everything else (587 for Gmail, 2525 and friends) is
+    # STARTTLS. See app/services/email.py — a mode setting is one more thing to
+    # get wrong, and the wrong value would mean sending reset links in clear.
+    #
+    # With SMTP_HOST or SMTP_FROM unset the sender degrades to logging rather
+    # than failing, so the password reset flow still works in development.
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    #: The envelope sender. Must be an address the relay will send as — for
+    #: Gmail that is the account itself.
+    SMTP_FROM: Optional[str] = None
     
     # CORS
     CORS_ORIGINS: Any = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -113,8 +152,39 @@ class Settings(BaseSettings):
     # Optional GitHub PR creation for approved SEO code patches.
     GITHUB_TOKEN: Optional[str] = None
     GITHUB_DEFAULT_BASE_BRANCH: str = "main"
+    # Username sent alongside GITHUB_TOKEN when pushing over HTTPS. GitHub
+    # ignores the value for a personal access token and requires exactly this
+    # one for an app installation token, so it is the safe default for both.
+    GITHUB_TOKEN_USERNAME: str = "x-access-token"
+    # Authorship for commits the agent makes. Deliberately non-personal: the
+    # commit is the agent's, and attributing it to whoever happens to own the
+    # token would misrepresent who wrote the change. Supplied per command, so
+    # nothing is written to the global git config or to the target repository.
+    REPO_AGENT_COMMIT_NAME: str = "SEO Agent"
+    REPO_AGENT_COMMIT_EMAIL: str = "seo-agent@localhost"
+    # Where pre-apply copies of patched files are kept, so a rollback can undo
+    # an apply run. This must be backed by storage that outlives the container:
+    # the previous location was beside the checkout, which inside a container
+    # meant the writable layer, and recreating the container destroyed the only
+    # copy of the rollback material.
+    REPO_AGENT_BACKUP_ROOT: str = "/var/lib/seo-agent/backups"
+    # End-of-line policy the agent applies to the checkouts it works on,
+    # passed per git command. Unset means "whatever git itself resolves",
+    # which is the previous behaviour.
+    #
+    # It needs stating because a container cannot see the host's system git
+    # config. On a checkout owned by Windows, the owner's git cleans CRLF back
+    # to LF when staging while the container stores it verbatim - so the same
+    # file produces two different blobs, and a commit made by the agent
+    # rewrites every line of every file it touched. Set it to "true" for a
+    # Windows-owned checkout, "input" for a Linux-owned one.
+    REPO_AGENT_GIT_AUTOCRLF: Optional[str] = None
     REPO_AGENT_VALIDATION_COMMANDS: str = ""
     REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS: int = 120
+    # Validation gets its own budget. A typecheck and a production build take
+    # minutes, and sharing the 120s git timeout would report every build as a
+    # timeout failure - a false "the patch broke the project".
+    REPO_AGENT_VALIDATION_TIMEOUT_SECONDS: int = 900
     
     # Stripe
     STRIPE_SECRET_KEY: Optional[str] = None
@@ -139,14 +209,55 @@ class Settings(BaseSettings):
     DEFAULT_BLOGS_PER_WEEK: int = 2
     # Pages the recurring/one-click SEO run crawls. The crawler itself supports
     # up to 10,000; this is the default working set, not a hard ceiling.
-    SEO_RUN_MAX_PAGES: int = 100
+    #
+    # 100 was too small to be honest about. A site whose sitemap lists 110 URLs
+    # and whose link graph holds 171 was crawled to 99 and reported as finished,
+    # so the audit, the content suggestions and the planner were all built from
+    # a little over half the site with nothing saying so. A cap that silently
+    # truncates is worse than a slow crawl, because the output looks complete.
+    #
+    # 1000 covers an ordinary business site end to end. It is still a ceiling
+    # rather than a promise: when it does bite, `total_pages_discovered` now
+    # reports the real figure so the shortfall is visible instead of hidden.
+    SEO_RUN_MAX_PAGES: int = 1000
     # How deep a monthly deep audit goes, when it is worth paying for the time.
     SEO_DEEP_RUN_MAX_PAGES: int = 1000
+    # How long an SEO run waits on its crawl. The question asked is whether the
+    # crawl is still making progress, not how long it has been running: a fixed
+    # wall-clock budget is wrong for a job whose size is a parameter, and the
+    # constant that preceded these failed a healthy 99-page crawl at page 78.
+    # A crawl that keeps saving pages keeps its budget; one that goes quiet for
+    # this long has actually stopped.
+    SEO_RUN_CRAWL_STALL_TIMEOUT_SECONDS: int = 240
+    # Backstop only, scaled by the page budget, for a site slow enough to
+    # deliver one page just inside every stall window. Measured throughput on a
+    # real site is ~3.5s/page, so this is roughly three times the honest cost.
+    SEO_RUN_CRAWL_SECONDS_PER_PAGE: float = 12.0
+    # Floor for that backstop, so a small crawl is not held to a tiny ceiling.
+    SEO_RUN_CRAWL_MIN_TIMEOUT_SECONDS: int = 600
+    # When a running SEO run is declared abandoned. A live run touches itself
+    # every SEO_RUN_HEARTBEAT_SECONDS (30), so silence for this long is not a
+    # slow stage — it is a worker that was restarted, killed or lost. Without
+    # this the row says "running" forever and the dashboard spins forever.
+    SEO_RUN_STALE_AFTER_SECONDS: int = 900
     # Durable background queue (RQ over the existing seo_queue + worker). When
     # enabled, background jobs are enqueued instead of run in-process; the caller
     # falls back to BackgroundTasks if the queue is unavailable.
     QUEUE_ENABLED: bool = True
     QUEUE_JOB_TIMEOUT_SECONDS: int = 1800
+    # A full SEO run is a pipeline, not a job: crawl, audit, embed every page,
+    # then one local-LLM call per page that needs one. On CPU-only hardware that
+    # is hours, and the 30-minute default above was killing it part way through
+    # — the work-horse was terminated mid-content and the run was left saying
+    # "running" with nobody executing it. Anything enqueueing a full run must
+    # pass this instead of relying on the generic default.
+    SEO_RUN_JOB_TIMEOUT_SECONDS: int = 14400
+    # How many content suggestions are generated at once. Measured on this
+    # stack: with Ollama on 4 cores concurrency made throughput *worse*, because
+    # one generation already saturates every core. With 8 it helps, and two at a
+    # time was the best of the measured options; four was worse again. Raise it
+    # only alongside OLLAMA_CPUS, and measure rather than assume.
+    CONTENT_LLM_CONCURRENCY: int = 2
     # After a repo-agent PR is merged, wait this long before running the
     # follow-up SEO analysis that verifies whether the fix actually worked.
     VERIFICATION_DELAY_MINUTES: int = 10
@@ -160,7 +271,11 @@ class Settings(BaseSettings):
     # Google Cloud Console for reliable use.
     GOOGLE_PAGESPEED_API_KEY: Optional[str] = None
     PAGESPEED_API_URL: str = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-    PAGESPEED_TIMEOUT_SECONDS: float = 90.0
+    # A full Lighthouse run against a heavy page genuinely takes this long:
+    # measured 12s for a trivial page, 46s for a content page and 76-85s before
+    # the upstream itself gave up. 90 sat just under the real tail, so a desktop
+    # analysis that was still working was cut off by our own client.
+    PAGESPEED_TIMEOUT_SECONDS: float = 120.0
     DEPLOYMENT_DEFAULT_PROVIDER: str = "custom_webhook"
     DEPLOYMENT_SETTLE_SECONDS: int = 0  # extra wait after deploy success before verifying
     # Deployment provider credentials (all optional; adapters degrade gracefully
@@ -182,6 +297,27 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 10
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def _reject_placeholder_secret(cls, value: str, info) -> str:
+        """Refuse to run in production on the shipped placeholder.
+
+        Tokens are signed and verified with this value, so a deployment left on
+        the default can have tokens forged by anyone holding this repository.
+        Failing at boot is the only safe behaviour — a warning in a log is read
+        after the breach, not before it.
+
+        Checked against APP_ENV rather than unconditionally so local development
+        and the test suite keep working with no configuration at all.
+        """
+        environment = str((info.data or {}).get("APP_ENV", "development")).lower()
+        if environment == "production" and value == PLACEHOLDER_SECRET_KEY:
+            raise ValueError(
+                "SECRET_KEY is still the shipped placeholder. Set a real value "
+                "in the environment before running in production."
+            )
+        return value
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

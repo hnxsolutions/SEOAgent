@@ -1,32 +1,7 @@
 'use client';
 
-import {
-  Activity,
-  TrendingUp,
-  Bot,
-  Camera,
-  Database,
-  FileCheck2,
-  FileText,
-  FileWarning,
-  GitBranch,
-  GitPullRequest,
-  BadgeCheck,
-  KeyRound,
-  LayoutDashboard,
-  LineChart,
-  LogOut,
-  Newspaper,
-  Plus,
-  RefreshCw,
-  Rocket,
-  Search,
-  SearchCheck,
-  Sparkles,
-  Gauge,
-  Target,
-  Cpu,
-} from 'lucide-react';
+// The per-page icons now live with the navigation itself, in lib/dashboard-nav.
+import { LogOut, Plus, RefreshCw, Rocket } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -38,6 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { isActiveHref, navSections, sectionForPath } from '@/lib/dashboard-nav';
 import { dashboardApi } from '@/lib/dashboard-api';
 import { cn } from '@/lib/utils';
 import type { Project, UUID } from '@/types/dashboard';
@@ -63,6 +39,9 @@ export function useDashboardProject() {
 
 export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  // Which area of the product this page belongs to. Drives both the highlighted
+  // sidebar entry and the row of sibling tabs under the header.
+  const activeSection = sectionForPath(pathname);
   // The setup page must render its own create form even when the account has
   // zero projects — otherwise a new user hits a dead-end empty state and can
   // never create a first project.
@@ -157,22 +136,25 @@ export function DashboardShell({ children }: { children: ReactNode }) {
             </div>
           </div>
           <nav className="space-y-1 px-3 py-4">
-            {navItems.map((item) => {
-              const active =
-                item.href === '/dashboard'
-                  ? pathname === item.href
-                  : pathname.startsWith(item.href);
+            {navSections.map((section) => {
+              const active = section === activeSection;
               return (
                 <Link
-                  key={item.href}
-                  href={item.href}
+                  key={section.label}
+                  href={section.href}
+                  aria-current={active ? 'page' : undefined}
                   className={cn(
                     'flex h-10 items-center gap-3 rounded-md px-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950',
-                    active && 'bg-blue-50 text-blue-700'
+                    active && 'bg-blue-50 font-semibold text-blue-700'
                   )}
                 >
-                  <item.icon className="h-4 w-4" aria-hidden="true" />
-                  {item.label}
+                  <section.icon className="h-4 w-4" aria-hidden="true" />
+                  <span className="flex-1">{section.label}</span>
+                  {section.children ? (
+                    <span className="text-xs tabular-nums text-slate-400">
+                      {section.children.length}
+                    </span>
+                  ) : null}
                 </Link>
               );
             })}
@@ -192,19 +174,17 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex gap-1 overflow-x-auto rounded-md border bg-white p-1 lg:hidden">
-                  {navItems.map((item) => (
+                  {navSections.map((section) => (
                     <Link
-                      key={item.href}
-                      href={item.href}
+                      key={section.label}
+                      href={section.href}
                       className={cn(
-                        'flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100',
-                        (item.href === '/dashboard'
-                          ? pathname === item.href
-                          : pathname.startsWith(item.href)) && 'bg-blue-50 text-blue-700'
+                        'flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100',
+                        section === activeSection && 'bg-blue-50 text-blue-700'
                       )}
-                      title={item.label}
+                      title={section.label}
                     >
-                      <item.icon className="h-4 w-4" aria-hidden="true" />
+                      <section.icon className="h-4 w-4" aria-hidden="true" />
                     </Link>
                   ))}
                 </div>
@@ -235,6 +215,34 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                 </button>
               </div>
             </div>
+            {activeSection?.children ? (
+              <div className="border-t bg-white/95 px-4 sm:px-6 lg:px-8">
+                <nav
+                  aria-label={`${activeSection.label} pages`}
+                  className="-mb-px flex gap-1 overflow-x-auto"
+                >
+                  {activeSection.children.map((child) => {
+                    const active = isActiveHref(pathname, child.href);
+                    return (
+                      <Link
+                        key={child.href}
+                        href={child.href}
+                        aria-current={active ? 'page' : undefined}
+                        className={cn(
+                          'flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors',
+                          active
+                            ? 'border-blue-600 text-blue-700'
+                            : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-900'
+                        )}
+                      >
+                        <child.icon className="h-4 w-4" aria-hidden="true" />
+                        {child.label}
+                      </Link>
+                    );
+                  })}
+                </nav>
+              </div>
+            ) : null}
           </header>
 
           <main className="px-4 py-6 sm:px-6 lg:px-8">
@@ -381,33 +389,3 @@ function ProjectSelector({
   );
 }
 
-const navItems = [
-  { label: 'Mission Control', href: '/dashboard/mission-control', icon: Gauge },
-  { label: 'SEO Operations', href: '/dashboard/operations', icon: Activity },
-  { label: 'SEO Growth', href: '/dashboard/growth', icon: TrendingUp },
-  { label: 'Content Engine', href: '/dashboard/content-engine', icon: Sparkles },
-  { label: 'Technology', href: '/dashboard/technology', icon: Cpu },
-  { label: 'Code Review', href: '/dashboard/code-review', icon: GitPullRequest },
-  { label: 'Deployment Verification', href: '/dashboard/deployment-verification', icon: BadgeCheck },
-  { label: 'SEO Brain', href: '/dashboard/seo-brain', icon: Bot },
-  { label: 'Daily Briefing', href: '/dashboard/daily-briefing', icon: Sparkles },
-  { label: 'Pending AI Fixes', href: '/dashboard/pending-fixes', icon: GitBranch },
-  { label: 'Core Web Vitals', href: '/dashboard/core-web-vitals', icon: Gauge },
-  { label: 'Verification', href: '/dashboard/verification', icon: BadgeCheck },
-  { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
-  { label: 'Report', href: '/dashboard/report', icon: FileCheck2 },
-  { label: 'Project Setup', href: '/dashboard/setup', icon: Rocket },
-  { label: 'Keywords', href: '/dashboard/keywords', icon: KeyRound },
-  { label: 'Audit Issues', href: '/dashboard/audit', icon: FileWarning },
-  { label: 'Semantic Search', href: '/dashboard/semantic', icon: Database },
-  { label: 'Weekly Planner', href: '/dashboard/planner', icon: Bot },
-  { label: 'Search Console', href: '/dashboard/search-console', icon: Search },
-  { label: 'Indexing', href: '/dashboard/indexing', icon: SearchCheck },
-  { label: 'Rank Tracking', href: '/dashboard/rank-tracking', icon: LineChart },
-  { label: 'Impact', href: '/dashboard/impact', icon: Activity },
-  { label: 'SERP Snapshots', href: '/dashboard/serp-snapshots', icon: Camera },
-  { label: 'Content', href: '/dashboard/content', icon: FileText },
-  { label: 'GEO/AEO', href: '/dashboard/geo-aeo', icon: Target },
-  { label: 'Blogs', href: '/dashboard/blogs', icon: Newspaper },
-  { label: 'Repo Patches', href: '/dashboard/repos', icon: GitBranch },
-];

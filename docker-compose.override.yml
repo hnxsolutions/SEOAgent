@@ -50,11 +50,47 @@ services:
       # Anonymous volume so the container's bytecode cache does not land in the
       # working directory and confuse the host's interpreter.
       - /app/__pycache__
+      # A website checkout for the repo agent to work on.
+      #
+      # READ-ONLY by default, and that default is the safety story: scanning and
+      # patch generation only ever read, so nothing the agent does during them
+      # can reach the site repository even if it tried.
+      #
+      # Applying patches writes - a branch, edited files, a commit - so it needs
+      # write access. That is a deliberate, visible switch rather than a
+      # permanent grant:
+      #
+      #   REPO_AGENT_MOUNT_MODE=rw docker compose up -d --force-recreate backend
+      #
+      # Set it back to ro (or just unset it) once the apply run is done. A mode
+      # that has to be named each time cannot be forgotten into production the
+      # way a commented-out ":ro" can.
+      #
+      # Point REPO_AGENT_MOUNT at whichever checkout you want worked on.
+      - ${REPO_AGENT_MOUNT:-C:/Users/karan/hnx-solutions}:/repos/site:${REPO_AGENT_MOUNT_MODE:-ro}
+      # Linux dependencies for the validation step, in their own volume.
+      #
+      # node_modules is not portable. A checkout installed on Windows contains
+      # @next/swc-win32-x64-msvc and lightningcss-win32-x64-msvc, which a Linux
+      # process cannot load, so `npm run build` fails here however healthy the
+      # project is. Installing Linux builds into the host directory instead
+      # would fix this container and break `npm run dev` on the host.
+      #
+      # This volume shadows that one directory for this container only. Each
+      # side keeps the binaries for its own platform, and neither install can
+      # overwrite the other. It is anonymous to the host filesystem, so nothing
+      # here reaches the site repository.
+      - repo_site_node_modules:/repos/site/node_modules
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    # Proxy headers here too, so a developer running behind the nginx profile
+    # sees the same redirect behaviour as production rather than discovering it
+    # after deploying.
+    # One line — see the note in docker-compose.yml about folded scalars and
+    # more-indented continuation lines.
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers --forwarded-allow-ips=*"
 
   worker:
     environment:
@@ -97,3 +133,9 @@ services:
   nginx:
     profiles:
       - proxy
+
+volumes:
+  # Populated by installing from the target project's own package-lock.json.
+  # Disposable: delete it and the next install rebuilds it.
+  repo_site_node_modules:
+    driver: local

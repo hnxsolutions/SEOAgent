@@ -109,7 +109,7 @@ function DeploymentRow({ d, onSimulate, busy }: { d: Deployment; onSimulate: () 
 }
 
 export default function VerificationPage() {
-  const { projectId, isLoading: projectLoading } = useDashboardProject();
+  const { projectId, project, isLoading: projectLoading } = useDashboardProject();
   const queryClient = useQueryClient();
 
   const deployments = useQuery({
@@ -120,7 +120,18 @@ export default function VerificationPage() {
   });
   const simulateDeploy = useMutation({
     mutationFn: (deploymentId: string) =>
-      dashboardApi.deployments.updateStatus(deploymentId, 'success', 'https://novakoshealthcare.com'),
+      // The project's own site, not a fixed customer domain — a simulated
+      // deploy that reports someone else's URL makes the verification that
+      // follows it measure the wrong website entirely.
+      dashboardApi.deployments.updateStatus(
+        deploymentId,
+        'success',
+        project?.domain
+          ? /^https?:\/\//.test(project.domain)
+            ? project.domain
+            : `https://${project.domain}`
+          : undefined,
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', projectId] });
       queryClient.invalidateQueries({ queryKey: ['verif-queue', projectId] });

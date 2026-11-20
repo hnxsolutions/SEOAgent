@@ -74,6 +74,20 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     except Exception:  # pragma: no cover - defensive; never break the tick
         payload["operations_monitored"] = None
 
+    # Close out runs whose worker is gone. Nothing else in the system notices a
+    # process that disappears mid-pipeline, so without this a restart leaves the
+    # dashboard showing "Running" on a run that will never move again.
+    try:
+        from app.services.seo_run import fail_stale_runs
+
+        db4 = get_db_session()
+        try:
+            payload["stale_runs_closed"] = await fail_stale_runs(db4)
+        finally:
+            await db4.close()
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["stale_runs_closed"] = 0
+
     # Autonomous daily executive briefing (one per project per day; upsert-safe).
     from app.jobs.briefing_jobs import generate_daily_briefings_background
 

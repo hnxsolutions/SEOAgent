@@ -99,8 +99,36 @@ class TelemetryQuery:
         rows = await self.db.execute(query.order_by(SchedulerJobRun.created_at.desc()).limit(limit))
         return list(rows.scalars().all())
 
-    async def failures(self, tenant_id: Optional[UUID], limit: int = 20) -> List[SchedulerJobRun]:
-        return await self.list_runs(tenant_id, status=JobStatus.failed, limit=limit)
+    #: How far back the Failure Center looks.
+    #:
+    #: Without a window it showed every failure ever recorded, so a one-off from
+    #: July sat at the top of the list months later, indistinguishable from
+    #: something broken this morning. An operator reading it could not tell what
+    #: needed attention — which is the only thing the panel is for. Failures
+    #: older than this are history, and history belongs in the run list.
+    FAILURE_WINDOW_HOURS = 24
+
+    async def failures(
+        self,
+        tenant_id: Optional[UUID],
+        limit: int = 20,
+        within_hours: Optional[int] = None,
+    ) -> List[SchedulerJobRun]:
+        """Recent failures only. Pass `within_hours=None` deliberately for all of them."""
+        window = self.FAILURE_WINDOW_HOURS if within_hours is None else within_hours
+        cutoff = datetime.utcnow() - timedelta(hours=window)
+        rows = await self.db.execute(
+            self._scope(
+                select(SchedulerJobRun).where(
+                    SchedulerJobRun.status == JobStatus.failed,
+                    SchedulerJobRun.started_at >= cutoff,
+                ),
+                tenant_id,
+            )
+            .order_by(SchedulerJobRun.started_at.desc())
+            .limit(limit)
+        )
+        return list(rows.scalars().all())
 
     async def active_runs(self, tenant_id: Optional[UUID]) -> List[SchedulerJobRun]:
         rows = await self.db.execute(self._scope(

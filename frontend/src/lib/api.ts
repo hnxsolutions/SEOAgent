@@ -24,19 +24,97 @@ api.interceptors.request.use(
   }
 );
 
-// Response interceptor for handling auth errors
+/**
+ * Sign the user out and send them to the login page.
+ *
+ * Only called once the refresh token has also been refused — a 401 on its own
+ * means the access token aged out, which is routine and recoverable.
+ */
+function endSession() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem('access_token');
+  window.localStorage.removeItem('refresh_token');
+  window.localStorage.removeItem('auth-storage');
+  if (!['/login', '/register'].includes(window.location.pathname)) {
+    window.location.href = '/login';
+  }
+}
+
+/**
+ * The refresh currently in flight, if any.
+ *
+ * The dashboard runs a dozen polling queries on a five second timer, so an
+ * expired access token produces a dozen simultaneous 401s. Without this, each
+ * one would start its own refresh: the server would issue a dozen tokens, the
+ * last write to localStorage would win, and requests carrying any of the others
+ * would fail again. Every 401 in the same moment waits on one promise instead.
+ */
+let refreshInFlight: Promise<string> | null = null;
+
+async function refreshAccessToken(): Promise<string> {
+  const refreshToken = window.localStorage.getItem('refresh_token');
+  if (!refreshToken) throw new Error('no refresh token');
+
+  // A bare axios call on purpose: going through `api` would re-enter these
+  // interceptors, and a 401 from the refresh endpoint would try to refresh
+  // itself forever.
+  const response = await axios.post(
+    `${API_URL}/auth/refresh`,
+    { refresh_token: refreshToken },
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+
+  const accessToken: string | undefined = response.data?.access_token;
+  if (!accessToken) throw new Error('refresh response had no access token');
+
+  window.localStorage.setItem('access_token', accessToken);
+  if (response.data?.refresh_token) {
+    window.localStorage.setItem('refresh_token', response.data.refresh_token);
+  }
+  return accessToken;
+}
+
+// Response interceptor: recover an expired session before abandoning it.
+//
+// Access tokens last 30 minutes and refresh tokens last 7 days, but the refresh
+// token was never used — a 401 wiped both and bounced the user to /login. So the
+// console logged people out every half hour while a perfectly valid credential
+// sat unused in the same localStorage it was deleting.
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
-      window.localStorage.removeItem('access_token');
-      window.localStorage.removeItem('refresh_token');
-      window.localStorage.removeItem('auth-storage');
-      if (!['/login', '/register'].includes(window.location.pathname)) {
-        window.location.href = '/login';
+  async (error) => {
+    const original = error.config;
+
+    if (
+      error.response?.status !== 401 ||
+      typeof window === 'undefined' ||
+      !original ||
+      // Retried once already: the new token was refused too, so this is a real
+      // authentication failure rather than an expiry.
+      original._retriedAfterRefresh ||
+      // Never try to refresh the refresh call, or a login attempt.
+      original.url?.includes('/auth/refresh') ||
+      original.url?.includes('/auth/login')
+    ) {
+      if (error.response?.status === 401 && typeof window !== 'undefined') {
+        endSession();
       }
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
+
+    try {
+      refreshInFlight = refreshInFlight ?? refreshAccessToken().finally(() => {
+        refreshInFlight = null;
+      });
+      const accessToken = await refreshInFlight;
+
+      original._retriedAfterRefresh = true;
+      original.headers = { ...original.headers, Authorization: `Bearer ${accessToken}` };
+      return api(original);
+    } catch {
+      endSession();
+      return Promise.reject(error);
+    }
   }
 );
 
@@ -82,6 +160,14 @@ export const authAPI = {
     api.post('/auth/register', data),
   refreshToken: (refreshToken: string) =>
     api.post('/auth/refresh', { refresh_token: refreshToken }),
+  // The response is intentionally identical whether or not the address has an
+  // account, so there is nothing here to branch on.
+  forgotPassword: (email: string) =>
+    api.post('/auth/forgot-password', { email }),
+  validateResetToken: (token: string) =>
+    api.get('/auth/reset-password/validate', { params: { token } }),
+  resetPassword: (token: string, newPassword: string) =>
+    api.post('/auth/reset-password', { token, new_password: newPassword }),
 };
 
 export const userAPI = {

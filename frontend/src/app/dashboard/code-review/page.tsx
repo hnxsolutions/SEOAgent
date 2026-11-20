@@ -1,5 +1,7 @@
 'use client';
 
+import { parseApiDate } from '@/lib/utils';
+
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { GitPullRequest, Check, X, Archive, ExternalLink, ShieldAlert, FileCode2 } from 'lucide-react';
@@ -131,7 +133,7 @@ function ReviewCard({ review, open, onToggle, onChanged }: {
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {review.technology ?? ''} · confidence {review.confidence ?? '—'}% · SEO impact {review.estimated_seo_impact ?? '—'} · perf {review.estimated_performance_impact ?? '—'}
-            {review.created_at ? ` · ${new Date(review.created_at).toLocaleString()}` : ''}
+            {review.created_at ? ` · ${parseApiDate(review.created_at).toLocaleString()}` : ''}
           </p>
         </div>
         <div className="flex flex-none items-center gap-3 text-xs text-muted-foreground">

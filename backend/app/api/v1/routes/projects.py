@@ -65,6 +65,9 @@ async def create_project(
             enqueue_or_background(
                 background_tasks, "app.queue.jobs.run_seo_run", run_seo_run_background,
                 run.id, current_user["tenant_id"], max_retries=0,
+                # A full run is hours of work on CPU-only hardware; the queue's
+                # generic 30-minute default killed it mid-pipeline.
+                job_timeout=settings.SEO_RUN_JOB_TIMEOUT_SECONDS,
             )
             logger.info(
                 "auto_seo_run_enqueued_on_project_create",

@@ -73,6 +73,7 @@ from app.models.agent import AgentRun
 from app.models.website_profile import WebsiteProfile, WebsiteProfileSnapshot
 from app.models.content_cluster import ContentCluster, ContentClusterNode
 from app.models.content_refresh import ContentRefreshProposal
+from app.models.password_reset import PasswordResetToken
 
 __all__ = [
     "User",
@@ -157,4 +158,5 @@ __all__ = [
     "ContentCluster",
     "ContentClusterNode",
     "ContentRefreshProposal",
+    "PasswordResetToken",
 ]

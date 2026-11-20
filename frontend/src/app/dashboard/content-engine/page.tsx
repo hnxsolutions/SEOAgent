@@ -1,5 +1,7 @@
 'use client';
 
+import { parseApiDate } from '@/lib/utils';
+
 /**
  * The autonomous content engine, as one screen with tabs.
  *
@@ -213,7 +215,7 @@ function OverviewTab({
           {d.next_slot ? (
             <p className="mt-2 text-sm text-muted-foreground">
               <span className="font-medium text-foreground">{d.next_slot.day}</span>
-              {d.next_slot.next_run_at ? ` · ${new Date(d.next_slot.next_run_at).toLocaleString()}` : ''}
+              {d.next_slot.next_run_at ? ` · ${parseApiDate(d.next_slot.next_run_at).toLocaleString()}` : ''}
             </p>
           ) : (
             <p className="mt-2 text-sm text-muted-foreground">
@@ -327,7 +329,7 @@ function CalendarTab({ projectId, onChanged }: { projectId: string; onChanged: (
                 <div className="text-sm font-semibold">{slot.day}</div>
                 <div className="text-xs text-muted-foreground">
                   {String(slot.hour).padStart(2, '0')}:00
-                  {slot.next_run_at ? ` · next ${new Date(slot.next_run_at).toLocaleDateString()}` : ''}
+                  {slot.next_run_at ? ` · next ${parseApiDate(slot.next_run_at).toLocaleDateString()}` : ''}
                 </div>
               </div>
               <div className="min-w-0 flex-1">
@@ -573,7 +575,7 @@ function KnowledgeTab({ projectId }: { projectId: string }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
         <div className="text-xs text-muted-foreground">
-          Version {data.version} · built {data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}
+          Version {data.version} · built {data.generated_at ? parseApiDate(data.generated_at).toLocaleString() : '—'}
           {data.used_llm === 'yes' ? ' · local model used for semantic fields' : ' · deterministic extraction only'}
         </div>
         <Button size="sm" variant="outline" onClick={() => build.mutate()} disabled={build.isPending}>

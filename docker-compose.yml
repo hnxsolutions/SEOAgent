@@ -124,6 +124,23 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
+    environment:
+      # One generation at a time, deliberately.
+      #
+      # Setting this to 2 genuinely ran two slots at once, and Ollama's own
+      # timings showed what that cost: 4.0 and 5.0 tokens/sec per slot, about 9
+      # together, against 29 tokens/sec for a single request with the whole
+      # machine. Two generations on a CPU share the same cores and do not batch,
+      # so splitting them lost two thirds of the throughput.
+      #
+      # CONTENT_LLM_CONCURRENCY stays at 2 on purpose: the second request waits
+      # in Ollama's queue and starts the instant the first finishes, which keeps
+      # the model fed with no idle gap between pages. The pipelining is the win;
+      # the parallelism was not.
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-1}"
+      # Hold the model in memory between batches. A 2.2GB reload between pages
+      # costs more than the generation it precedes.
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-30m}"
     networks:
       - seo-agent-network
     healthcheck:
@@ -174,6 +191,14 @@ services:
     # what was built and tested, not whatever happens to be in the working
     # directory on the VM. A half-finished `git pull` must not be able to become
     # a half-deployed application.
+    volumes:
+      # Rollback material for the repo agent, on a named volume because it has
+      # to outlive the container. Keeping it in the writable layer once meant a
+      # routine `docker compose up --force-recreate` silently destroyed the only
+      # copies of six files that had already been patched, leaving that apply run
+      # impossible to undo. Durability is not a development convenience, so this
+      # lives here rather than in the override file.
+      - repo_agent_backups:/var/lib/seo-agent/backups
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -187,9 +212,22 @@ services:
       - seo-agent-network
     # No --reload. It runs a file-watching supervisor and restarts on any write
     # into the image; it is a development convenience, not a server.
+    # --proxy-headers is not optional behind nginx.
+    #
+    # FastAPI answers a missing trailing slash with a 307 whose Location is an
+    # ABSOLUTE url built from the request's scheme. Without proxy headers uvicorn
+    # believes every request is http, so a browser on https://host/api/v1/projects
+    # is redirected to http://host/api/v1/projects/ — a cross-origin redirect, on
+    # which browsers drop the Authorization header. The retried request arrives
+    # unauthenticated and the API answers "Could not validate credentials",
+    # which reads as a broken token rather than a lost header.
+    # NB: the uvicorn invocation stays on ONE line. In a YAML folded scalar (`>`)
+    # a line indented further than the first keeps its newline rather than being
+    # folded to a space, and `sh -c` treats that newline as a command separator —
+    # so wrapped flags silently become a second command and never reach uvicorn.
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4}"
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=*"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else 1)\""]
       interval: 30s
@@ -452,6 +490,10 @@ services:
       - seo-agent-network
 
 volumes:
+  # Pre-apply copies of files the repo agent patched, per repository and per
+  # apply run. Losing this volume means losing the ability to roll back.
+  repo_agent_backups:
+    driver: local
   postgres_data:
     driver: local
   redis_data:

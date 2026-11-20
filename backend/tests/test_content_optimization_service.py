@@ -30,8 +30,8 @@ class FakeLLMService:
             "response": """
             Here is the JSON:
             {
-              "seo_title": {"suggested_value": "Tiny", "reason": "Improve title.", "confidence_score": 91},
-              "meta_description": {"suggested_value": "Short", "reason": "Improve meta.", "confidence_score": 90},
+              "seo_title": {"suggested_value": "Local Services Guide for Growing Teams", "reason": "Improve title.", "confidence_score": 91},
+              "meta_description": {"suggested_value": "A practical guide to the local services on this page, who they suit, and how to get started.", "reason": "Improve meta.", "confidence_score": 90},
               "h1": {"suggested_value": "Better Local Page H1", "reason": "Use one H1.", "confidence_score": 88},
               "headings": {"suggested_value": ["Benefits", "How it works"], "reason": "Clarify sections.", "confidence_score": 82},
               "faq": {"suggested_value": [{"question": "What is this?", "answer": "A useful page."}], "reason": "Add FAQ.", "confidence_score": 80},
@@ -77,7 +77,10 @@ class FakeContentOptimizationRepository:
             h1=[],
             h2=[],
             h3=[],
-            word_count=120,
+            # Substantial enough that the AEO additions (FAQ, answer block) are
+            # asked for. Below AEO_MIN_WORD_COUNT the service deliberately does
+            # not request them, which the thin-page test below covers.
+            word_count=420,
             text_content="Example page text with enough detail for local optimization suggestions.",
             schema_markup=None,
             crawl_order=1,

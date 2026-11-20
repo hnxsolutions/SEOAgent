@@ -42,6 +42,7 @@ class SeoPlannerRunResponse(BaseModel):
     blog_plan_id: Optional[UUID] = None
     repo_scan_run_id: Optional[UUID] = None
     tasks_created: int = 0
+    tasks_refreshed: int = 0
     high_priority_tasks: int = 0
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None

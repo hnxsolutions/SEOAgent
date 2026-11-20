@@ -1,7 +1,7 @@
 """
 SEO Agent SaaS - Authentication Schemas
 """
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 from uuid import UUID
@@ -52,3 +52,37 @@ class TokenPayload(BaseModel):
     sub: str  # email
     user_id: str
     exp: datetime
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Start a reset. Only an address is needed."""
+
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Deliberately constant.
+
+    The same body is returned for a registered address, an unregistered one and
+    a disabled account, so the endpoint cannot be used to discover who has an
+    account here.
+    """
+
+    message: str = (
+        "If an account exists for that email, a password reset link has been sent."
+    )
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=512)
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+
+class ResetPasswordResponse(BaseModel):
+    message: str = "Your password has been updated. You can now log in."
+
+
+class ResetTokenCheckResponse(BaseModel):
+    """Lets the reset page show an expired link before asking for a password."""
+
+    valid: bool

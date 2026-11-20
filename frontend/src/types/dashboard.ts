@@ -35,6 +35,7 @@ export type PlannerRun = {
   blog_plan_id?: UUID | null;
   repo_scan_run_id?: UUID | null;
   tasks_created: number;
+  tasks_refreshed?: number;
   high_priority_tasks: number;
   error_message?: string | null;
   started_at?: string | null;
@@ -2039,4 +2040,63 @@ export interface ContentEngineOverview {
   profile_available: boolean;
   /** Always unmeasured without a provider; the UI must show "Not measured". */
   ai_visibility: { available: boolean; reason: string };
+}
+
+
+/** One Search Console submission step and how it went. */
+export interface GSCSubmitStep {
+  step: string;
+  status: 'ok' | 'partial' | 'skipped' | 'failed';
+  detail?: string;
+  count?: number;
+  submitted?: string[];
+  errors?: string[];
+  job_id?: string | null;
+}
+
+/**
+ * Result of submitting everything to Search Console.
+ *
+ * `blocked` means nothing was attempted — Google refuses every write on a
+ * property you are not a verified owner of, so the pre-flight stops there and
+ * explains why rather than returning one 403 per step.
+ */
+export interface GSCSubmitAllResult {
+  status: 'completed' | 'partial' | 'blocked';
+  reason?: string;
+  message?: string;
+  site_url?: string;
+  permission_level?: string;
+  steps: GSCSubmitStep[];
+}
+
+
+/** One step of the indexing autofix pass and how it went. */
+export interface IndexingAutofixStep {
+  step: string;
+  status: 'ok' | 'partial' | 'skipped' | 'failed';
+  detail?: string;
+}
+
+export interface IndexingAutofixResult {
+  status: 'completed' | 'partial';
+  steps: IndexingAutofixStep[];
+  issues_remaining?: number;
+  issues_by_type?: Record<string, number>;
+}
+
+/**
+ * A sitemap built from the latest crawl.
+ *
+ * `excluded` counts what was deliberately left out — query strings, non-200s,
+ * noindex pages and anything that canonicalises elsewhere — so a smaller number
+ * than the crawl is explainable rather than suspicious.
+ */
+export interface BuiltSitemap {
+  crawl_id: string;
+  xml: string;
+  url_count: number;
+  pages_crawled: number;
+  excluded: Record<string, number>;
+  truncated: boolean;
 }

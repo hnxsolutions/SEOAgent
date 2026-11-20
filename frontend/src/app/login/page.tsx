@@ -70,6 +70,15 @@ export default function LoginPage() {
             </div>
           ) : null}
 
+          <div className="flex justify-end">
+            <Link
+              href="/forgot-password"
+              className="text-sm font-medium text-blue-700 hover:text-blue-800"
+            >
+              Forgot password?
+            </Link>
+          </div>
+
           <Button type="submit" className="w-full" disabled={isSubmitting}>
             <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
             {isSubmitting ? 'Logging in' : 'Login'}

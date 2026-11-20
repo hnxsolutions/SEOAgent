@@ -29,9 +29,13 @@ const emptyResults: ResultInput[] = Array.from({ length: 10 }, (_item, index) =>
 
 export default function SerpSnapshotsPage() {
   const queryClient = useQueryClient();
-  const { projectId } = useDashboardProject();
-  const [keyword, setKeyword] = useState('pcd pharma company in haryana');
-  const [targetDomain, setTargetDomain] = useState('novakoshealthcare.com');
+  const { projectId, project } = useDashboardProject();
+  // Defaults come from the selected project. These used to be one customer's
+  // domain and one of their keywords, which every other account saw prefilled
+  // in their own SERP form.
+  const projectDomain = (project?.domain ?? '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  const [keyword, setKeyword] = useState('');
+  const [targetDomain, setTargetDomain] = useState(projectDomain);
   const [targetUrl, setTargetUrl] = useState('');
   const [country, setCountry] = useState('India');
   const [city, setCity] = useState('');

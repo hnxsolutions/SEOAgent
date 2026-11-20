@@ -481,6 +481,27 @@ async def _set_opportunity_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+@router.post("/projects/{project_id}/submit-all")
+async def submit_everything_to_search_console(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Do everything Search Console should receive for this project, in order.
+
+    Detect the sitemaps, submit each one, then start a performance sync. Checks
+    ownership first: Google refuses every write on an unverified property with a
+    bare 403 per call, so without the pre-flight this returned a pile of
+    identical permission errors that never mentioned verification.
+    """
+    from app.services.gsc_submit_all import GscSubmitAllService
+
+    try:
+        return await GscSubmitAllService(db).run(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 def _tenant_id(current_user: dict) -> UUID:
     tenant_id = current_user.get("tenant_id")
     if not tenant_id:
