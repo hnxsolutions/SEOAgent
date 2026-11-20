@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ClipboardList, Play, RefreshCw, ShieldAlert } from 'lucide-react';
+import { CheckCircle2, ClipboardList, FileDown, Play, RefreshCw, ShieldAlert, Wand2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { StatusBadge, formatLabel } from '@/components/dashboard/StatusBadge';
 import { useDashboardProject } from '@/components/dashboard/DashboardShell';
 import { dashboardApi } from '@/lib/dashboard-api';
 import { formatDateTime } from '@/lib/utils';
-import type { IndexingIssue, UUID } from '@/types/dashboard';
+import type { IndexingAutofixResult, IndexingIssue, UUID } from '@/types/dashboard';
 
 const allFilter = 'all';
 
@@ -50,6 +50,53 @@ export default function IndexingPage() {
     queryFn: () => dashboardApi.indexing.run(latestRun!.id),
     enabled: Boolean(latestRun?.id),
     retry: false,
+  });
+
+  const [autofixResult, setAutofixResult] = useState<IndexingAutofixResult | null>(null);
+
+  // One pass in the order the three steps have to run: find what is broken now,
+  // prepare a fix for each, then ask Google whether the earlier fixes took. Run
+  // separately and out of order they appear to contradict each other.
+  const autofixMutation = useMutation({
+    mutationFn: () => dashboardApi.indexing.autofix(projectId!),
+    onSuccess: async (result) => {
+      setAutofixResult(result);
+      setNotice(
+        result.status === 'completed'
+          ? 'Indexing pass finished.'
+          : 'Indexing pass finished with some steps rejected.'
+      );
+      await invalidateIndexing(projectId, queryClient);
+    },
+    onError: (error) => {
+      setAutofixResult(null);
+      setNotice(error instanceof Error ? error.message : 'The indexing pass could not run.');
+    },
+  });
+
+  const buildSitemapMutation = useMutation({
+    mutationFn: () => dashboardApi.indexing.buildSitemap(projectId!),
+    onSuccess: (built) => {
+      // Handed over as a file rather than deployed: publishing to the live site
+      // stays behind the same approval as any other change the agent proposes.
+      const blob = new Blob([built.xml], { type: 'application/xml' });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = 'sitemap.xml';
+      link.click();
+      URL.revokeObjectURL(href);
+      const dropped = Object.entries(built.excluded)
+        .map(([reason, count]) => `${count} ${reason.replace(/_/g, ' ')}`)
+        .join(', ');
+      setNotice(
+        `Sitemap built with ${built.url_count} URLs from ${built.pages_crawled} crawled pages`
+          + (dropped ? ` (excluded ${dropped}).` : '.')
+      );
+    },
+    onError: (error) => {
+      setNotice(error instanceof Error ? error.message : 'The sitemap could not be built.');
+    },
   });
 
   const inspectMutation = useMutation({
@@ -145,10 +192,66 @@ export default function IndexingPage() {
             <Play className="mr-2 h-4 w-4" />
             Run inspection
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => buildSitemapMutation.mutate()}
+            disabled={buildSitemapMutation.isPending || !projectId}
+            title="Build a sitemap from the latest crawl and download it"
+          >
+            <FileDown className="mr-2 h-4 w-4" />
+            {buildSitemapMutation.isPending ? 'Building…' : 'Build sitemap'}
+          </Button>
+          {/* The primary action: one pass that finds what is broken, prepares a
+              fix for each, and asks Google whether earlier fixes took. */}
+          <Button
+            type="button"
+            onClick={() => autofixMutation.mutate()}
+            disabled={autofixMutation.isPending || !projectId}
+          >
+            <Wand2 className={`mr-2 h-4 w-4 ${autofixMutation.isPending ? 'animate-pulse' : ''}`} />
+            {autofixMutation.isPending ? 'Working…' : 'Fix indexing issues'}
+          </Button>
         </div>
       </div>
 
       <ActionNotice message={notice} />
+
+      {/* Each step reports its own outcome. One throttled URL in the middle of
+          a backlog must not read as the whole pass having failed. */}
+      {autofixResult ? (
+        <div
+          className={`rounded-lg border px-4 py-3 text-sm ${
+            autofixResult.status === 'completed'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : 'border-amber-200 bg-amber-50 text-amber-900'
+          }`}
+        >
+          <p className="font-medium">
+            {autofixResult.status === 'completed'
+              ? 'Indexing pass finished'
+              : 'Indexing pass finished, with some steps rejected'}
+            {typeof autofixResult.issues_remaining === 'number'
+              ? ` · ${autofixResult.issues_remaining} issue(s) still open`
+              : ''}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {autofixResult.steps.map((step) => (
+              <li key={step.step} className="flex flex-wrap gap-2">
+                <span className="font-mono text-xs uppercase">{step.status}</span>
+                <span>{formatLabel(step.step)}</span>
+                {step.detail ? (
+                  <span className="text-muted-foreground">— {step.detail}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Fixes are prepared, not published: a planner task and, where the issue maps to a
+            connected repository, a proposed patch. Applying it stays a separate approval.
+          </p>
+        </div>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-4">
         <SummaryBlock label="Indexed URLs" value={summaryQuery.data?.indexed_urls ?? 0} />

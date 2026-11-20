@@ -204,7 +204,16 @@ export default function DashboardOverviewPage() {
     },
   });
 
-  const isSeoRunActive = runSeoMutation.isPending || isSeoRunPolling;
+  const resumeSeoMutation = useMutation({
+    mutationFn: ({ runId, fromStage }: { runId: UUID; fromStage?: string }) =>
+      dashboardApi.seoRuns.resume(runId, fromStage),
+    onSuccess: async () => {
+      await invalidateOverview(projectId, queryClient);
+    },
+  });
+
+  const isSeoRunActive =
+    runSeoMutation.isPending || resumeSeoMutation.isPending || isSeoRunPolling;
 
   if (projectLoading) return <LoadingBlock label="Loading dashboard" />;
   if (!projectId) {
@@ -235,7 +244,12 @@ export default function DashboardOverviewPage() {
   const latestSeoPlannerRun =
     plannerRunsQuery.data?.runs.find((run) => run.id === latestSeoRun?.planner_run_id) ??
     latestRun;
-  const plannerTasksCount = latestSeoPlannerRun?.tasks_created ?? summary?.total_tasks;
+  // How many tasks the project has, not how many the last planner run happened
+  // to create. The planner is idempotent: run it again when every finding
+  // already has a task and it correctly creates none. Reading `tasks_created`
+  // made that look like a failure — the card showed "0" and "No planner tasks
+  // found" while 803 tasks sat in the table.
+  const plannerTasksCount = summary?.total_tasks ?? latestSeoPlannerRun?.tasks_created;
   const contentSuggestionsCount =
     contentRunQuery.data?.total_suggestions ?? contentSummaryQuery.data?.total_suggestions;
   const pendingDrafts = (draftsQuery.data?.drafts ?? []).filter(
@@ -387,6 +401,8 @@ export default function DashboardOverviewPage() {
         isStarting={runSeoMutation.isPending}
         isRunActive={isSeoRunActive}
         onRun={() => runSeoMutation.mutate()}
+        onResume={(runId, fromStage) => resumeSeoMutation.mutate({ runId, fromStage })}
+        isResuming={resumeSeoMutation.isPending}
         errorMessage={
           runSeoMutation.error instanceof Error ? runSeoMutation.error.message : undefined
         }
@@ -487,6 +503,8 @@ function SeoRunProgress({
   isStarting,
   isRunActive,
   onRun,
+  onResume,
+  isResuming,
   errorMessage,
   crawl,
   auditSummary,
@@ -500,6 +518,8 @@ function SeoRunProgress({
   isStarting: boolean;
   isRunActive: boolean;
   onRun: () => void;
+  onResume: (_runId: UUID, _fromStage?: string) => void;
+  isResuming: boolean;
   errorMessage?: string;
   crawl?: CrawlJob;
   auditSummary?: AuditSummary;
@@ -569,6 +589,15 @@ function SeoRunProgress({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={isStarting ? 'queued' : run?.status} />
+          {/* Resuming picks up at the stage that stopped. Starting over would
+              redo a crawl, an audit and an embedding pass that are finished and
+              still in the database — most of an hour on CPU-only hardware. */}
+          {run?.status === 'failed' && !isRunActive ? (
+            <Button type="button" variant="outline" onClick={() => onResume(run.id)}>
+              <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+              Resume from {stageLabel}
+            </Button>
+          ) : null}
           {run?.completed_at ? (
             <span className="text-sm text-muted-foreground">
               Completed {formatDateTime(run.completed_at)}
@@ -600,11 +629,53 @@ function SeoRunProgress({
                   {seoRunStageLabels[stage]}
                 </p>
               </div>
-              <StatusBadge status={run?.stage_statuses?.[stage] ?? 'pending'} className="mt-2" />
+              <StatusBadge
+                status={stageStatus(stage, run, { contentRun, semanticRun, crawl })}
+                className="mt-2"
+              />
+              {/* A running stage shows how far it has got. Without this a stage
+                  that takes an hour is indistinguishable from one that has hung:
+                  both are the word "Running" and nothing else.
+                  The second condition covers the gap after a resume: the stage
+                  is reset to pending and only flips to running once a worker
+                  picks the job up, so for those seconds the card said "Pending"
+                  with no sign anything had happened — which read as the button
+                  having done nothing at all. */}
+              {stageStatus(stage, run, { contentRun, semanticRun, crawl }) === 'running' ||
+              stageStatus(stage, run, { contentRun, semanticRun, crawl }) === 'queued' ? (
+                <StageProgress stage={stage} contentRun={contentRun} semanticRun={semanticRun} crawl={crawl} />
+              ) : null}
               {stageErrors[stage] ? (
                 <p className="mt-2 line-clamp-2 text-xs text-amber-700">
                   {stageErrors[stage]}
                 </p>
+              ) : null}
+              {/* Re-run this stage and the ones after it, reusing everything
+                  before. Without a per-stage control the only way to redo the
+                  planner was to redo the crawl, the audit and the embeddings
+                  with it — most of an hour to reach a four-second stage.
+                  Shown disabled rather than hidden while a run is in flight: a
+                  control that vanishes reads as a control that does not exist,
+                  and the first thing anyone does after a failure is look for
+                  exactly this. */}
+              {run ? (
+                <button
+                  type="button"
+                  onClick={() => onResume(run.id, stage)}
+                  disabled={isRunActive || run.status === 'running'}
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline-offset-2 transition-colors hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                  title={
+                    isRunActive || run.status === 'running'
+                      ? 'Available once this run has finished or failed'
+                      : `Re-run ${seoRunStageLabels[stage]} and every stage after it, reusing the stages before it`
+                  }
+                >
+                  <RefreshCw
+                    className={`h-3 w-3 ${isResuming ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  {isResuming ? 'Starting…' : 'Run from here'}
+                </button>
               ) : null}
             </div>
           ))}
@@ -645,8 +716,8 @@ function SeoRunProgress({
           {noPlannerTasks ? (
             <RunNotice
               tone="warning"
-              title="No planner tasks found"
-              detail="The planner completed without creating tasks for this project."
+              title="No planner tasks yet"
+              detail="The planner ran but this project has no tasks. That is expected only when the audit found nothing to act on — otherwise re-run the planner from its stage above."
             />
           ) : null}
           {run?.error_message ? (
@@ -822,6 +893,111 @@ function KeywordBaselineSummary({
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * What a running stage has done so far.
+ *
+ * A stage that takes an hour and a stage that has hung both render as the word
+ * "Running". That ambiguity is the reason an operator sits watching a spinner
+ * with no idea whether to wait or restart, so every stage that can report
+ * progress reports it here — a bar, and the counts behind it in words.
+ */
+/**
+ * What a stage is really doing.
+ *
+ * `run.stage_statuses` is a map the orchestrator writes as it moves between
+ * stages, and it can fall behind the work itself. Pressing "Run from here" on a
+ * stage that is already going resets its entry to `pending`, and the worker —
+ * already past that point — never writes `running` again. The card then read
+ * "Queued" beside a progress bar showing 38 pages analysed.
+ *
+ * The stage's own record is the authority: a content run that says it is
+ * running *is* running, whatever the map claims. The map is used only where
+ * there is no artefact to ask.
+ */
+function stageStatus(
+  stage: string,
+  run: SeoRun | undefined,
+  artefacts: {
+    contentRun?: ContentOptimizationRun;
+    semanticRun?: SemanticIndexRun;
+    crawl?: CrawlJob;
+  }
+): string {
+  const recorded = run?.stage_statuses?.[stage] ?? 'pending';
+
+  const artefact =
+    stage === 'content_optimization'
+      ? artefacts.contentRun
+      : stage === 'semantic_index'
+        ? artefacts.semanticRun
+        : stage === 'crawl'
+          ? artefacts.crawl
+          : undefined;
+
+  if (artefact?.status === 'running' && run?.status === 'running') return 'running';
+
+  // Reached but not started yet: the job is enqueued and a worker is about to
+  // pick it up. Saying "Pending" here made a resume look like it did nothing.
+  if (run?.status === 'running' && run?.current_stage === stage && recorded === 'pending') {
+    return 'queued';
+  }
+
+  return recorded;
+}
+
+function StageProgress({
+  stage,
+  contentRun,
+  semanticRun,
+  crawl,
+}: {
+  stage: string;
+  contentRun?: ContentOptimizationRun;
+  semanticRun?: SemanticIndexRun;
+  crawl?: CrawlJob;
+}) {
+  let percent: number | undefined;
+  let detail: string | undefined;
+
+  if (stage === 'content_optimization' && contentRun) {
+    percent = contentRun.progress ?? undefined;
+    const pages = contentRun.total_pages ?? 0;
+    const suggestions = contentRun.total_suggestions ?? 0;
+    detail = `${pages} page${pages === 1 ? '' : 's'} analysed · ${suggestions} suggestion${
+      suggestions === 1 ? '' : 's'
+    }`;
+  } else if (stage === 'semantic_index' && semanticRun) {
+    percent = semanticRun.progress ?? undefined;
+    detail = `${(semanticRun.indexed_vectors ?? 0).toLocaleString()} vectors indexed`;
+  } else if (stage === 'crawl' && crawl) {
+    percent = crawl.progress ?? undefined;
+    const pages = crawl.total_pages_crawled ?? 0;
+    const found = crawl.total_pages_discovered ?? 0;
+    // Say how much of the site this covers when the budget cut it short.
+    // "99 pages crawled" on a 171-page site reads as finished when it is not.
+    detail =
+      found > pages
+        ? `${pages} of ${found} pages crawled`
+        : `${pages} page${pages === 1 ? '' : 's'} crawled`;
+  }
+
+  if (percent == null && !detail) return null;
+
+  return (
+    <div className="mt-2">
+      {percent != null ? (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+          <div
+            className="h-full rounded-full bg-blue-600 transition-all duration-500"
+            style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
+          />
+        </div>
+      ) : null}
+      {detail ? <p className="mt-1.5 text-xs text-slate-600">{detail}</p> : null}
+    </div>
   );
 }
 

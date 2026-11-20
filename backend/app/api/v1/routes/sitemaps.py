@@ -21,6 +21,28 @@ from app.services.sitemap import SitemapIntelligenceService, SitemapServiceError
 router = APIRouter()
 
 
+@router.get("/projects/{project_id}/sitemaps/build")
+async def build_sitemap_from_crawl(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Build a complete sitemap from the latest crawl.
+
+    The site's own sitemap can fall behind what exists: here it listed 100 URLs
+    against 164 live pages. This returns one built from what the crawler
+    actually reached, with query strings, non-200s, noindex pages and anything
+    that canonicalises elsewhere left out — and says how many of each it
+    dropped, so the number is explainable rather than just smaller.
+    """
+    from app.services.sitemap_builder import SitemapBuilderService
+
+    try:
+        return await SitemapBuilderService(db).build(project_id, _tenant_id(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 def _tenant_id(current_user: dict) -> UUID:
     return current_user["tenant_id"]
 

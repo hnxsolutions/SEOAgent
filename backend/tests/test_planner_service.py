@@ -104,10 +104,13 @@ class FakePlannerRepository:
         run.error_message = error_message
         return run
 
-    async def finish_run(self, run, tasks_created, high_priority_tasks, signal_ids):
+    async def finish_run(
+        self, run, tasks_created, high_priority_tasks, signal_ids, tasks_refreshed=0
+    ):
         for key, value in signal_ids.items():
             setattr(run, key, value)
         run.tasks_created = tasks_created
+        run.tasks_refreshed = tasks_refreshed
         run.high_priority_tasks = high_priority_tasks
         run.status = SeoPlannerRunStatus.completed
         run.completed_at = datetime.utcnow()

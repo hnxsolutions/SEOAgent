@@ -404,6 +404,80 @@ class SEOAnalyzer:
         return issues
 
 
+#: Everything the extractor needs from the DOM, read in one pass.
+#:
+#: The previous extractor asked the browser about forty-odd separate questions
+#: per page — a ``count()`` and a ``get_attribute()`` for each of fifteen meta
+#: tags, one locator per heading level, and more for links, images, hreflang and
+#: body text. Each is a round trip to Chromium over the DevTools protocol, and
+#: together they cost two to six seconds a page against a fetch of well under
+#: one. On a hundred-page site that overhead *was* the crawl.
+#:
+#: One evaluate returns the lot. Each section guards itself so a malformed
+#: selector or a hostile page loses that field rather than the whole page, which
+#: is what the per-call ``try/except`` used to buy.
+PAGE_EXTRACTION_JS = """() => {
+  const text = (el) => (el && el.textContent) || "";
+  const attr = (sel, name) => {
+    try { const el = document.querySelector(sel); return el ? el.getAttribute(name) : null; }
+    catch (e) { return null; }
+  };
+  const all = (sel) => {
+    try { return Array.from(document.querySelectorAll(sel)); }
+    catch (e) { return []; }
+  };
+
+  const headings = {};
+  for (let i = 1; i <= 6; i++) headings["h" + i] = all("h" + i).map(text);
+
+  const og = {};
+  for (const p of ["og:title", "og:description", "og:image", "og:type", "og:url"]) {
+    og[p] = attr('meta[property="' + p + '"]', "content");
+  }
+
+  const twitter = {};
+  for (const n of ["twitter:card", "twitter:title", "twitter:description", "twitter:image"]) {
+    twitter[n] = attr('meta[name="' + n + '"]', "content");
+  }
+
+  let timing = null;
+  try {
+    const nav = performance.getEntriesByType("navigation")[0];
+    timing = {
+      loadTime: nav ? nav.loadEventEnd - nav.fetchStart : null,
+      domContentLoaded: nav ? nav.domContentLoadedEventEnd - nav.fetchStart : null,
+    };
+  } catch (e) { timing = null; }
+
+  let bodyText = "";
+  try { bodyText = document.body ? document.body.innerText : ""; } catch (e) { bodyText = ""; }
+
+  return {
+    title: document.title || "",
+    metaDescription: attr('meta[name="description" i]', "content"),
+    headings: headings,
+    canonical: attr('link[rel="canonical" i]', "href"),
+    robotsMeta: attr('meta[name="robots" i]', "content"),
+    og: og,
+    twitter: twitter,
+    schema: all('script[type="application/ld+json"]').map(text),
+    links: all("a[href]").slice(0, 500).map((e) => ({
+      href: e.getAttribute("href"),
+      text: e.textContent || "",
+      rel: e.getAttribute("rel") || "",
+      target: e.getAttribute("target") || ""
+    })),
+    images: all("img").slice(0, 100).map((e) => ({ alt: e.getAttribute("alt") })),
+    lang: attr("html", "lang"),
+    hreflang: all('link[rel="alternate" i][hreflang]')
+      .map((e) => e.getAttribute("hreflang")).filter(Boolean),
+    viewport: attr('meta[name="viewport" i]', "content"),
+    textContent: bodyText,
+    timing: timing
+  };
+}"""
+
+
 class CrawlerEngine:
     """
     Production-grade web crawler engine using Playwright.
@@ -420,6 +494,7 @@ class CrawlerEngine:
         max_concurrent_pages: int = 5,
         request_timeout: int = 30,
         crawl_delay: float = 1.0,
+        load_state_timeout: float = 8.0,
         render_javascript: bool = True,
         user_agent: Optional[str] = None,
         respect_robots_txt: bool = True,
@@ -427,6 +502,9 @@ class CrawlerEngine:
         self.max_concurrent_pages = max_concurrent_pages
         self.request_timeout = request_timeout
         self.crawl_delay = crawl_delay
+        #: Bounded, because `load` waits on images and third-party assets too.
+        #: A page whose hero image never arrives is still worth extracting.
+        self.load_state_timeout = load_state_timeout
         self.render_javascript = render_javascript
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
         self.respect_robots_txt = respect_robots_txt
@@ -569,17 +647,6 @@ class CrawlerEngine:
         
         return True, "OK"
     
-    async def _get_attribute(self, page: Page, selector: str, attribute: str) -> Optional[str]:
-        """Safely read an attribute from the first matching element."""
-        try:
-            locator = page.locator(selector)
-            if await locator.count() == 0:
-                return None
-            value = await locator.first.get_attribute(attribute)
-            return normalize_whitespace(value) if value else None
-        except Exception:
-            return None
-
     async def _evaluate_or_none(self, page: Page, expression: str) -> Any:
         """Safely evaluate browser JavaScript and return None on DOM errors."""
         try:
@@ -624,94 +691,71 @@ class CrawlerEngine:
         else:
             page_data.final_url = page.url
         
-        # Extract title
-        page_data.title = normalize_whitespace(await page.title())
+        # One round trip for every DOM-derived field. See PAGE_EXTRACTION_JS.
+        raw = await self._evaluate_or_none(page, PAGE_EXTRACTION_JS) or {}
+
+        def clean(value: Any) -> Optional[str]:
+            """Same contract the per-field reads had: whitespace-normalised, or None."""
+            if not value:
+                return None
+            return normalize_whitespace(value) or None
+
+        page_data.title = normalize_whitespace(raw.get("title") or "")
         page_data.title_length = len(page_data.title) if page_data.title else 0
 
-        page_data.meta_description = await self._get_attribute(
-            page,
-            'meta[name="description" i]',
-            "content",
-        )
+        page_data.meta_description = clean(raw.get("metaDescription"))
         if page_data.meta_description:
             page_data.meta_description_length = len(page_data.meta_description)
-        
-        # Extract headings
+
+        headings = raw.get("headings") or {}
         for i in range(1, 7):
-            heading_texts = await page.locator(f"h{i}").all_text_contents()
-            heading_texts = [normalize_whitespace(text) for text in heading_texts]
-            heading_texts = [text for text in heading_texts if text]
-            setattr(page_data, f'h{i}', heading_texts)
-        
-        page_data.canonical_url = await self._get_attribute(
-            page,
-            'link[rel="canonical" i]',
-            "href",
-        )
+            texts = [normalize_whitespace(text) for text in headings.get(f"h{i}") or []]
+            setattr(page_data, f"h{i}", [text for text in texts if text])
+
+        page_data.canonical_url = clean(raw.get("canonical"))
         if page_data.canonical_url:
             canonical_absolute = URLNormalizer.resolve_relative_url(page.url or url, page_data.canonical_url)
             page_data.canonical_url = canonical_absolute
             page_data.canonical_url_normalized = URLNormalizer.normalize_url(canonical_absolute)
 
-        robots_meta = await self._get_attribute(page, 'meta[name="robots" i]', "content")
+        robots_meta = clean(raw.get("robotsMeta"))
         if robots_meta:
             page_data.robots_meta = robots_meta
             robots_lower = robots_meta.lower()
             page_data.noindex = "noindex" in robots_lower
             page_data.nofollow = "nofollow" in robots_lower
-        
-        # Extract Open Graph tags
-        og_extractors = {
-            'og:title': 'og_title',
-            'og:description': 'og_description',
-            'og:image': 'og_image',
-            'og:type': 'og_type',
-            'og:url': 'og_url',
-        }
-        for prop, attr in og_extractors.items():
-            value = await self._get_attribute(
-                page,
-                f'meta[property="{prop}"]',
-                "content",
-            )
+
+        og_values = raw.get("og") or {}
+        for prop, attr_name in (
+            ("og:title", "og_title"),
+            ("og:description", "og_description"),
+            ("og:image", "og_image"),
+            ("og:type", "og_type"),
+            ("og:url", "og_url"),
+        ):
+            value = clean(og_values.get(prop))
             if value:
-                setattr(page_data, attr, value)
+                setattr(page_data, attr_name, value)
                 page_data.has_og_tags = True
-        
-        # Extract Twitter Card tags
-        twitter_extractors = {
-            'twitter:card': 'twitter_card',
-            'twitter:title': 'twitter_title',
-            'twitter:description': 'twitter_description',
-            'twitter:image': 'twitter_image',
-        }
-        for name, attr in twitter_extractors.items():
-            value = await self._get_attribute(
-                page,
-                f'meta[name="{name}"]',
-                "content",
-            )
+
+        twitter_values = raw.get("twitter") or {}
+        for name, attr_name in (
+            ("twitter:card", "twitter_card"),
+            ("twitter:title", "twitter_title"),
+            ("twitter:description", "twitter_description"),
+            ("twitter:image", "twitter_image"),
+        ):
+            value = clean(twitter_values.get(name))
             if value:
-                setattr(page_data, attr, value)
+                setattr(page_data, attr_name, value)
                 page_data.has_twitter_card = True
-        
-        # Extract schema.org markup
-        schema_texts = await page.locator('script[type="application/ld+json"]').all_text_contents()
-        schema_markup, schema_types = parse_json_ld_scripts(schema_texts)
+
+        schema_markup, schema_types = parse_json_ld_scripts(raw.get("schema") or [])
         if schema_markup:
             page_data.schema_markup = schema_markup
             page_data.schema_types = schema_types
             page_data.has_schema_markup = True
-        
-        # Extract links
-        raw_links = await page.locator("a[href]").evaluate_all(
-            """elements => elements.slice(0, 500).map((element) => ({
-                href: element.getAttribute("href"),
-                text: element.textContent || "",
-                rel: element.getAttribute("rel") || "",
-                target: element.getAttribute("target") || ""
-            }))"""
-        )
+
         (
             page_data.internal_links,
             page_data.external_links,
@@ -719,17 +763,12 @@ class CrawlerEngine:
             page_data.external_link_urls,
         ) = classify_links(
             url,
-            raw_links,
+            raw.get("links") or [],
             allowed_domains=allowed_domains,
             follow_subdomains=follow_subdomains,
         )
-        
-        # Extract images
-        raw_images = await page.locator("img").evaluate_all(
-            """elements => elements.slice(0, 100).map((element) => ({
-                alt: element.getAttribute("alt")
-            }))"""
-        )
+
+        raw_images = raw.get("images") or []
         page_data.total_images = len(raw_images)
         for image in raw_images:
             alt_text = normalize_whitespace(image.get("alt"))
@@ -738,48 +777,28 @@ class CrawlerEngine:
                 page_data.image_alt_texts.append(alt_text)
             else:
                 page_data.images_without_alt += 1
-        
-        html_lang = await self._get_attribute(page, "html", "lang")
+
+        html_lang = clean(raw.get("lang"))
         if html_lang:
             page_data.language = html_lang
-        
-        # Extract hreflang tags
-        hreflang_tags = await page.locator('link[rel="alternate" i][hreflang]').evaluate_all(
-            """elements => elements.map((element) => element.getAttribute("hreflang")).filter(Boolean)"""
-        )
-        page_data.hreflang_tags = [normalize_whitespace(tag) for tag in hreflang_tags]
-        
-        viewport = await self._get_attribute(page, 'meta[name="viewport" i]', "content")
+
+        page_data.hreflang_tags = [normalize_whitespace(tag) for tag in raw.get("hreflang") or []]
+
+        viewport = clean(raw.get("viewport"))
         if viewport:
             page_data.viewport_meta = viewport
-            page_data.is_mobile_friendly = 'width=device-width' in viewport.lower()
-        
-        # Calculate word count
-        text_content = await self._evaluate_or_none(page, "() => document.body ? document.body.innerText : ''")
+            page_data.is_mobile_friendly = "width=device-width" in viewport.lower()
+
+        text_content = raw.get("textContent") or ""
         page_data.text_content = normalize_whitespace(text_content)
         if text_content:
             page_data.word_count = count_words(text_content)
-        
-        # Generate content hash
         page_data.content_hash = content_hash(text_content)
-        
-        # Page speed metrics (placeholders - would need real performance API)
-        try:
-            performance_timing = await page.evaluate('''() => {
-                const timing = performance.timing;
-                const navigation = performance.getEntriesByType('navigation')[0];
-                return {
-                    loadTime: navigation ? navigation.loadEventEnd - navigation.fetchStart : null,
-                    domContentLoaded: navigation ? navigation.domContentLoadedEventEnd - navigation.fetchStart : null,
-                    firstByte: timing.responseStart - timing.navigationStart,
-                };
-            }''')
-            if performance_timing:
-                page_data.load_time_ms = performance_timing.get('loadTime')
-                page_data.first_contentful_paint_ms = performance_timing.get('domContentLoaded')
-        except Exception:
-            pass
-        
+
+        timing = raw.get("timing") or {}
+        page_data.load_time_ms = timing.get("loadTime")
+        page_data.first_contentful_paint_ms = timing.get("domContentLoaded")
+
         # Run SEO analysis
         page_data.issues = SEOAnalyzer.analyze_page(page_data)
         
@@ -844,6 +863,21 @@ class CrawlerEngine:
                         wait_until="domcontentloaded",
                         timeout=self.request_timeout * 1000,
                     )
+
+                    # Wait for stylesheets before reading the DOM. `innerText`
+                    # reports *rendered* text, so text inside a collapsed
+                    # accordion or an unopened mobile menu counts until the CSS
+                    # that hides it arrives. Extraction used to be slow enough
+                    # that this always happened to have landed first; now that it
+                    # is fast, reading immediately counted that hidden text and
+                    # word counts moved with network latency rather than with
+                    # the page. Content hash is derived from the same text and
+                    # drives change detection, so an unstable read here would
+                    # report edits to pages nobody touched.
+                    try:
+                        await page.wait_for_load_state("load", timeout=self.load_state_timeout * 1000)
+                    except PlaywrightError:
+                        logger.debug("load wait timed out; continuing extraction", url=normalized_url)
 
                     if self.render_javascript:
                         try:

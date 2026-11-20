@@ -41,6 +41,22 @@ async def create_project(
         user_id=current_user["user_id"]
     )
 
+    # Autonomy: give the project its recurring cadence immediately. Without
+    # this the agent analyses the domain once and then never acts again, which
+    # was the single largest gap between "a toolkit" and "an agent". Provisioning
+    # is idempotent and must never fail project creation.
+    if settings.AUTO_PROVISION_SCHEDULES_ON_PROJECT_CREATE:
+        try:
+            from app.services.schedule_provisioning import ScheduleProvisioningService
+
+            await ScheduleProvisioningService(db).provision(
+                project.id,
+                current_user["tenant_id"],
+                blogs_per_week=settings.DEFAULT_BLOGS_PER_WEEK,
+            )
+        except Exception:
+            logger.exception("schedule_provisioning_failed", project_id=str(project.id))
+
     if settings.AUTO_RUN_SEO_ON_PROJECT_CREATE:
         try:
             run = await SeoRunService(db).start_run(project.id, current_user["tenant_id"])
@@ -49,6 +65,9 @@ async def create_project(
             enqueue_or_background(
                 background_tasks, "app.queue.jobs.run_seo_run", run_seo_run_background,
                 run.id, current_user["tenant_id"], max_retries=0,
+                # A full run is hours of work on CPU-only hardware; the queue's
+                # generic 30-minute default killed it mid-pipeline.
+                job_timeout=settings.SEO_RUN_JOB_TIMEOUT_SECONDS,
             )
             logger.info(
                 "auto_seo_run_enqueued_on_project_create",

@@ -59,7 +59,17 @@ coverage/
 .nyc_output/
 
 # Docker
-docker-compose.override.yml
+#
+# docker-compose.override.yml is deliberately NOT ignored. It used to be, on the
+# usual assumption that an override file holds one developer's personal tweaks.
+# It no longer does: docker-compose.yml is the production topology and the
+# override carries the whole development setup — source bind mounts, --reload,
+# published ports, host Ollama. Ignoring it would mean a fresh clone ran the
+# production configuration locally and nobody could work.
+#
+# For personal, uncommitted tweaks use an extra file and an explicit flag:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml -f my.yml up -d
+docker-compose.local.yml
 
 # Misc
 .tools/

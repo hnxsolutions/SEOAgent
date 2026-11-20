@@ -236,7 +236,16 @@ class CrawlWorker:
                         task.crawl_job_id,
                         task.metadata.get("max_pages", 100),
                     )
-                    for new_url in new_urls[: min(50, remaining)]:
+                    # Bounded by the job's remaining page budget, and nothing
+                    # else. This used to be `min(50, remaining)`: a hard cap of
+                    # fifty new links per page, regardless of how much budget
+                    # was left. A homepage with 71 internal links had 21 of them
+                    # dropped without a trace, and nine of those were linked
+                    # from nowhere else, so they were never crawled — on a site
+                    # whose sitemap omits them, that is simply lost coverage.
+                    # `remaining` already stops the queue exceeding max_pages,
+                    # which is the limit that was actually wanted.
+                    for new_url in new_urls[:remaining]:
                         metadata = dict(task.metadata)
                         metadata["sitemaps_queued"] = True
                         new_task = CrawlTask(

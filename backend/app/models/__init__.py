@@ -51,6 +51,7 @@ from app.models.patch_pipeline import PatchPipeline
 from app.models.code_review import CodeReview
 from app.models.deployment_verification import DeploymentVerification
 from app.models.ops_snapshot import OpsHealthSnapshot
+from app.models.growth_snapshot import GrowthSnapshot
 from app.models.site_validation import SiteValidation
 from app.models.keyword_baseline import KeywordBaseline
 from app.models.planner import SeoPlannerRun, SeoTask, SeoTaskDependency, SeoWeeklyReport
@@ -69,6 +70,10 @@ from app.models.repo_agent import (
 )
 from app.models.serp import SERPAnalysis, SERPResult, SerpSnapshot, SerpSnapshotAsset, SerpSnapshotResult
 from app.models.agent import AgentRun
+from app.models.website_profile import WebsiteProfile, WebsiteProfileSnapshot
+from app.models.content_cluster import ContentCluster, ContentClusterNode
+from app.models.content_refresh import ContentRefreshProposal
+from app.models.password_reset import PasswordResetToken
 
 __all__ = [
     "User",
@@ -147,4 +152,11 @@ __all__ = [
     "CodeReview",
     "DeploymentVerification",
     "OpsHealthSnapshot",
+    "GrowthSnapshot",
+    "WebsiteProfile",
+    "WebsiteProfileSnapshot",
+    "ContentCluster",
+    "ContentClusterNode",
+    "ContentRefreshProposal",
+    "PasswordResetToken",
 ]

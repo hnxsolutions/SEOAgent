@@ -111,6 +111,11 @@ class SeoPlannerRun(Base):
     repo_scan_run_id = Column(UUID(as_uuid=True), ForeignKey("repo_scan_runs.id"), nullable=True, index=True)
 
     tasks_created = Column(Integer, default=0)
+    #: Findings that already had a task. A run over an unchanged site
+    #: refreshes everything and creates nothing, which is success — but
+    #: with only `tasks_created` stored it was indistinguishable from a
+    #: run that did nothing at all.
+    tasks_refreshed = Column(Integer, default=0)
     high_priority_tasks = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
 

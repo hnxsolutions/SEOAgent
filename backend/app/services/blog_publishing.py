@@ -46,6 +46,7 @@ from app.repo_agent.scanner import (
     build_unified_diff,
     content_hash,
     read_repo_text,
+    repo_relative,
     resolve_repo_root,
     safe_child_path,
 )
@@ -655,7 +656,13 @@ class BlogPublishingService:
             if not re.search(r"export\s+const\s+blogs\s*:", content) or "getBlogBySlug" not in content:
                 found_content_dir = None
         mdx_detected = self._repo_has_mdx_support(root)
-        sitemap_support = safe_child_path(root, "app/sitemap.ts").exists() or safe_child_path(root, "public/sitemap.xml").exists()
+        # repo_relative maps app/sitemap.ts to src/app/sitemap.ts in a src/-based
+        # repository, so a blog post is not reported as unlinkable from the
+        # sitemap just because the project keeps its routes under src/.
+        sitemap_support = (
+            safe_child_path(root, repo_relative(root, "app/sitemap.ts")).exists()
+            or safe_child_path(root, "public/sitemap.xml").exists()
+        )
         issues = []
         if not has_blog_index:
             issues.append({"code": "missing_blog_index", "message": "No blog index route was found."})
@@ -699,7 +706,14 @@ class BlogPublishingService:
         original = read_repo_text(target)
         if f'slug: "{draft.slug}"' in original and not overwrite:
             raise BlogPublishingError("Blog slug already exists in the static blog data file")
-        proposed = self._insert_static_blog_entry(original, draft)
+        # The project supplies the byline and category. A draft with no project
+        # still publishes — the entry simply carries the neutral defaults.
+        project = (
+            await self.repository.get_project(draft.project_id, tenant_id)
+            if draft.project_id
+            else None
+        )
+        proposed = self._insert_static_blog_entry(original, draft, project)
         if proposed == original:
             raise BlogPublishingError("Static blog data file could not be patched safely")
         patch = await self._create_repo_patch(
@@ -739,7 +753,7 @@ class BlogPublishingService:
         await self.db.refresh(result)
         return run, result
 
-    def _insert_static_blog_entry(self, original: str, draft: BlogDraft) -> str:
+    def _insert_static_blog_entry(self, original: str, draft: BlogDraft, project=None) -> str:
         match = re.search(r"export\s+const\s+blogs\s*:\s*Blog\[\]\s*=\s*\[", original)
         if not match:
             return original
@@ -747,13 +761,24 @@ class BlogPublishingService:
         array_close = self._find_matching_delimiter(original, array_open, "[", "]") if array_open >= 0 else None
         if array_close is None:
             return original
-        entry = self._static_blog_entry(draft)
+        entry = self._static_blog_entry(draft, project)
         return original[:array_close] + entry + original[array_close:]
 
-    def _static_blog_entry(self, draft: BlogDraft) -> str:
+    def _static_blog_entry(self, draft: BlogDraft, project=None) -> str:
+        """Build one entry for a Next.js static blog data file.
+
+        `author` and `category` were hardcoded to one customer's brand and one
+        customer's industry, so every project publishing through this adapter
+        got that company's name on its own articles. Both now come from the
+        project, and the author falls back to a neutral value rather than to a
+        business the article has nothing to do with.
+        """
         today = datetime.utcnow().date().isoformat()
         content_blocks = self._markdown_to_blog_blocks(draft.draft_markdown or "")
-        tags = self._tags_from_draft(draft)
+        tags = self._tags_from_draft(draft, project)
+        author = self._author_name(project)
+        category = self._category_for(draft, project)
+        image = self._hero_image(draft)
         return (
             "  {\n"
             f"    id: \"seo-agent-{self._slugify(draft.slug)}\",\n"
@@ -761,21 +786,67 @@ class BlogPublishingService:
             f"    title: {json.dumps(draft.title or 'Draft Blog', ensure_ascii=False)},\n"
             f"    metaDescription: {json.dumps(draft.meta_description or '', ensure_ascii=False)},\n"
             f"    excerpt: {json.dumps(self._excerpt_from_markdown(draft.draft_markdown or draft.meta_description or ''), ensure_ascii=False)},\n"
-            "    category: \"PCD Pharma\",\n"
+            f"    category: {json.dumps(category, ensure_ascii=False)},\n"
             "    readTime: \"5 min read\",\n"
             f"    publishedAt: \"{today}\",\n"
             f"    updatedAt: \"{today}\",\n"
-            "    author: \"Novakos Healthcare\",\n"
+            f"    author: {json.dumps(author, ensure_ascii=False)},\n"
             f"    tags: {json.dumps(tags, ensure_ascii=False)},\n"
+            # The alt text described a pharmacy shelf regardless of what the
+            # article was about, which is both wrong for other industries and an
+            # accessibility defect — alt text has to describe the actual image.
+            # It now describes the article, which is true whatever the stock
+            # photo is. The image id stays as the adapter's default because it
+            # is the only one known to resolve; a project wanting its own hero
+            # image sets it on the draft before publishing.
             "    image: pexelsImage({\n"
-            "      id: \"8657294\",\n"
-            "      alt: \"Organized pharmacy shelves for B2B pharmaceutical distribution\",\n"
+            f"      id: {json.dumps(image['id'])},\n"
+            f"      alt: {json.dumps(image['alt'], ensure_ascii=False)},\n"
             "      creditUrl:\n"
-            "        \"https://www.pexels.com/photo/a-pharmacy-shelf-filled-with-lots-of-medicine-bottles-8657294/\",\n"
+            f"        {json.dumps(image['credit_url'])},\n"
             "    }),\n"
             f"    content: {json.dumps(content_blocks, ensure_ascii=False, indent=6).replace(chr(10), chr(10) + '    ')},\n"
             "  },\n"
         )
+
+    @staticmethod
+    def _author_name(project) -> str:
+        """Byline for a published article.
+
+        Reads the project record — `business_name` is the human-facing brand,
+        `name` is the console label. Falls back to a neutral byline rather than
+        to any particular company: an article on someone else's site must never
+        be signed with a business that has nothing to do with it.
+        """
+        for attribute in ("business_name", "name"):
+            value = getattr(project, attribute, None)
+            if value and str(value).strip():
+                return str(value).strip()
+        return "Editorial Team"
+
+    @staticmethod
+    def _category_for(draft: BlogDraft, project) -> str:
+        """Category for the entry, from the project's own industry."""
+        industry = getattr(project, "industry", None)
+        if industry and str(industry).strip():
+            return str(industry).strip()
+        return "Insights"
+
+    @staticmethod
+    def _hero_image(draft: BlogDraft) -> dict:
+        """The entry's image, with alt text describing the article.
+
+        The id and credit are the adapter's default stock photo — the only one
+        known to resolve in the existing data file. What changed is the alt
+        text, which previously described a pharmacy shelf on every article in
+        every industry.
+        """
+        title = (draft.title or "Article").strip()
+        return {
+            "id": "8657294",
+            "alt": f"Illustration accompanying the article “{title}”",
+            "credit_url": "https://www.pexels.com/photo/a-pharmacy-shelf-filled-with-lots-of-medicine-bottles-8657294/",
+        }
 
     def _markdown_to_blog_blocks(self, markdown: str) -> List[dict]:
         blocks: List[dict] = []
@@ -803,13 +874,38 @@ class BlogPublishingService:
             blocks.append({"type": "paragraph", "text": " ".join(paragraphs)})
         return blocks[:12] or [{"type": "paragraph", "text": "Draft body requires editorial review before publishing."}]
 
-    def _tags_from_draft(self, draft: BlogDraft) -> List[str]:
+    def _tags_from_draft(self, draft: BlogDraft, project=None) -> List[str]:
+        """Tags for the entry, drawn from the project and the article itself.
+
+        Every article used to be tagged "PCD Pharma" and "Pharma Distribution"
+        regardless of its subject or its owner, with extra rules for one
+        customer's region and product line. Tags now come from what the project
+        says it does and which of its own keywords the article actually
+        mentions — so a workflow-automation post is not filed under pharma.
+        """
         text = f"{draft.title or ''} {draft.meta_description or ''}".lower()
-        tags = ["PCD Pharma", "Pharma Distribution"]
-        if "haryana" in text:
-            tags.append("Haryana")
-        if "wholesale" in text:
-            tags.append("Wholesale Medicine")
+        tags: List[str] = []
+
+        industry = getattr(project, "industry", None)
+        if industry and str(industry).strip():
+            tags.append(str(industry).strip())
+
+        # The project's own keywords, but only the ones this article is about.
+        for source in ("target_keywords", "primary_services", "keywords"):
+            for value in getattr(project, source, None) or []:
+                label = str(value).strip()
+                if label and label.lower() in text and label.title() not in tags:
+                    tags.append(label.title())
+
+        if not tags:
+            # Nothing configured and nothing matched: fall back to the article's
+            # own subject rather than inventing a topic for it.
+            location = getattr(project, "target_location", None)
+            if location and str(location).strip().lower() in text:
+                tags.append(str(location).strip())
+            else:
+                tags.append("Insights")
+
         return tags[:5]
 
     def _excerpt_from_markdown(self, markdown: str) -> str:

@@ -471,7 +471,8 @@ class IndexingService:
             raise ValueError("Project not found")
 
         planner_run = await self.repository.create_planner_run_for_fix(issue.project_id, tenant_id)
-        task_values = self._fix_task_values(planner_run, issue, project)
+        pharma_review = await self._pharma_review_required(issue.project_id, tenant_id, project, issue.page_url)
+        task_values = self._fix_task_values(planner_run, issue, project, pharma_review)
         task, created = await self.repository.upsert_fix_task(task_values)
         planner_run.tasks_created = 1 if created else 0
         planner_run.high_priority_tasks = 1 if self._enum_value(task.priority) in {"high", "critical"} else 0
@@ -612,6 +613,78 @@ class IndexingService:
         summary["next_validation_date"] = datetime.utcnow() + timedelta(days=7)
         return summary
 
+    #: Issue states worth re-checking. `open` and `in_progress` may have been
+    #: fixed on the site without anyone telling the agent; `fix_proposed` and
+    #: `fixed` are claims that only Google can confirm. `validated`, `ignored`
+    #: and `still_failing` are settled until something changes them.
+    REVALIDATION_STATUSES = (
+        GSCIndexingIssueStatus.open,
+        GSCIndexingIssueStatus.in_progress,
+        GSCIndexingIssueStatus.fix_proposed,
+        GSCIndexingIssueStatus.fixed,
+    )
+
+    async def revalidate_open_issues(
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        *,
+        limit: Optional[int] = None,
+    ) -> dict:
+        """Ask Google again about issues already raised, and record what changed.
+
+        Each re-check is a URL inspection call against a quota Google enforces,
+        so this is bounded by the same per-run limit as a fresh inspection. The
+        oldest issues go first: a problem raised three weeks ago is the one most
+        likely to have been fixed quietly, and the one most misleading if it sits
+        on the dashboard unchallenged.
+
+        A failure on one issue does not stop the rest. Google rate-limits, and
+        losing the whole pass because the fourth URL was throttled would mean the
+        backlog never clears.
+        """
+        budget = int(limit or settings.GSC_URL_INSPECTION_MAX_URLS_PER_RUN)
+        checked = resolved = still_failing = failed = 0
+
+        for status in self.REVALIDATION_STATUSES:
+            if checked >= budget:
+                break
+            issues = await self.repository.list_issues(
+                project_id, tenant_id, status=status, limit=budget - checked
+            )
+            for issue in issues:
+                if checked >= budget:
+                    break
+                checked += 1
+                try:
+                    outcome = await self.validate_issue(issue.id, tenant_id, run_now=True)
+                except Exception as exc:
+                    failed += 1
+                    logger.warning(
+                        "indexing_revalidation_failed",
+                        issue_id=str(issue.id),
+                        error=str(exc)[:200],
+                    )
+                    continue
+
+                new_status = self._enum_value(getattr(issue, "status", None))
+                if new_status in {
+                    GSCIndexingIssueStatus.validated.value,
+                    GSCIndexingIssueStatus.fixed.value,
+                }:
+                    resolved += 1
+                elif new_status == GSCIndexingIssueStatus.still_failing.value:
+                    still_failing += 1
+                _ = outcome
+
+        return {
+            "checked": checked,
+            "resolved": resolved,
+            "still_failing": still_failing,
+            "failed": failed,
+            "budget": budget,
+        }
+
     async def run_weekly_monitor(self, project_id: UUID, tenant_id: UUID, *, limit: Optional[int] = None) -> dict:
         sync_summary: dict[str, Any] = {}
         try:
@@ -634,6 +707,16 @@ class IndexingService:
             project_id=project_id,
             limit=limit or settings.GSC_URL_INSPECTION_MAX_URLS_PER_RUN,
         )
+
+        # Re-check what was already found, not just what is new.
+        #
+        # The monitor inspected fresh URLs and reported a count of open issues,
+        # but nothing ever asked Google whether the ones it had already raised
+        # were still broken. A fix shipped last week stayed on the dashboard as
+        # an open issue indefinitely, and the agent could not tell progress from
+        # a backlog that never moved.
+        revalidation = await self.revalidate_open_issues(project_id, tenant_id)
+
         summary = await self.summary(project_id, tenant_id)
         return {
             "gsc_sync": sync_summary,
@@ -641,6 +724,7 @@ class IndexingService:
             "inspection_status": run.status,
             "inspected_url_count": run.inspected_url_count,
             "failed_url_count": run.failed_url_count,
+            "revalidation": revalidation,
             "issues_count": summary["issues_count"],
             "issues_by_type": summary["issues_by_type"],
             "weekly_indexing_report": {
@@ -730,10 +814,27 @@ class IndexingService:
                 urls.append(self._absolute_project_url(project, route))
         return [url for url in urls if url]
 
-    def _fix_task_values(self, planner_run: Any, issue: GSCIndexingIssue, project: Any) -> dict:
+    def _fix_task_values(
+        self,
+        planner_run: Any,
+        issue: GSCIndexingIssue,
+        project: Any,
+        pharma_review: Optional[bool] = None,
+    ) -> dict:
+        """Build the planner task for one indexing issue.
+
+        `pharma_review` is resolved by the async caller from the project's
+        configured compliance profile. None means "nobody asked", and the old
+        keyword sniffing is used as the fallback — see `_needs_pharma_review`.
+        """
         task_type, impact, effort = self._task_shape(issue.issue_type)
         compliance_note = ""
-        if self._needs_pharma_review(project, issue.page_url) and task_type == SeoTaskType.content_refresh:
+        needs_pharma = (
+            pharma_review
+            if pharma_review is not None
+            else self._needs_pharma_review(project, issue.page_url)
+        )
+        if needs_pharma and task_type == SeoTaskType.content_refresh:
             compliance_note = " Pharma/healthcare content updates must pass pharma_b2b compliance review before publishing."
         return {
             "tenant_id": issue.tenant_id,
@@ -835,7 +936,45 @@ class IndexingService:
             GSCIndexingIssueSeverity.low.value: 35,
         }.get(self._enum_value(severity), 50)
 
+    async def _pharma_review_required(
+        self, project_id: Any, tenant_id: UUID, project: Any, page_url: str
+    ) -> bool:
+        """Whether this project's content changes need pharma compliance review.
+
+        The project's configured compliance profile decides it. That is the
+        record a person set deliberately, and it is the only thing that should
+        put a pharma gate on another customer's content.
+
+        Keyword detection remains only as a fallback for projects that have no
+        policy row yet — it errs towards requiring review, which adds a check
+        rather than removing one, so an unconfigured healthcare project is not
+        silently let through.
+        """
+        try:
+            from app.models.copy_review import SeoCopyComplianceProfile, SeoCopyPolicy
+            from sqlalchemy import select
+
+            result = await self.db.execute(
+                select(SeoCopyPolicy.compliance_profile).where(
+                    SeoCopyPolicy.project_id == project_id,
+                    SeoCopyPolicy.tenant_id == tenant_id,
+                )
+            )
+            profile = result.scalar_one_or_none()
+            if profile is not None:
+                return profile == SeoCopyComplianceProfile.pharma_b2b
+        except Exception as exc:  # pragma: no cover - never block a fix plan
+            logger.warning("pharma_profile_lookup_failed", error=str(exc))
+
+        return self._needs_pharma_review(project, page_url)
+
     def _needs_pharma_review(self, project: Any, page_url: str) -> bool:
+        """Keyword fallback, used only when no compliance policy is configured.
+
+        Deliberately kept: removing it would let a healthcare project with no
+        policy row publish content changes with no compliance note at all. It
+        selects RULES, never a brand or any finished copy.
+        """
         text = f"{getattr(project, 'name', '')} {getattr(project, 'domain', '')} {page_url}".lower()
         return any(term in text for term in ["pharma", "healthcare", "medicine", "medical"])
 

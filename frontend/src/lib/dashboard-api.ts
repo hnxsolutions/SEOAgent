@@ -1,21 +1,7 @@
 import type { AxiosResponse } from 'axios';
 import { api, projectAPI } from '@/lib/api';
 import type {
-  BrainState,
-  BrainMasterPlan,
-  BrainPendingFixes,
-  DailyBriefing,
-  BriefingHistory,
-  BriefingTrends,
-  NotificationList,
   AppNotification,
-  MissionControlOverview,
-  QueueStats,
-  PagespeedRun,
-  VerificationList,
-  LearningStats,
-  Deployment,
-  DeploymentList,
   AuditRun,
   AuditSummary,
   BlogDraft,
@@ -24,25 +10,55 @@ import type {
   BlogPublishActionResponse,
   BlogPublishConnection,
   BlogTopic,
+  BrainMasterPlan,
+  BrainPendingFixes,
+  BrainState,
+  BriefingHistory,
+  BriefingTrends,
+  BuiltSitemap,
+  CodeReviewFile,
+  CodeReviewItem,
+  ContentClusterView,
+  ContentEngineOverview,
+  ContentOpportunity,
   ContentOptimizationRun,
+  ContentPerformanceView,
+  ContentSlot,
   ContentSuggestion,
   ContentSummary,
   CrawlJob,
   CrawlListResponse,
   CrawlPage,
+  DailyBriefing,
+  Deployment,
+  DeploymentList,
+  DeploymentVerificationRun,
+  GSCConnection,
+  GSCMonitorPayload,
+  GSCMonitorSetting,
+  GSCProperty,
+  GSCSubmitAllResult,
+  GSCSyncJob,
+  GeneratedPatch,
   GeoAeoPageScore,
   GeoAeoRecommendation,
   GeoAeoRun,
   GeoAeoSummary,
   GoogleOAuthStart,
-  GSCConnection,
-  GSCMonitorPayload,
-  GSCMonitorSetting,
-  GSCProperty,
-  GSCSyncJob,
+  GrowthBlogPost,
+  GrowthCalendar,
+  GrowthCluster,
+  GrowthEeat,
+  GrowthGap,
+  GrowthKeyword,
+  GrowthSummary,
   ImpactExperiment,
   ImpactResult,
   ImpactSummary,
+  IndexQueueItem,
+  IndexQueueSubmitResult,
+  IndexQueueSummary,
+  IndexingAutofixResult,
   IndexingFixPlan,
   IndexingIssue,
   IndexingRun,
@@ -57,39 +73,36 @@ import type {
   KeywordBaselinePayload,
   KnowledgeIndexRun,
   KnowledgeSource,
+  LearningStats,
+  MissionControlOverview,
+  NotificationList,
+  OpsAction,
+  OpsChange,
+  OpsHealth,
+  OpsLifecycleStage,
+  OpsOverview,
+  OpsTimelineEntry,
+  PagespeedRun,
   PatchApplyRun,
+  PatchPipelineRun,
+  PatchPipelineSummary,
   PlannerRun,
   PlannerSummary,
   PlannerTask,
   Project,
   PullRequestRecord,
+  QueueStats,
   RankTrackingKeywordRow,
   RankTrackingPageRow,
   RankTrackingRow,
   RankTrackingSummary,
+  RefreshProposalView,
   RepoConnection,
   RepoScanRun,
-  IndexQueueItem,
-  IndexQueueSummary,
-  IndexQueueSubmitResult,
-  TechnologyFingerprint,
-  GeneratedPatch,
-  PatchPipelineRun,
-  PatchPipelineSummary,
-  CodeReviewItem,
-  CodeReviewFile,
-  DeploymentVerificationRun,
-  OpsHealth,
-  OpsAction,
-  OpsLifecycleStage,
-  OpsChange,
-  OpsTimelineEntry,
-  OpsOverview,
+  SEOIssueListResponse,
   SearchConsoleImport,
   SearchConsoleOpportunity,
   SearchConsoleSummary,
-  SerpSnapshot,
-  SerpSnapshotSummary,
   SemanticIndexRun,
   SemanticSearchResponse,
   SeoCodeIssue,
@@ -97,8 +110,12 @@ import type {
   SeoRun,
   SeoRunListResponse,
   SeoRunReportResponse,
-  SEOIssueListResponse,
+  SerpSnapshot,
+  SerpSnapshotSummary,
+  TechnologyFingerprint,
   UUID,
+  VerificationList,
+  WebsiteProfileView,
   WeeklyReport,
 } from '@/types/dashboard';
 
@@ -146,6 +163,12 @@ export const dashboardApi = {
       ),
     status: (runId: UUID) =>
       unwrap<SeoRun>(api.get(`/seo-runs/${runId}/status`)),
+    resume: (runId: UUID, fromStage?: string) =>
+      unwrap<SeoRun>(
+        api.post(`/seo-runs/${runId}/resume`, null, {
+          params: fromStage ? { from_stage: fromStage } : undefined,
+        })
+      ),
     report: (runId: UUID) =>
       unwrap<SeoRunReportResponse>(api.get(`/seo-runs/${runId}/report`)),
   },
@@ -349,6 +372,10 @@ export const dashboardApi = {
           comparison_window: 'last_28_days',
         })
       ),
+    submitAll: (projectId: UUID) =>
+      unwrap<GSCSubmitAllResult>(
+        api.post(`/search-console/projects/${projectId}/submit-all`)
+      ),
     syncJobs: (projectId: UUID) =>
       unwrap<Envelope<GSCSyncJob, 'sync_jobs'>>(
         api.get(`/search-console/projects/${projectId}/sync-jobs`, {
@@ -485,6 +512,78 @@ export const dashboardApi = {
     overview: () => unwrap<OpsOverview>(api.get('/operations/overview')),
   },
 
+  contentEngine: {
+    overview: (projectId: UUID) =>
+      unwrap<ContentEngineOverview>(api.get(`/content-engine/projects/${projectId}/overview`)),
+    opportunities: (projectId: UUID) =>
+      unwrap<{ topics: ContentOpportunity[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/opportunities`),
+      ),
+    scan: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/scan-opportunities`),
+      ),
+    calendar: (projectId: UUID) =>
+      unwrap<{ slots: ContentSlot[]; blogs_per_week: number }>(
+        api.get(`/content-engine/projects/${projectId}/calendar`),
+      ),
+    setCadence: (projectId: UUID, count: number) =>
+      unwrap<Record<string, unknown>>(
+        api.put(`/content-engine/projects/${projectId}/blogs-per-week`, null, { params: { count } }),
+      ),
+    draftNext: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(api.post(`/content-engine/projects/${projectId}/draft-next`)),
+    clusters: (projectId: UUID) =>
+      unwrap<{ clusters: ContentClusterView[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/clusters`),
+      ),
+    rebuildClusters: (projectId: UUID) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/clusters/rebuild`),
+      ),
+    profile: (projectId: UUID) =>
+      unwrap<WebsiteProfileView>(api.get(`/content-engine/projects/${projectId}/profile`)),
+    buildProfile: (projectId: UUID, force = false) =>
+      unwrap<Record<string, unknown>>(
+        api.post(`/content-engine/projects/${projectId}/profile/build`, null, { params: { force } }),
+      ),
+    refreshProposals: (projectId: UUID) =>
+      unwrap<{ proposals: RefreshProposalView[]; count: number }>(
+        api.get(`/content-engine/projects/${projectId}/refresh-proposals`),
+      ),
+    actOnProposal: (proposalId: UUID, action: string, reason?: string) =>
+      unwrap<RefreshProposalView>(
+        api.post(`/content-engine/refresh-proposals/${proposalId}/${action}`, null, {
+          params: reason ? { reason } : undefined,
+        }),
+      ),
+    performance: (projectId: UUID) =>
+      unwrap<ContentPerformanceView>(
+        api.get(`/content-engine/projects/${projectId}/content-performance`),
+      ),
+  },
+
+  growth: {
+    summary: (projectId: UUID) =>
+      unwrap<GrowthSummary>(api.get(`/growth/projects/${projectId}/summary`)),
+    keywords: (projectId: UUID) =>
+      unwrap<{ keywords: GrowthKeyword[] }>(api.get(`/growth/projects/${projectId}/keywords`)),
+    contentGaps: (projectId: UUID) =>
+      unwrap<{ content_gaps: GrowthGap[] }>(api.get(`/growth/projects/${projectId}/content-gaps`)),
+    clusters: (projectId: UUID) =>
+      unwrap<{ clusters: GrowthCluster[] }>(api.get(`/growth/projects/${projectId}/clusters`)),
+    roadmap: (projectId: UUID) =>
+      unwrap<{ roadmap: GrowthBlogPost[] }>(api.get(`/growth/projects/${projectId}/roadmap`)),
+    calendar: (projectId: UUID, days = 90) =>
+      unwrap<GrowthCalendar>(api.get(`/growth/projects/${projectId}/calendar`, { params: { days } })),
+    eeat: (projectId: UUID) =>
+      unwrap<GrowthEeat>(api.get(`/growth/projects/${projectId}/eeat`)),
+    analyze: (projectId: UUID) =>
+      unwrap<{ snapshot_id: string; growth_score: number | null; keyword_opportunities: number; content_gaps: number; blog_roadmap: number }>(
+        api.post(`/growth/projects/${projectId}/analyze`)
+      ),
+  },
+
   deploymentVerification: {
     run: (projectId: UUID) =>
       unwrap<DeploymentVerificationRun>(api.post(`/deployment-verification/projects/${projectId}/run`)),
@@ -595,6 +694,14 @@ export const dashboardApi = {
   indexing: {
     summary: (projectId: UUID) =>
       unwrap<IndexingSummary>(api.get(`/indexing/projects/${projectId}/summary`)),
+    autofix: (projectId: UUID, limit?: number) =>
+      unwrap<IndexingAutofixResult>(
+        api.post(`/indexing/projects/${projectId}/autofix`, null, {
+          params: limit ? { limit } : undefined,
+        })
+      ),
+    buildSitemap: (projectId: UUID) =>
+      unwrap<BuiltSitemap>(api.get(`/sitemaps/projects/${projectId}/sitemaps/build`)),
     inspect: (projectId: UUID, payload?: { urls?: string[]; limit?: number; language_code?: string }) =>
       unwrap<IndexingRun>(api.post(`/indexing/projects/${projectId}/inspect`, payload ?? {})),
     runs: (projectId: UUID) =>

@@ -12,7 +12,7 @@ from app.models.copy_review import (
     SeoCopySourceType,
 )
 from app.models.repo_agent import SeoCodePatchRisk, SeoCodePatchStatus, SeoCodePatchType
-from app.services.copy_review import SeoCopyReviewService
+from app.services.copy_review import CopyAnalysis, SeoCopyReviewService, looks_like_code_path
 
 
 class FakeDB:
@@ -25,10 +25,14 @@ class FakeDB:
 
 class FakeLLMService:
     def __init__(self, payload=None, fail=False):
+        # Branded for the project under test, not for some other company. The
+        # quality score now checks the copy against the project's OWN brand, so
+        # a canned response naming a different business correctly fails — which
+        # is the whole point of removing the hardcoded brand check.
         self.payload = payload or {
             "json": {
-                "title": "Better B2B Supply Metadata | Novakos Healthcare",
-                "description": "Novakos Healthcare supports verified B2B buyers with catalog access, bulk inquiry options, and distribution support.",
+                "title": "Better B2B Supply Metadata | Example",
+                "description": "Example supports verified B2B buyers with catalog access, bulk inquiry options, and distribution support.",
                 "reason": "Mocked local Ollama refinement.",
                 "compliance_notes": ["No blocked compliance claims detected."],
             }
@@ -140,9 +144,12 @@ async def test_generic_copy_detection_marks_needs_revision():
 
     review = result["review"]
     assert review.approval_readiness == SeoCopyApprovalReadiness.ready
+    # Built from the project's configured brand and the page's keyword — not
+    # from a table of pre-written copy keyed on this customer's routes.
     assert review.reviewed_title == "PCD Pharma Company in Haryana | Novakos Healthcare"
-    assert "verified buyer registration" in review.reviewed_description
+    assert project.name in review.reviewed_description
     assert review.quality_score >= 78
+    # The pharma_b2b compliance notes survive the removal of the copy table.
     assert any("No dosage" in note for note in result["revision"].compliance_notes)
 
 
@@ -261,7 +268,10 @@ export default function Page() { return <main />; }
     assert result["source_updated"] is True
     assert "clear service details and next steps" not in repository.patch.proposed_content
     assert repository.patch.proposed_content.count("PCD Pharma Company in Haryana | Novakos Healthcare") >= 3
-    assert "verified buyer registration" in repository.patch.proposed_content
+    # The description is now derived from the project's brand rather than read
+    # from a table of pre-written copy, so assert the brand reached the patch —
+    # not a phrase that only existed in that table.
+    assert project.name in repository.patch.proposed_content
     assert "SEO copy review:" in repository.patch.explanation
 
 
@@ -318,7 +328,7 @@ async def test_mocked_ollama_refinement_used_when_deterministic_copy_is_weak(mon
     )
 
     assert llm.called is True
-    assert analysis.reviewed_title == "Better B2B Supply Metadata | Novakos Healthcare"
+    assert analysis.reviewed_title == "Better B2B Supply Metadata | Example"
     assert analysis.readiness == SeoCopyApprovalReadiness.ready
 
 
@@ -337,6 +347,245 @@ async def test_deterministic_fallback_refines_when_ollama_fails():
         compliance_profile=SeoCopyComplianceProfile.pharma_b2b,
     )
 
-    assert analysis.reviewed_title == "Pharma Franchise in Haryana | Novakos Healthcare"
-    assert "catalog access" in analysis.reviewed_description
+    # Derived from the keyword and the project's brand. The route is
+    # /pharma-franchise-haryana, so "in" is not recoverable from it — that is
+    # what deriving copy honestly looks like, versus reading a canned string.
+    assert analysis.reviewed_title == "Pharma Franchise Haryana | Novakos Healthcare"
+    assert project.name in analysis.reviewed_description
     assert analysis.compliance_score == 100
+
+
+def _repo_patch(tenant_id, project, connection_id, file_path, proposed):
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        project_id=project.id,
+        repo_connection_id=connection_id,
+        scan_run_id=uuid4(),
+        issue_id=uuid4(),
+        file_path=file_path,
+        patch_type=SeoCodePatchType.og_twitter_addition,
+        risk_level=SeoCodePatchRisk.low,
+        status=SeoCodePatchStatus.proposed,
+        original_content_hash="abc",
+        proposed_content=proposed,
+        diff_text="diff",
+        explanation="Safe metadata patch.",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+
+@pytest.mark.parametrize(
+    "file_path",
+    ["src/app/company/page.tsx", "app/company/page.tsx"],
+)
+def test_patch_route_strips_either_app_directory(file_path):
+    """Both layouts must give /company, never /src/app/company."""
+    tenant_id = uuid4()
+    project = make_project(tenant_id)
+    service = make_service(FakeCopyReviewRepository(tenant_id, project))
+    patch = _repo_patch(tenant_id, project, uuid4(), file_path, "")
+
+    assert service._page_url_from_patch(patch) == "/company"
+    assert (
+        service._page_url_from_patch(patch, "https://example.com")
+        == "https://example.com/company"
+    )
+
+
+@pytest.mark.parametrize(
+    "file_path,expected",
+    [
+        ("src/app/page.tsx", "/"),
+        ("app/page.tsx", "/"),
+        ("src/app/layout.tsx", "/"),
+        ("src/app/solutions/crm/business-os/layout.tsx", "/solutions/crm/business-os"),
+    ],
+)
+def test_patch_route_resolution_for_src_app_projects(file_path, expected):
+    tenant_id = uuid4()
+    project = make_project(tenant_id)
+    service = make_service(FakeCopyReviewRepository(tenant_id, project))
+    patch = _repo_patch(tenant_id, project, uuid4(), file_path, "")
+
+    assert service._page_url_from_patch(patch) == expected
+
+
+def test_target_keyword_never_looks_like_a_path():
+    """A nested src/ route must not become a path-shaped keyword."""
+    tenant_id = uuid4()
+    project = make_project(tenant_id)
+    service = make_service(FakeCopyReviewRepository(tenant_id, project))
+
+    keyword = service._keyword_from_page("https://example.com/solutions/crm/business-os", None)
+    assert keyword == "solutions crm business os"
+    assert not looks_like_code_path(keyword)
+
+    # A title that is itself path-shaped is refused rather than used.
+    assert service._keyword_from_page("https://example.com/", "src/app/company") is None
+
+
+def test_looks_like_code_path_recognises_paths_and_component_names():
+    for bad in (
+        "Src/app/company | HNX Solutions",
+        "app/company",
+        "src/app",
+        "components/pages/LightDetailPages",
+        "page.tsx",
+        "CrmSolutionSeoLayout",
+    ):
+        assert looks_like_code_path(bad) is True, bad
+    for good in (
+        "Company | HNX Solutions",
+        "CRM Core Solution | HNX",
+        "PCD Pharma Company in Haryana | Novakos Healthcare",
+        None,
+        "",
+    ):
+        assert looks_like_code_path(good) is False, good
+
+
+@pytest.mark.asyncio
+async def test_existing_title_and_description_are_preserved_and_propagated(tmp_path):
+    """The page's own copy survives and fills the blocks the patch added.
+
+    This is the regression from the Tier 2 dry run: a hand-written description
+    starting with "Learn about ..." matched the generic-phrase rule, so both the
+    real title and the real description were rewritten.
+    """
+    tenant_id = uuid4()
+    project = make_project(tenant_id, name="HNX Solutions", domain="https://hnxsolutions.com")
+    repository = FakeCopyReviewRepository(tenant_id, project, tmp_path)
+    service = make_service(repository)
+
+    real_title = "Company | HNX"
+    real_description = "Learn about HNX, careers, CRM implementation thinking, and the HNX blog library."
+
+    file_path = tmp_path / "src" / "app" / "company" / "page.tsx"
+    file_path.parent.mkdir(parents=True)
+    original = (
+        "export const metadata = {\n"
+        f'  title: "{real_title}",\n'
+        f'  description: "{real_description}"\n'
+        "};\n\nexport default function Company() { return <main />; }\n"
+    )
+    file_path.write_text(original, encoding="utf-8")
+
+    proposed = (
+        "export const metadata = {\n"
+        f'  title: "{real_title}",\n'
+        f'  description: "{real_description}",\n'
+        "  alternates: { canonical: \"https://hnxsolutions.com/company\" },\n"
+        "  openGraph: {\n"
+        '    title: "Company",\n'
+        '    description: "Learn about company with clear service details and next steps."\n'
+        "  },\n"
+        "  twitter: {\n"
+        '    title: "Company",\n'
+        '    description: "Learn about company with clear service details and next steps."\n'
+        "  }\n"
+        "};\n\nexport default function Company() { return <main />; }\n"
+    )
+
+    connection_id = uuid4()
+    repository.connection = SimpleNamespace(
+        id=connection_id, tenant_id=tenant_id, local_path=str(tmp_path)
+    )
+    repository.patch = _repo_patch(
+        tenant_id, project, connection_id, "src/app/company/page.tsx", proposed
+    )
+
+    await service.review_repo_patch(repository.patch.id, tenant_id, apply_revision=True)
+    updated = repository.patch.proposed_content
+
+    # The page's own words survive, verbatim.
+    assert f'title: "{real_title}"' in updated
+    assert real_description in updated
+    # The generator's filler is gone, replaced by the page's own copy rather
+    # than by anything newly invented.
+    assert "clear service details and next steps" not in updated
+    assert updated.count(real_title) >= 3
+    # And nothing resembling a source path reached the copy.
+    assert "src/app" not in updated
+    assert "Src/app" not in updated
+
+
+@pytest.mark.asyncio
+async def test_missing_title_still_gets_one(tmp_path):
+    """Preserving existing copy must not stop a page with none from getting it."""
+    tenant_id = uuid4()
+    project = make_project(tenant_id, name="HNX Solutions", domain="https://hnxsolutions.com")
+    repository = FakeCopyReviewRepository(tenant_id, project, tmp_path)
+    service = make_service(repository)
+
+    file_path = tmp_path / "src" / "app" / "resources" / "page.tsx"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text(
+        "export default function Resources() { return <main />; }\n", encoding="utf-8"
+    )
+
+    proposed = (
+        "export const metadata = {\n"
+        '  title: "Resources",\n'
+        '  description: "Learn about resources with clear service details and next steps."\n'
+        "};\n\nexport default function Resources() { return <main />; }\n"
+    )
+    connection_id = uuid4()
+    repository.connection = SimpleNamespace(
+        id=connection_id, tenant_id=tenant_id, local_path=str(tmp_path)
+    )
+    repository.patch = _repo_patch(
+        tenant_id, project, connection_id, "src/app/resources/page.tsx", proposed
+    )
+
+    await service.review_repo_patch(repository.patch.id, tenant_id, apply_revision=True)
+    updated = repository.patch.proposed_content
+
+    assert "clear service details and next steps" not in updated
+    assert "src/app" not in updated
+    assert project.name in updated
+
+
+@pytest.mark.asyncio
+async def test_revision_whose_title_is_a_path_is_rejected(tmp_path):
+    """Defence in depth: a path-shaped revision is dropped, not written."""
+    tenant_id = uuid4()
+    project = make_project(tenant_id)
+    repository = FakeCopyReviewRepository(tenant_id, project, tmp_path)
+    service = make_service(repository)
+
+    file_path = tmp_path / "src" / "app" / "company" / "page.tsx"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text("export default function C() { return <main />; }\n", encoding="utf-8")
+
+    connection_id = uuid4()
+    repository.connection = SimpleNamespace(
+        id=connection_id, tenant_id=tenant_id, local_path=str(tmp_path)
+    )
+    patch = _repo_patch(
+        tenant_id,
+        project,
+        connection_id,
+        "src/app/company/page.tsx",
+        'export const metadata = { title: "x", description: "y" };\n',
+    )
+    repository.patch = patch
+    before = patch.proposed_content
+
+    applied = await service._apply_repo_patch_revision(
+        patch,
+        CopyAnalysis(
+            quality_score=90.0,
+            compliance_score=95.0,
+            readiness=SeoCopyApprovalReadiness.ready,
+            issues=[],
+            reviewed_title="Src/app/company | HNX Solutions",
+            reviewed_description="Explore HNX Solutions for src/app/company.",
+            reason="test",
+            compliance_notes=[],
+        ),
+    )
+
+    assert applied is False
+    assert patch.proposed_content == before

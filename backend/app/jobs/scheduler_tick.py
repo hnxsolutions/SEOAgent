@@ -44,7 +44,10 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
     # no-op when no provider tokens are configured). Verification is only
     # accelerated once a deployment reaches Ready, never mid-deploy.
     try:
-        from app.core.database import get_db_session
+        # NB: `get_db_session` is imported at module scope on purpose. Importing
+        # it again here would rebind it as a local for the whole function and
+        # make the `async with get_db_session()` above raise UnboundLocalError —
+        # which is exactly what it did, silently, on every tick.
         from app.services.deployment import DeploymentEngine
 
         db2 = get_db_session()
@@ -54,6 +57,36 @@ async def _run_tick(limit: int = 50) -> dict[str, Any]:
             await db2.close()
     except Exception:  # pragma: no cover - defensive; never break the tick
         payload["deployments_polled"] = 0
+
+    # Master orchestration: snapshot every project's health and detect what
+    # changed since the last snapshot. SeoOperationsEngine.monitor_all already
+    # existed and was reachable only from an authenticated HTTP endpoint, which
+    # meant the "24x7 autonomous" engine ran exactly when a human clicked. It is
+    # idempotent per project per day, so running it every tick is safe.
+    try:
+        from app.services.seo_operations import SeoOperationsEngine
+
+        db3 = get_db_session()
+        try:
+            payload["operations_monitored"] = await SeoOperationsEngine(db3).monitor_all(None)
+        finally:
+            await db3.close()
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["operations_monitored"] = None
+
+    # Close out runs whose worker is gone. Nothing else in the system notices a
+    # process that disappears mid-pipeline, so without this a restart leaves the
+    # dashboard showing "Running" on a run that will never move again.
+    try:
+        from app.services.seo_run import fail_stale_runs
+
+        db4 = get_db_session()
+        try:
+            payload["stale_runs_closed"] = await fail_stale_runs(db4)
+        finally:
+            await db4.close()
+    except Exception:  # pragma: no cover - defensive; never break the tick
+        payload["stale_runs_closed"] = 0
 
     # Autonomous daily executive briefing (one per project per day; upsert-safe).
     from app.jobs.briefing_jobs import generate_daily_briefings_background

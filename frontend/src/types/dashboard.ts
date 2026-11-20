@@ -35,6 +35,7 @@ export type PlannerRun = {
   blog_plan_id?: UUID | null;
   repo_scan_run_id?: UUID | null;
   tasks_created: number;
+  tasks_refreshed?: number;
   high_priority_tasks: number;
   error_message?: string | null;
   started_at?: string | null;
@@ -484,6 +485,91 @@ export type OpsOverview = {
   pending_reviews: number;
   deployments: number;
   verifications: number;
+};
+
+export type GrowthKeyword = {
+  keyword: string;
+  intent: string;
+  difficulty: string;
+  source: string;
+  impressions?: number | null;
+  ctr?: number | null;
+  position?: number | null;
+  priority: number;
+  estimate?: { is_estimate: boolean; estimated_monthly_clicks?: number | null; note?: string };
+  opportunity_type?: string | null;
+};
+
+export type GrowthGap = {
+  type: string;
+  title: string;
+  why: string;
+  target_keyword?: string | null;
+  priority: number;
+};
+
+export type GrowthCluster = {
+  pillar: string;
+  pillar_title: string;
+  supporting_keywords: string[];
+  article_count: number;
+};
+
+export type GrowthBlogPost = {
+  topic: string;
+  target_keyword: string;
+  secondary_keywords: string[];
+  search_intent: string;
+  suggested_url: string;
+  suggested_title: string;
+  suggested_h1: string;
+  suggested_meta: string;
+  suggested_schema: string;
+  suggested_internal_links: string[];
+  priority: number;
+  difficulty: string;
+  business_value?: string;
+  estimated_traffic?: number | null;
+  source: string;
+};
+
+export type GrowthCalendarSlot = {
+  publish_date: string;
+  title: string;
+  target_keyword: string;
+  url: string;
+  priority: number;
+  business_value?: string;
+};
+
+export type GrowthCalendar = {
+  window_days: number;
+  cadence: string;
+  slots: GrowthCalendarSlot[];
+  planned: number;
+};
+
+export type GrowthEeat = {
+  score: number;
+  checks: Record<string, boolean>;
+  suggestions: string[];
+};
+
+export type GrowthSummary = {
+  growth_score: number | null;
+  dimensions: Record<string, number | null>;
+  opportunity_score: number | null;
+  explanations: Record<string, string>;
+  top_keywords: GrowthKeyword[];
+  content_gaps: GrowthGap[];
+  traffic_forecast: {
+    is_estimate: boolean;
+    estimated_monthly_clicks?: number | null;
+    keywords_with_data?: number;
+    keyword_opportunities?: number;
+    confidence?: string;
+    note?: string;
+  };
 };
 
 export type TimelineEntry = { time: string; event: string };
@@ -1843,3 +1929,174 @@ export type QueueStats = {
   worker_count?: number;
   dead_letter?: number;
 };
+
+/* -------------------------------------------------------------------------- */
+/* Autonomous content engine                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** A field the agent knows, and how it came to know it. */
+export interface ProfileField<T = unknown> {
+  value: T;
+  /** 'user' = stated by the owner, 'inferred' = the agent's reading, 'unknown' = neither. */
+  source: 'user' | 'inferred' | 'unknown';
+  confirmed: boolean;
+  confidence: number | null;
+  evidence: string | null;
+}
+
+export interface WebsiteProfileView {
+  available: boolean;
+  reason?: string;
+  profile_id?: string;
+  version?: number;
+  confidence?: number;
+  used_llm?: string;
+  generated_at?: string | null;
+  fields?: Record<string, ProfileField>;
+  important_pages?: { url: string; title: string; role: string }[];
+}
+
+export interface ContentOpportunity {
+  id: string;
+  title: string;
+  target_keyword: string;
+  search_intent: string;
+  /** 0-100. Deliberately NOT search volume, which is not measurable for free. */
+  opportunity_score: number;
+  reason: string | null;
+  status: string;
+  created_at: string | null;
+}
+
+export interface ContentSlot {
+  day: string;
+  day_of_week: number;
+  hour: number;
+  next_run_at: string | null;
+  topic: string | null;
+  status: string;
+  enabled: boolean;
+}
+
+export interface ContentClusterNodeView {
+  id: string;
+  title: string;
+  status: string;
+  target_query: string | null;
+  url: string | null;
+  priority_score: number;
+  reason: string | null;
+}
+
+export interface ContentClusterView {
+  id: string;
+  name: string;
+  pillar_topic: string;
+  coverage: number;
+  priority_score: number;
+  node_count: number;
+  missing_count: number;
+  nodes: Record<string, ContentClusterNodeView[]>;
+}
+
+export interface RefreshProposalView {
+  id: string;
+  title: string;
+  page_url: string | null;
+  blog_draft_id: string | null;
+  reason: string;
+  status: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  proposed_changes: { section: string; action: string; why: string }[];
+  priority: number;
+  detected_at: string | null;
+  approved_at: string | null;
+  reviewed_by: string | null;
+  rejection_reason: string | null;
+  next_actions: string[];
+}
+
+export interface ContentPerformanceView {
+  status: string;
+  articles: number;
+  measured: number;
+  classifications: Record<string, number>;
+  refresh_proposals: Record<string, unknown>[];
+  note: string;
+}
+
+export interface ContentEngineOverview {
+  blogs_per_week: number;
+  topics_waiting: number;
+  drafts: number;
+  pending_approval: number;
+  published: number;
+  refresh_pending: number;
+  clusters: number;
+  cluster_gaps: number;
+  next_slot: { day: string; next_run_at: string | null } | null;
+  top_opportunity: { title: string; opportunity_score: number } | null;
+  profile_available: boolean;
+  /** Always unmeasured without a provider; the UI must show "Not measured". */
+  ai_visibility: { available: boolean; reason: string };
+}
+
+
+/** One Search Console submission step and how it went. */
+export interface GSCSubmitStep {
+  step: string;
+  status: 'ok' | 'partial' | 'skipped' | 'failed';
+  detail?: string;
+  count?: number;
+  submitted?: string[];
+  errors?: string[];
+  job_id?: string | null;
+}
+
+/**
+ * Result of submitting everything to Search Console.
+ *
+ * `blocked` means nothing was attempted — Google refuses every write on a
+ * property you are not a verified owner of, so the pre-flight stops there and
+ * explains why rather than returning one 403 per step.
+ */
+export interface GSCSubmitAllResult {
+  status: 'completed' | 'partial' | 'blocked';
+  reason?: string;
+  message?: string;
+  site_url?: string;
+  permission_level?: string;
+  steps: GSCSubmitStep[];
+}
+
+
+/** One step of the indexing autofix pass and how it went. */
+export interface IndexingAutofixStep {
+  step: string;
+  status: 'ok' | 'partial' | 'skipped' | 'failed';
+  detail?: string;
+}
+
+export interface IndexingAutofixResult {
+  status: 'completed' | 'partial';
+  steps: IndexingAutofixStep[];
+  issues_remaining?: number;
+  issues_by_type?: Record<string, number>;
+}
+
+/**
+ * A sitemap built from the latest crawl.
+ *
+ * `excluded` counts what was deliberately left out — query strings, non-200s,
+ * noindex pages and anything that canonicalises elsewhere — so a smaller number
+ * than the crawl is explainable rather than suspicious.
+ */
+export interface BuiltSitemap {
+  crawl_id: string;
+  xml: string;
+  url_count: number;
+  pages_crawled: number;
+  excluded: Record<string, number>;
+  truncated: boolean;
+}

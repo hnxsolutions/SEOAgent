@@ -1,18 +1,61 @@
+# Production topology for the SEO Agent.
+#
+# This file is deliberately the PRODUCTION one. Development conveniences —
+# source bind mounts, --reload, published database ports — live in
+# docker-compose.override.yml, which Docker Compose loads automatically when it
+# sits beside this file. So:
+#
+#   locally   : docker compose up -d                  (base + override, as before)
+#   on a VM   : docker compose -f docker-compose.yml up -d   (base only)
+#
+# The inversion matters. The previous arrangement had a single file carrying
+# `--reload`, `./backend:/app` and open database ports, and production was
+# whatever someone remembered to change by hand. Secure-by-default means the
+# artefact you deploy is correct when nobody remembers anything, and the unsafe
+# settings are the ones that have to be opted into.
+#
+# Everything here is free: Postgres, Redis, Qdrant, Ollama and nginx are all
+# open source and self-hosted. No managed or paid service is required.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — there is no safe default}@postgres:5432/${POSTGRES_DB:-seoagent}
+  REDIS_URL: redis://redis:6379
+  QDRANT_URL: http://qdrant:6333
+  # In production Ollama is a service on this network. The development override
+  # points this at host.docker.internal instead, where a developer already has
+  # a model installed.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+  OLLAMA_DEFAULT_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+  LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+  SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+  SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
+  SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
+
+x-crawler-env: &crawler-env
+  CRAWLER_MAX_CONCURRENT_PAGES: ${CRAWLER_MAX_CONCURRENT_PAGES:-5}
+  CRAWLER_REQUEST_TIMEOUT: ${CRAWLER_REQUEST_TIMEOUT:-30}
+  CRAWLER_RENDER_JAVASCRIPT: ${CRAWLER_RENDER_JAVASCRIPT:-true}
+  CRAWLER_RESPECT_ROBOTS_TXT: ${CRAWLER_RESPECT_ROBOTS_TXT:-true}
+  CRAWLER_RATE_LIMIT_RPS: ${CRAWLER_RATE_LIMIT_RPS:-2}
+
 services:
   # PostgreSQL Database
+  #
+  # No published port. It is reachable on the compose network by every service
+  # that needs it and by nothing else. Publishing 5432 on a cloud VM exposes the
+  # database to the internet unless a firewall rule happens to be right, which
+  # is security living outside the artefact.
   postgres:
     image: postgres:15-alpine
     container_name: seo-agent-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-seoagent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seoagent_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — there is no safe default}
       POSTGRES_DB: ${POSTGRES_DB:-seoagent}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/database/init:/docker-entrypoint-initdb.d
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     networks:
       - seo-agent-network
     healthcheck:
@@ -20,6 +63,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPUS:-2}"
+          memory: ${POSTGRES_MEMORY:-2g}
 
   # Redis Cache & Message Broker
   redis:
@@ -29,8 +77,6 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     networks:
       - seo-agent-network
     healthcheck:
@@ -38,6 +84,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPUS:-1}"
+          memory: ${REDIS_MEMORY:-512m}
 
   # Qdrant Vector Database
   qdrant:
@@ -48,9 +99,6 @@ services:
       QDRANT__SERVICE__GRPC_PORT: 6334
     volumes:
       - qdrant_data:/qdrant/storage
-    ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
     networks:
       - seo-agent-network
     healthcheck:
@@ -58,6 +106,75 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${QDRANT_CPUS:-2}"
+          memory: ${QDRANT_MEMORY:-2g}
+
+  # Ollama — the local model that writes content.
+  #
+  # A fresh VM has neither Ollama nor a model, so without this service every
+  # content feature is gated from first boot. The model lives on a named volume
+  # because qwen2.5:3b is ~1.9 GB and re-downloading it on every deploy is both
+  # slow and pointless.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: seo-agent-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      # One generation at a time, deliberately.
+      #
+      # Setting this to 2 genuinely ran two slots at once, and Ollama's own
+      # timings showed what that cost: 4.0 and 5.0 tokens/sec per slot, about 9
+      # together, against 29 tokens/sec for a single request with the whole
+      # machine. Two generations on a CPU share the same cores and do not batch,
+      # so splitting them lost two thirds of the throughput.
+      #
+      # CONTENT_LLM_CONCURRENCY stays at 2 on purpose: the second request waits
+      # in Ollama's queue and starts the instant the first finishes, which keeps
+      # the model fed with no idle gap between pages. The pipelining is the win;
+      # the parallelism was not.
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-1}"
+      # Hold the model in memory between batches. A 2.2GB reload between pages
+      # costs more than the generation it precedes.
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-30m}"
+    networks:
+      - seo-agent-network
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          # Generation is the heaviest thing on the box: a measured article took
+          # 99 seconds on CPU and holds a core for all of it. Give it room, but
+          # not so much that it can starve Postgres and take the API down.
+          cpus: "${OLLAMA_CPUS:-4}"
+          memory: ${OLLAMA_MEMORY:-8g}
+
+  # One-shot: make sure the model exists before anything asks for it.
+  # Exits 0 once the pull completes; `ollama pull` is a no-op when the model is
+  # already on the volume, so this is safe on every restart.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: seo-agent-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'echo "Ensuring ${OLLAMA_MODEL:-qwen2.5:3b} is present…"; ollama pull ${OLLAMA_MODEL:-qwen2.5:3b} && echo "model ready"'
+    networks:
+      - seo-agent-network
 
   # FastAPI Backend
   backend:
@@ -69,17 +186,21 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
-      REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
-      SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
-      SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
-      SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
+      <<: *backend-env
+    # No source bind mount. The image is the unit of deployment: what runs is
+    # what was built and tested, not whatever happens to be in the working
+    # directory on the VM. A half-finished `git pull` must not be able to become
+    # a half-deployed application.
     volumes:
-      - ./backend:/app
-      - /app/__pycache__
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      # Rollback material for the repo agent, on a named volume because it has
+      # to outlive the container. Keeping it in the writable layer once meant a
+      # routine `docker compose up --force-recreate` silently destroyed the only
+      # copies of six files that had already been patched, leaving that apply run
+      # impossible to undo. Durability is not a development convenience, so this
+      # lives here rather than in the override file.
+      - repo_agent_backups:/var/lib/seo-agent/backups
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,9 +210,35 @@ services:
         condition: service_healthy
     networks:
       - seo-agent-network
+    # No --reload. It runs a file-watching supervisor and restarts on any write
+    # into the image; it is a development convenience, not a server.
+    # --proxy-headers is not optional behind nginx.
+    #
+    # FastAPI answers a missing trailing slash with a 307 whose Location is an
+    # ABSOLUTE url built from the request's scheme. Without proxy headers uvicorn
+    # believes every request is http, so a browser on https://host/api/v1/projects
+    # is redirected to http://host/api/v1/projects/ — a cross-origin redirect, on
+    # which browsers drop the Authorization header. The retried request arrives
+    # unauthenticated and the API answers "Could not validate credentials",
+    # which reads as a broken token rather than a lost header.
+    # NB: the uvicorn invocation stays on ONE line. In a YAML folded scalar (`>`)
+    # a line indented further than the first keeps its newline rather than being
+    # folded to a space, and `sh -c` treats that newline as a command separator —
+    # so wrapped flags silently become a second command and never reach uvicorn.
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=*"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "${BACKEND_CPUS:-2}"
+          memory: ${BACKEND_MEMORY:-2g}
 
   # Backend Worker (for async tasks - RQ)
   worker:
@@ -103,15 +250,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
-      REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
-      SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
-      SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
-      SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
+      <<: *backend-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,26 +266,29 @@ services:
       sh -c "rq worker --url redis://redis:6379 seo_queue_high seo_queue seo_queue_low --with-scheduler"
     healthcheck:
       disable: true
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-2}"
+          memory: ${WORKER_MEMORY:-2g}
 
-  # Optional production scheduler tick runner. Enable with:
-  # docker compose --profile scheduler up -d scheduler
+  # The autonomous loop's heartbeat.
+  #
+  # No profile: this IS the product. It was profile-gated, which meant every
+  # default deployment ran with the agent switched off — schedules existed and
+  # were never executed. Opt out with SCHEDULER_ENABLED=false instead.
   scheduler:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: seo-agent-scheduler
+    restart: unless-stopped
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
-      REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
-      SEMANTIC_EMBEDDING_MODEL: ${SEMANTIC_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
-      SEMANTIC_EMBEDDING_DIMENSION: ${SEMANTIC_EMBEDDING_DIMENSION:-384}
-      SEMANTIC_QDRANT_COLLECTION: ${SEMANTIC_QDRANT_COLLECTION:-seo_semantic_chunks}
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
+      <<: *backend-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,13 +298,17 @@ services:
         condition: service_healthy
     networks:
       - seo-agent-network
-    profiles:
-      - scheduler
     command: >
-      sh -c "while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50}; sleep ${SCHEDULER_INTERVAL_SECONDS:-3600}; done"
-    restart: unless-stopped
+      sh -c "if [ \"${SCHEDULER_ENABLED:-true}\" != \"true\" ]; then echo 'scheduler disabled via SCHEDULER_ENABLED'; sleep infinity; fi;
+      while true; do python -m app.jobs.scheduler_tick --limit ${SCHEDULER_TICK_LIMIT:-50} || echo 'tick failed; continuing';
+      sleep ${SCHEDULER_INTERVAL_SECONDS:-900}; done"
     healthcheck:
       disable: true
+    deploy:
+      resources:
+        limits:
+          cpus: "${SCHEDULER_CPUS:-1}"
+          memory: ${SCHEDULER_MEMORY:-1g}
 
   # Crawl Worker (for distributed crawling)
   crawl-worker:
@@ -172,18 +320,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
-      REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
-      # Crawler-specific settings
-      CRAWLER_MAX_CONCURRENT_PAGES: ${CRAWLER_MAX_CONCURRENT_PAGES:-5}
-      CRAWLER_REQUEST_TIMEOUT: ${CRAWLER_REQUEST_TIMEOUT:-30}
-      CRAWLER_RENDER_JAVASCRIPT: ${CRAWLER_RENDER_JAVASCRIPT:-true}
-      CRAWLER_RESPECT_ROBOTS_TXT: ${CRAWLER_RESPECT_ROBOTS_TXT:-true}
-      CRAWLER_RATE_LIMIT_RPS: ${CRAWLER_RATE_LIMIT_RPS:-2}
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
+      <<: [*backend-env, *crawler-env]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -197,6 +336,10 @@ services:
       disable: true
     deploy:
       replicas: ${CRAWL_WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "${CRAWL_WORKER_CPUS:-1}"
+          memory: ${CRAWL_WORKER_MEMORY:-1g}
 
   # Crawl Worker 2 (for parallel processing)
   crawl-worker-2:
@@ -204,20 +347,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: seo-agent-crawl-worker-2
+    restart: unless-stopped
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-seoagent}:${POSTGRES_PASSWORD:-seoagent_password}@postgres:5432/${POSTGRES_DB:-seoagent}
-      REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
-      CRAWLER_MAX_CONCURRENT_PAGES: ${CRAWLER_MAX_CONCURRENT_PAGES:-5}
-      CRAWLER_REQUEST_TIMEOUT: ${CRAWLER_REQUEST_TIMEOUT:-30}
-      CRAWLER_RENDER_JAVASCRIPT: ${CRAWLER_RENDER_JAVASCRIPT:-true}
-      CRAWLER_RESPECT_ROBOTS_TXT: ${CRAWLER_RESPECT_ROBOTS_TXT:-true}
-      CRAWLER_RATE_LIMIT_RPS: ${CRAWLER_RATE_LIMIT_RPS:-2}
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
+      <<: [*backend-env, *crawler-env]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -229,20 +365,28 @@ services:
       sh -c "python -m app.crawler.worker --workers 1 --queue default"
     profiles:
       - scaling
+    deploy:
+      resources:
+        limits:
+          cpus: "${CRAWL_WORKER_CPUS:-1}"
+          memory: ${CRAWL_WORKER_MEMORY:-1g}
 
   # Next.js Frontend
+  #
+  # Not published either: nginx fronts it. The development override publishes
+  # 3000 so a developer can hit it without a proxy.
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        # Same-origin by default, because nginx serves both halves on one host.
+        # The override sets the absolute localhost URL used in development.
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api/v1}
     container_name: seo-agent-frontend
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - backend
     networks:
@@ -254,14 +398,30 @@ services:
       timeout: 10s
       start_period: 40s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "${FRONTEND_CPUS:-1}"
+          memory: ${FRONTEND_MEMORY:-1g}
 
-  # Nginx Reverse Proxy (Optional - for production)
+  # Nginx — the only thing on this VM that should face the internet.
+  #
+  # No profile any more. Ports 80 and 443 are the only published ports in this
+  # file, which is what makes "the database is not exposed" true by default
+  # rather than true if the firewall is right.
+  #
+  # TLS: see nginx/conf.d/README.md. Port 80 serves the ACME challenge so a
+  # certificate can be issued, after which enabling the TLS server block is a
+  # one-line rename.
   nginx:
     image: nginx:alpine
     container_name: seo-agent-nginx
+    restart: unless-stopped
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_webroot:/var/www/certbot:ro
+      - certbot_certs:/etc/letsencrypt:ro
     ports:
       - "${NGINX_PORT:-80}:80"
       - "${NGINX_SSL_PORT:-443}:443"
@@ -270,16 +430,84 @@ services:
       - backend
     networks:
       - seo-agent-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "${NGINX_CPUS:-1}"
+          memory: ${NGINX_MEMORY:-256m}
+
+  # Certificate issuance and renewal. Let's Encrypt is free.
+  #
+  #   issue  : docker compose --profile tls run --rm certbot-issue
+  #   renew  : runs on the `tls` profile; put it on a cron or leave it running
+  certbot-issue:
+    image: certbot/certbot:latest
+    container_name: seo-agent-certbot-issue
     profiles:
-      - production
+      - tls
+    volumes:
+      - certbot_webroot:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      TLS_DOMAIN: ${TLS_DOMAIN:-}
+      TLS_EMAIL: ${TLS_EMAIL:-}
+    # Checked at run time rather than with Compose's `:?` syntax: that is
+    # interpolated when the file is PARSED, so a required variable here would
+    # make `docker compose config` fail for everyone, including people who will
+    # never enable TLS. The failure belongs where the work happens.
+    command:
+      - 'if [ -z "$$TLS_DOMAIN" ] || [ -z "$$TLS_EMAIL" ]; then
+           echo "Set TLS_DOMAIN and TLS_EMAIL in .env before issuing a certificate."; exit 1;
+         fi;
+         certbot certonly --webroot -w /var/www/certbot
+           -d "$$TLS_DOMAIN" --email "$$TLS_EMAIL"
+           --agree-tos --no-eff-email --non-interactive'
+    networks:
+      - seo-agent-network
+
+  certbot-renew:
+    image: certbot/certbot:latest
+    container_name: seo-agent-certbot-renew
+    profiles:
+      - tls
+    restart: unless-stopped
+    volumes:
+      - certbot_webroot:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    entrypoint: ["/bin/sh", "-c"]
+    # Twice a day is what Let's Encrypt recommends; renewal is a no-op until the
+    # certificate is inside its renewal window.
+    command:
+      - 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+    networks:
+      - seo-agent-network
 
 volumes:
+  # Pre-apply copies of files the repo agent patched, per repository and per
+  # apply run. Losing this volume means losing the ability to roll back.
+  repo_agent_backups:
+    driver: local
   postgres_data:
     driver: local
   redis_data:
     driver: local
   qdrant_data:
     driver: local
+  # ~1.9 GB of model weights. Without this every deploy re-downloads them.
+  ollama_models:
+    driver: local
+  certbot_webroot:
+    driver: local
+  certbot_certs:
+    driver: local
+
 networks:
   seo-agent-network:
     driver: bridge

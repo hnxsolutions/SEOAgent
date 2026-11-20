@@ -9,13 +9,28 @@ from typing import Iterable, Optional
 
 from app.models.repo_agent import SeoCodeIssueType, SeoCodePatchType
 from app.repo_agent.scanner import (
+    APP_DIR_PREFIXES,
     IGNORE_DIRS,
     MAX_FILE_SIZE_BYTES,
+    app_dir_prefix,
     has_jsonld,
     has_metadata_export,
     is_client_component,
     read_repo_text,
+    repo_relative,
+    split_app_prefix,
 )
+
+
+_APP_ROUTER_PAGE = re.compile(r"(?:.+/)?page\.(tsx|jsx|ts|js|mdx)$")
+
+
+def _is_app_router_path(rel_path: str) -> bool:
+    """True for an App Router page or root layout under app/ or src/app/."""
+    prefix, inner = split_app_prefix(rel_path)
+    if prefix is None:
+        return False
+    return inner in {"page.tsx", "layout.tsx"} or bool(_APP_ROUTER_PAGE.match(inner))
 
 
 ARCHITECTURE_EXTENSIONS = {
@@ -367,7 +382,7 @@ class RepoArchitectureDetector:
             notes.append({"kind": kind, "value": value})
 
         has_next = "next" in deps or any(path.startswith("next.config.") for path in rel_paths)
-        has_app = any(path == "app/page.tsx" or path == "app/layout.tsx" or re.match(r"app/.+/page\.(tsx|jsx|ts|js|mdx)$", path) for path in rel_paths)
+        has_app = any(_is_app_router_path(path) for path in rel_paths)
         has_pages = any(path.startswith("pages/") and path.split("/")[-1].startswith("_") is False for path in rel_paths)
         if "layout/theme.liquid" in rel_paths or "templates/index.liquid" in rel_paths or "config/settings_schema.json" in rel_paths:
             note("stack", "Shopify Liquid theme markers found.")
@@ -416,7 +431,7 @@ class RepoArchitectureDetector:
             rel = path.relative_to(root).as_posix()
             route = None
             route_type = "page"
-            if detected_stack == "nextjs_app_router" and re.match(r"app/(?:.+/)?page\.(tsx|jsx|ts|js|mdx)$", rel):
+            if detected_stack == "nextjs_app_router" and _is_app_router_path(rel):
                 route = self._next_app_route(rel)
             elif detected_stack == "nextjs_pages_router" and rel.startswith("pages/") and path.suffix.lower() in {".tsx", ".jsx", ".ts", ".js", ".mdx"}:
                 route = self._pages_route(rel, prefix="pages")
@@ -450,7 +465,7 @@ class RepoArchitectureDetector:
         return sorted(routes, key=lambda item: (item["route_path"].count("/"), item["route_path"], item["file_path"]))
 
     def _next_app_route(self, rel: str) -> str:
-        route = rel.removeprefix("app/").rsplit("/page.", 1)[0]
+        route = split_app_prefix(rel)[1].rsplit("/page.", 1)[0]
         route = "" if route.startswith("page.") else route
         return "/" if not route else "/" + route.strip("/")
 
@@ -490,8 +505,9 @@ class RepoArchitectureDetector:
                 layout = rel.removesuffix("/page.tsx") + "/layout.tsx"
                 if (root / layout).exists():
                     return layout
-            if (root / "app/layout.tsx").exists():
-                return "app/layout.tsx"
+            root_layout = repo_relative(root, "app/layout.tsx")
+            if (root / root_layout).exists():
+                return root_layout
         if detected_stack in {"plain_static", "react_vite"} and rel.endswith(".html"):
             return rel
         return rel
@@ -667,7 +683,10 @@ class RepoArchitectureDetector:
         }
 
     def _sitemap_strategy(self, root: Path, rel_paths: set[str], detected_stack: str) -> dict:
-        candidates = ["app/sitemap.ts", "public/sitemap.xml", "sitemap.xml"]
+        candidates = [f"{prefix}/sitemap.ts" for prefix in APP_DIR_PREFIXES] + [
+            "public/sitemap.xml",
+            "sitemap.xml",
+        ]
         found = next((path for path in candidates if path in rel_paths), None)
         if detected_stack == "wordpress":
             return {"exists": True, "strategy": "wordpress_platform_or_plugin", "file_path": found, "rich_dynamic": True, "confidence": 0.75}
@@ -677,11 +696,14 @@ class RepoArchitectureDetector:
             return {"exists": False, "strategy": "missing", "file_path": None, "rich_dynamic": False, "confidence": 0.7}
         content = _safe_read(root / found)
         rich = bool(re.search(r"(map|flatMap|fetch|import\s+\{|\.\.\.|Promise|async|products|blogs|posts|categories)", content))
-        strategy = "next_app_dynamic" if found == "app/sitemap.ts" else "static_xml"
+        strategy = "next_app_dynamic" if split_app_prefix(found)[1] == "sitemap.ts" else "static_xml"
         return {"exists": True, "strategy": strategy, "file_path": found, "rich_dynamic": rich, "confidence": 0.88}
 
     def _robots_strategy(self, root: Path, rel_paths: set[str], detected_stack: str) -> dict:
-        candidates = ["app/robots.ts", "public/robots.txt", "robots.txt"]
+        candidates = [f"{prefix}/robots.ts" for prefix in APP_DIR_PREFIXES] + [
+            "public/robots.txt",
+            "robots.txt",
+        ]
         found = next((path for path in candidates if path in rel_paths), None)
         if detected_stack == "shopify":
             return {"exists": True, "strategy": "shopify_platform_generated", "file_path": None, "rich_dynamic": True, "confidence": 0.78}
@@ -689,7 +711,7 @@ class RepoArchitectureDetector:
             return {"exists": False, "strategy": "missing", "file_path": None, "rich_dynamic": False, "confidence": 0.7}
         content = _safe_read(root / found)
         rich = bool(re.search(r"(process\.env|sitemap|host|rules|async|fetch|\.\.\.)", content, flags=re.I))
-        strategy = "next_app_dynamic" if found == "app/robots.ts" else "static_txt"
+        strategy = "next_app_dynamic" if split_app_prefix(found)[1] == "robots.ts" else "static_txt"
         return {"exists": True, "strategy": strategy, "file_path": found, "rich_dynamic": rich, "confidence": 0.88}
 
     def _cms_strategy(self, root: Path, files: Iterable[Path], detected_stack: str) -> dict:
@@ -782,11 +804,11 @@ class RepoArchitectureDetector:
             else:
                 safe.append(self._zone("sitemap_additive", sitemap_strategy.get("file_path") or "", "Static sitemap may be extended additively.", ["sitemap_update"], 0.78))
         elif detected_stack.startswith("nextjs"):
-            safe.append(self._zone("sitemap_create", "app/sitemap.ts", "Missing Next.js sitemap can be created as a new file.", ["sitemap_update"], 0.82))
+            safe.append(self._zone("sitemap_create", repo_relative(root, "app/sitemap.ts"), "Missing Next.js sitemap can be created as a new file.", ["sitemap_update"], 0.82))
         if robots_strategy.get("exists"):
             manual.append(self._zone("robots_review", robots_strategy.get("file_path") or "", "Existing robots implementation should not be overwritten.", ["robots_update"], 0.86))
         elif detected_stack.startswith("nextjs"):
-            safe.append(self._zone("robots_create", "app/robots.ts", "Missing Next.js robots route can be created as a new file.", ["robots_update"], 0.82))
+            safe.append(self._zone("robots_create", repo_relative(root, "app/robots.ts"), "Missing Next.js robots route can be created as a new file.", ["robots_update"], 0.82))
         if detected_stack in {"wordpress", "shopify"}:
             manual.append(self._zone("platform_templates", "", f"{detected_stack} SEO edits are live-theme sensitive.", ["metadata_update", "schema_addition", "sitemap_update", "robots_update"], 0.82))
         if detected_stack == "unknown_custom" or confidence < 0.5:

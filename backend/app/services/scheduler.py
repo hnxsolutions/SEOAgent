@@ -254,6 +254,18 @@ class SchedulerService:
             return await self._run_repo_scan(schedule)
         if schedule_type == SeoScheduleType.weekly_indexing_monitor.value:
             return await self._run_indexing_monitor(schedule)
+        if schedule_type == SeoScheduleType.daily_health_monitor.value:
+            return await self._run_health_monitor(schedule)
+        if schedule_type == SeoScheduleType.content_opportunity_scan.value:
+            return await self._run_content_opportunity_scan(schedule)
+        if schedule_type == SeoScheduleType.blog_generation.value:
+            return await self._run_blog_generation(schedule)
+        if schedule_type == SeoScheduleType.weekly_content_performance.value:
+            return await self._run_content_performance(schedule)
+        if schedule_type == SeoScheduleType.weekly_internal_link_scan.value:
+            return await self._run_internal_link_scan(schedule)
+        if schedule_type == SeoScheduleType.monthly_content_strategy.value:
+            return await self._run_content_strategy(schedule)
         raise SchedulerError(f"Unsupported schedule type: {schedule_type}")
 
     async def _run_gsc_sync(self, schedule: SeoSchedule) -> dict:
@@ -428,6 +440,146 @@ class SchedulerService:
                 **summary,
                 "safety": "GSC sync, URL inspection, issue classification, tasks, and reports only. No patches were applied and no PRs, merges, deploys, or publishing actions were run.",
                 "redis_required": False,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Autonomous jobs
+    #
+    # Each one COMPOSES an engine that already exists — operations, growth,
+    # blogs, internal links — rather than reimplementing it. The scheduler's
+    # job is to decide *when*, never *how*. Every one of them degrades to
+    # `skipped` with a readable reason instead of raising, because a single
+    # unconfigured project must not stop the tick for every other project.
+    # ------------------------------------------------------------------
+
+    async def _run_health_monitor(self, schedule: SeoSchedule) -> dict:
+        """Daily: snapshot health and detect what changed since yesterday."""
+        from app.services.seo_operations import SeoOperationsEngine
+
+        engine = SeoOperationsEngine(self.db)
+        snapshot = await engine.monitor(schedule.project_id, schedule.tenant_id)
+        changes = await engine.changes(schedule.project_id, schedule.tenant_id)
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "summary": {
+                "schedule_type": SeoScheduleType.daily_health_monitor.value,
+                "health_score": snapshot.get("health_score"),
+                "grade": snapshot.get("grade"),
+                "changes_detected": len(changes or []),
+                "safety": "Read-only measurement and change detection. Nothing was modified.",
+            },
+        }
+
+    async def _run_content_opportunity_scan(self, schedule: SeoSchedule) -> dict:
+        """Weekly: turn free signals into reviewable topics.
+
+        Everything feeding this is first-party — Search Console queries, the
+        project's own crawl and its brief. No keyword provider is called and no
+        search volume is invented; topics carry an Opportunity Score instead.
+        """
+        from app.services.content_engine import ContentEngineService
+
+        result = await ContentEngineService(self.db).scan_opportunities(
+            schedule.project_id, schedule.tenant_id
+        )
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "summary": {
+                "schedule_type": SeoScheduleType.content_opportunity_scan.value,
+                **result,
+                "safety": "Topic proposals only. Nothing was drafted or published.",
+            },
+        }
+
+    async def _run_blog_generation(self, schedule: SeoSchedule) -> dict:
+        """A drafting slot: write at most one article, or skip honestly.
+
+        Skipping is a success, not a failure. A slot that drafts something
+        regardless of whether there is anything worth writing is how a content
+        programme fills a site with articles nobody wanted.
+        """
+        from app.services.content_engine import ContentEngineService
+
+        result = await ContentEngineService(self.db).draft_next(
+            schedule.project_id, schedule.tenant_id
+        )
+        drafted = bool(result.get("draft_id"))
+        return {
+            "status": SeoScheduledRunStatus.completed if drafted else SeoScheduledRunStatus.skipped,
+            "ids": {"blog_draft_id": result["draft_id"]} if drafted else {},
+            "summary": {
+                "schedule_type": SeoScheduleType.blog_generation.value,
+                **result,
+                "safety": "Draft only. Nothing was published; publishing requires human approval.",
+            },
+            "error_message": None if drafted else result.get("reason"),
+        }
+
+    async def _run_content_performance(self, schedule: SeoSchedule) -> dict:
+        """Weekly: measure published articles against Search Console."""
+        from app.services.content_engine import ContentEngineService
+
+        result = await ContentEngineService(self.db).review_performance(
+            schedule.project_id, schedule.tenant_id
+        )
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "summary": {
+                "schedule_type": SeoScheduleType.weekly_content_performance.value,
+                **result,
+                "safety": "Measurement and refresh proposals only. No content was changed.",
+            },
+        }
+
+    async def _run_internal_link_scan(self, schedule: SeoSchedule) -> dict:
+        """Weekly: propose internal links from the latest crawl."""
+        from app.services.internal_links import InternalLinkService
+
+        crawl = await self.repository.latest_crawl(schedule.project_id, schedule.tenant_id) \
+            if hasattr(self.repository, "latest_crawl") else None
+        if crawl is None:
+            from app.services.content_engine import latest_completed_crawl
+
+            crawl = await latest_completed_crawl(self.db, schedule.project_id, schedule.tenant_id)
+        if crawl is None:
+            return {
+                "status": SeoScheduledRunStatus.skipped,
+                "summary": {
+                    "schedule_type": SeoScheduleType.weekly_internal_link_scan.value,
+                    "reason": "No completed crawl yet — nothing to link between.",
+                },
+                "error_message": "No completed crawl available.",
+            }
+        recommendations = await InternalLinkService(self.db).generate_for_crawl(
+            crawl.id, schedule.tenant_id
+        )
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "ids": {"crawl_id": crawl.id},
+            "summary": {
+                "schedule_type": SeoScheduleType.weekly_internal_link_scan.value,
+                "recommendations": len(recommendations or []),
+                "safety": "Link recommendations only. No page was edited.",
+            },
+        }
+
+    async def _run_content_strategy(self, schedule: SeoSchedule) -> dict:
+        """Monthly: re-cluster topics and refresh the roadmap."""
+        from app.services.seo_growth import SeoGrowthEngine
+
+        engine = SeoGrowthEngine(self.db)
+        clusters = await engine.topic_clusters(schedule.project_id, schedule.tenant_id)
+        roadmap = await engine.blog_roadmap(schedule.project_id, schedule.tenant_id)
+        gaps = await engine.content_gaps(schedule.project_id, schedule.tenant_id)
+        return {
+            "status": SeoScheduledRunStatus.completed,
+            "summary": {
+                "schedule_type": SeoScheduleType.monthly_content_strategy.value,
+                "clusters": len(clusters or []),
+                "roadmap_items": len(roadmap or []),
+                "content_gaps": len(gaps or []),
+                "safety": "Strategy review only. Nothing was drafted or published.",
             },
         }
 

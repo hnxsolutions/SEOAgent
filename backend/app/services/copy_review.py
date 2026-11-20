@@ -19,7 +19,14 @@ from app.models.copy_review import (
     SeoCopySourceType,
 )
 from app.models.repo_agent import SeoCodePatchType
-from app.repo_agent.scanner import build_unified_diff, read_repo_text, resolve_repo_root, safe_child_path
+from app.repo_agent.scanner import (
+    PathSafetyError,
+    build_unified_diff,
+    read_repo_text,
+    resolve_repo_root,
+    safe_child_path,
+    strip_app_prefix,
+)
 from app.repositories.copy_review import SeoCopyReviewRepository
 from app.services.local_llm import LocalLLMError, LocalLLMService
 
@@ -35,6 +42,42 @@ GENERIC_PHRASES = [
     "we provide solutions",
     "website page",
 ]
+
+# Shapes that mean a value came from the file system rather than from copy:
+# a route or app directory prefix, a source extension, a path separator, or a
+# PascalCase component name. None of these belong in a title or description, and
+# one leaking through produced the title "Src/app/company | HNX Solutions".
+CODE_PATH_MARKERS = (
+    "src/app",
+    "app/",
+    "pages/",
+    "components/",
+    ".tsx",
+    ".ts",
+    ".jsx",
+    ".js",
+    "page.tsx",
+    "layout.tsx",
+)
+_COMPONENT_NAME = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+){2,}\b")
+
+
+def looks_like_code_path(text: Optional[str]) -> bool:
+    """Whether a string looks like a file path or component name, not copy.
+
+    Deterministic and conservative: it only fires on markers that cannot
+    plausibly appear in human-written SEO copy, so it can be used to reject
+    generated text outright.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in CODE_PATH_MARKERS):
+        return True
+    if "/" in text or "\\" in text:
+        return True
+    return bool(_COMPONENT_NAME.search(text))
+
 
 BASE_BLOCKED_PHRASES = [
     "guaranteed results",
@@ -59,6 +102,15 @@ PHARMA_B2B_BLOCKED_PHRASES = [
     "sourcing claims",
 ]
 
+# Industry and business acronyms that must keep their capitalisation when a
+# keyword is title-cased. Generic vocabulary — none of these name a company, and
+# the list is shared by every project.
+ACRONYMS = {
+    "b2b", "b2c", "d2c", "saas", "seo", "sem", "ppc", "roi", "kpi", "crm",
+    "erp", "api", "ui", "ux", "ai", "ml", "faq", "usp", "hr", "it", "pcd",
+    "gst", "llc", "ltd", "pan", "oem", "odm", "moq", "rfq",
+}
+
 PHARMA_B2B_ALLOWED_TOPICS = [
     "b2b supply",
     "wholesale",
@@ -72,29 +124,18 @@ PHARMA_B2B_ALLOWED_TOPICS = [
     "registration",
 ]
 
-TARGETED_PHARMA_COPY = {
-    "/pcd-pharma-company-in-haryana": {
-        "title": "PCD Pharma Company in Haryana | Novakos Healthcare",
-        "description": (
-            "Explore Novakos Healthcare\u2019s B2B PCD pharma support in Haryana, including wholesale medicine "
-            "supply, verified buyer registration, product catalog access, and bulk order inquiries."
-        ),
-    },
-    "/pharma-franchise-haryana": {
-        "title": "Pharma Franchise in Haryana | Novakos Healthcare",
-        "description": (
-            "Connect with Novakos Healthcare for B2B pharma franchise and distribution support in Haryana, "
-            "with catalog access, bulk inquiry options, and verified buyer registration."
-        ),
-    },
-    "/wholesale-medicine-supplier": {
-        "title": "Wholesale Medicine Supplier in India | Novakos Healthcare",
-        "description": (
-            "Novakos Healthcare supports verified B2B buyers with wholesale medicine supply, product catalog "
-            "browsing, bulk order inquiries, and pharma distribution support across Haryana and PAN India."
-        ),
-    },
-}
+# NOTE: a `TARGETED_PHARMA_COPY` table used to live here, mapping three routes
+# (/pcd-pharma-company-in-haryana, /pharma-franchise-haryana,
+# /wholesale-medicine-supplier) to finished titles and descriptions naming one
+# specific customer. Any project whose compliance profile resolved to pharma_b2b
+# \u2014 which keyword detection does for anything mentioning "pharma", "medicine" or
+# "healthcare" \u2014 received that customer's brand in its own SEO copy.
+#
+# The compliance rules above are generic and stay. Finished copy for a named
+# business is project data, not engine logic: it belongs to that project, and
+# the deterministic fallback now builds copy from the project's own brand and
+# target keyword instead. Where no good deterministic answer exists, the normal
+# local-LLM refinement path runs, exactly as it does for every other project.
 
 
 @dataclass
@@ -214,8 +255,23 @@ class SeoCopyReviewService:
         proposed_content = patch.proposed_content or ""
         title, description = self._metadata_copy(proposed_content)
         target_keyword = self._keyword_from_page(page_url, title)
-        metadata_block = self._metadata_block(proposed_content) or proposed_content
-        generic_metadata_matches = self._generic_matches(metadata_block)
+
+        # Copy the page already had is the site owner's, not ours to rewrite.
+        #
+        # The generic-phrase rule exists to catch the patch generator's own
+        # filler ("Learn about <page> with clear service details and next
+        # steps."). It was being applied to the whole metadata block, so a
+        # hand-written description that happens to open with "Learn about HNX,
+        # careers..." triggered a forced rewrite and lost both the real title
+        # and the real description. Judge only what the patch introduced.
+        protected_title, protected_description = await self._preexisting_metadata_copy(patch)
+        generic_metadata_matches = self._generic_matches(
+            self._introduced_metadata_copy(
+                proposed_content,
+                protected_title=protected_title,
+                protected_description=protected_description,
+            )
+        )
         analysis = await self.analyze_and_refine(
             project=project,
             title=title,
@@ -275,7 +331,12 @@ class SeoCopyReviewService:
             SeoCopyApprovalReadiness.ready,
             SeoCopyApprovalReadiness.needs_revision,
         }:
-            source_updated = await self._apply_repo_patch_revision(patch, analysis)
+            source_updated = await self._apply_repo_patch_revision(
+                patch,
+                analysis,
+                protected_title=protected_title,
+                protected_description=protected_description,
+            )
         await self.db.commit()
         await self.db.refresh(review)
         if revision:
@@ -381,6 +442,11 @@ class SeoCopyReviewService:
         if review.source_type == SeoCopySourceType.repo_patch and review.source_reference_id:
             patch = await self.repository.get_repo_patch(review.source_reference_id, tenant_id)
             if patch:
+                # No protected fields here on purpose: accepting a revision is
+                # an explicit human decision to replace the copy, so it may
+                # overwrite what the page had. The file-path guard inside still
+                # applies - an accepted revision is never a reason to ship a
+                # title containing a source path.
                 source_updated = await self._apply_repo_patch_revision(
                     patch,
                     CopyAnalysis(
@@ -422,7 +488,10 @@ class SeoCopyReviewService:
     ) -> CopyAnalysis:
         title = (title or "").strip()
         description = (description or "").strip()
-        quality_score, quality_issues = self._quality_score(title, description, page_url, target_keyword)
+        brand = self._brand_name(project)
+        quality_score, quality_issues = self._quality_score(
+            title, description, page_url, target_keyword, brand
+        )
         compliance_score, compliance_issues = self._compliance_score(title, description, compliance_profile)
         issues = quality_issues + compliance_issues
         if forced_issue and not any(issue.get("code") == forced_issue.get("code") for issue in issues):
@@ -468,6 +537,7 @@ class SeoCopyReviewService:
             revised_description,
             page_url,
             target_keyword,
+            brand,
         )
         revised_compliance, revised_compliance_issues = self._compliance_score(
             revised_title,
@@ -497,7 +567,21 @@ class SeoCopyReviewService:
         description: str,
         page_url: Optional[str],
         target_keyword: Optional[str],
+        brand: str = "",
     ) -> tuple[float, list[dict[str, Any]]]:
+        """Score copy quality.
+
+        `brand` is the project's own brand name; empty means the project has not
+        configured one, and the brand-presence check is skipped rather than
+        guessed at. It defaults to "" so existing callers keep working.
+        """
+        # Tokens long enough to be meaningful: "Acme Technologies" gives
+        # {acme, technologies}, and a title containing either counts as carrying
+        # the brand. Short words like "AI" or "Co" are dropped because they
+        # match almost any copy by accident.
+        brand_tokens = [
+            token for token in re.split(r"[^a-z0-9]+", (brand or "").lower()) if len(token) > 3
+        ]
         score = 100.0
         issues: list[dict[str, Any]] = []
         title_lower = title.lower()
@@ -548,7 +632,14 @@ class SeoCopyReviewService:
                 score -= 8
                 issues.append(self._issue("page_intent_match", "medium", "Copy does not clearly match the page route intent."))
 
-        if "novakos" not in combined and "brand" not in combined:
+        # Brand presence, measured against THIS project's brand.
+        #
+        # This used to read `if "novakos" not in combined`, so every project in
+        # the system was scored on whether its copy mentioned one particular
+        # customer. Projects with no configured brand are not penalised at all —
+        # there is nothing to look for, and a deduction for failing to mention a
+        # brand that does not exist is noise in the score.
+        if brand_tokens and not any(token in combined for token in brand_tokens):
             score -= 6
             issues.append(self._issue("brand_missing", "low", "Brand is missing from the SEO copy."))
 
@@ -617,6 +708,7 @@ class SeoCopyReviewService:
             deterministic["description"],
             page_url,
             target_keyword,
+            self._brand_name(project),
         )
         det_compliance, det_compliance_issues = self._compliance_score(
             deterministic["title"],
@@ -653,32 +745,55 @@ class SeoCopyReviewService:
         target_keyword: Optional[str],
         compliance_profile: SeoCopyComplianceProfile,
     ) -> dict[str, Any]:
-        route = self._route_from_url(page_url)
-        if compliance_profile == SeoCopyComplianceProfile.pharma_b2b and route in TARGETED_PHARMA_COPY:
-            return {
-                **TARGETED_PHARMA_COPY[route],
-                "reason": "Deterministic pharma-B2B template replaced generic SEO copy with page-specific compliant copy.",
-                "compliance_notes": [
-                    "B2B pharma supply language only.",
-                    "No dosage, cure, treatment, patient advice, or guaranteed claims.",
-                ],
-            }
-        brand = getattr(project, "name", None) or "Website"
-        keyword = (target_keyword or self._keyword_from_page(page_url, title) or "B2B service").strip()
+        brand = self._brand_name(project)
+        keyword = (target_keyword or self._keyword_from_page(page_url, title) or "service").strip()
         clean_keyword = self._title_case_keyword(keyword)
-        revised_title = f"{clean_keyword} | {brand}"
+
+        # A project with no configured brand gets keyword-only copy rather than
+        # an invented company name. Writing "| Website" into someone's title tag
+        # is worse than leaving the brand out.
+        revised_title = f"{clean_keyword} | {brand}" if brand else clean_keyword
         if len(revised_title) > 70:
             revised_title = clean_keyword[:62].rstrip()
+
+        subject = brand or "this page"
         revised_description = (
-            f"Explore {brand} for {clean_keyword.lower()}, including service details, audience-fit information, "
-            "and clear inquiry options."
+            f"Explore {subject} for {clean_keyword.lower()}, including service details, "
+            "audience-fit information, and clear inquiry options."
         )
+
+        # The compliance profile still shapes the notes, which is the part that
+        # has to survive: a pharma_b2b project is told which claims were kept
+        # out, whatever its brand or routes happen to be.
+        if compliance_profile == SeoCopyComplianceProfile.pharma_b2b:
+            compliance_notes = [
+                "B2B pharma supply language only.",
+                "No dosage, cure, treatment, patient advice, or guaranteed claims.",
+            ]
+        else:
+            compliance_notes = ["No blocked compliance phrases detected in deterministic fallback."]
+
         return {
             "title": revised_title,
             "description": revised_description[:180].rstrip(),
             "reason": "Deterministic fallback replaced generic SEO copy with keyword- and brand-specific copy.",
-            "compliance_notes": ["No blocked compliance phrases detected in deterministic fallback."],
+            "compliance_notes": compliance_notes,
         }
+
+    @staticmethod
+    def _brand_name(project) -> str:
+        """The project's own brand, or empty string.
+
+        Reads the project record, which is where brand lives — `business_name`
+        first because it is the human-facing name, then `name` which is the
+        label in the console. Never falls back to a literal: a brand the
+        operator did not configure is a brand this engine must not write.
+        """
+        for attribute in ("business_name", "name"):
+            value = getattr(project, attribute, None)
+            if value and str(value).strip():
+                return str(value).strip()
+        return ""
 
     async def _project_profile(
         self,
@@ -686,9 +801,18 @@ class SeoCopyReviewService:
         tenant_id: UUID,
         project=None,
     ) -> SeoCopyComplianceProfile:
+        # Explicit configuration wins. A project with a SeoCopyPolicy row has had
+        # its compliance profile decided by a person, and nothing inferred may
+        # override that.
         policy = await self.repository.get_policy(project_id, tenant_id)
         if policy:
             return policy.compliance_profile
+
+        # Fallback only: infer from what the project says about itself. This
+        # decides which RULES apply — blocked phrases, allowed topics, scoring —
+        # and nothing else. It must never select a brand, a route, or finished
+        # copy; those come from the project record. Erring towards pharma_b2b is
+        # the safe direction, because the profile only ever adds restrictions.
         text = " ".join(
             str(value or "")
             for value in [
@@ -702,8 +826,40 @@ class SeoCopyReviewService:
             return SeoCopyComplianceProfile.pharma_b2b
         return SeoCopyComplianceProfile.default
 
-    async def _apply_repo_patch_revision(self, patch, analysis: CopyAnalysis) -> bool:
+    async def _apply_repo_patch_revision(
+        self,
+        patch,
+        analysis: CopyAnalysis,
+        *,
+        protected_title: Optional[str] = None,
+        protected_description: Optional[str] = None,
+    ) -> bool:
         if not analysis.reviewed_title and not analysis.reviewed_description:
+            return False
+        # Where the page already had copy, that copy wins - and it is also what
+        # gets written into the Open Graph and Twitter blocks the patch added.
+        # So the generated filler is still replaced, which is the point of the
+        # review, but it is replaced with the site owner's own words instead of
+        # new ones, and the real title is never overwritten.
+        #
+        # Only a field the page genuinely lacked falls back to the revision.
+        reviewed_title = protected_title or analysis.reviewed_title
+        reviewed_description = protected_description or analysis.reviewed_description
+        if looks_like_code_path(reviewed_title):
+            logger.warning(
+                "Rejected copy revision whose title looks like a file path",
+                patch_id=str(patch.id),
+                file_path=patch.file_path,
+            )
+            reviewed_title = None
+        if looks_like_code_path(reviewed_description):
+            logger.warning(
+                "Rejected copy revision whose description looks like a file path",
+                patch_id=str(patch.id),
+                file_path=patch.file_path,
+            )
+            reviewed_description = None
+        if not reviewed_title and not reviewed_description:
             return False
         connection = await self.repository.get_repo_connection(patch.repo_connection_id, patch.tenant_id)
         if not connection or not connection.local_path:
@@ -713,19 +869,83 @@ class SeoCopyReviewService:
         original = read_repo_text(path) if path.exists() else ""
         proposed = self._replace_metadata_copy(
             patch.proposed_content or "",
-            title=analysis.reviewed_title,
-            description=analysis.reviewed_description,
+            title=reviewed_title,
+            description=reviewed_description,
         )
         if proposed == (patch.proposed_content or ""):
             return False
+        preserved = [
+            name
+            for name, value in (("title", protected_title), ("description", protected_description))
+            if value
+        ]
+        # Say what actually happened. Without this the note still reads
+        # "replaced generic SEO copy" even when the page's own wording was kept
+        # and only copied into the blocks the patch added - a misleading audit
+        # trail on exactly the change a reviewer most needs to trust.
+        preservation_note = (
+            f" The page's existing {' and '.join(preserved)} was kept and reused in"
+            " the Open Graph and Twitter blocks; no new copy was written for it."
+            if preserved
+            else ""
+        )
         explanation = (
-            f"{patch.explanation}\n\nSEO copy review: {analysis.reason} "
+            f"{patch.explanation}\n\nSEO copy review: {analysis.reason}{preservation_note} "
             f"Quality score {analysis.quality_score:.0f}; compliance score {analysis.compliance_score:.0f}; "
             f"readiness {analysis.readiness.value}."
         )
         diff_text = build_unified_diff(patch.file_path, original, proposed)
         await self.repository.update_repo_patch_content(patch, proposed, diff_text, explanation)
         return True
+
+    async def _preexisting_metadata_copy(self, patch) -> tuple[Optional[str], Optional[str]]:
+        """The title and description the page had before this patch.
+
+        A field counts as pre-existing only when the file on disk already sets
+        it and the patch leaves it unchanged - that is the evidence it is the
+        site owner's copy rather than something the generator wrote. When the
+        checkout cannot be read nothing is claimed as protected, so the review
+        behaves exactly as it did before.
+        """
+        connection = await self.repository.get_repo_connection(
+            patch.repo_connection_id, patch.tenant_id
+        )
+        if not connection or not connection.local_path:
+            return None, None
+        try:
+            root = resolve_repo_root(connection.local_path)
+            path = safe_child_path(root, patch.file_path)
+        except (PathSafetyError, ValueError):
+            return None, None
+        if not path.exists():
+            return None, None
+        original_title, original_description = self._metadata_copy(read_repo_text(path))
+        proposed_title, proposed_description = self._metadata_copy(patch.proposed_content or "")
+        title = original_title if original_title and original_title == proposed_title else None
+        description = (
+            original_description
+            if original_description and original_description == proposed_description
+            else None
+        )
+        return title, description
+
+    def _introduced_metadata_copy(
+        self,
+        proposed_content: str,
+        *,
+        protected_title: Optional[str],
+        protected_description: Optional[str],
+    ) -> str:
+        """The metadata text this patch added, with pre-existing copy removed.
+
+        What is left is what the generator wrote, which is what the
+        generic-phrase rule is meant to judge.
+        """
+        block = self._metadata_block(proposed_content) or proposed_content
+        for preserved in (protected_title, protected_description):
+            if preserved:
+                block = block.replace(preserved, "")
+        return block
 
     def _metadata_copy(self, content: str) -> tuple[Optional[str], Optional[str]]:
         block = self._metadata_block(content)
@@ -834,8 +1054,14 @@ class SeoCopyReviewService:
         return parsed.path.rstrip("/") or "/"
 
     def _page_url_from_patch(self, patch, site_url: Optional[str] = None) -> Optional[str]:
-        route = patch.file_path.replace("\\", "/").removeprefix("app/")
-        if route == "page.tsx":
+        # strip_app_prefix removes app/ or src/app/, whichever this repository
+        # uses. Stripping only "app/" left src/app/company/page.tsx as the route
+        # /src/app/company, which became the target keyword and then the title.
+        route = strip_app_prefix(patch.file_path.replace("\\", "/"))
+        # The root page and the root layout both describe the site root. The
+        # layout case used to fall through to the final branch and produce the
+        # route "/layout.tsx".
+        if route in {"page.tsx", "layout.tsx"}:
             path = "/"
         elif route.endswith("/layout.tsx"):
             path = "/" + route.removesuffix("/layout.tsx").strip("/")
@@ -853,7 +1079,14 @@ class SeoCopyReviewService:
     def _keyword_from_page(self, page_url: Optional[str], title: Optional[str]) -> Optional[str]:
         route = self._route_from_url(page_url)
         if route and route != "/":
-            return route.strip("/").replace("-", " ")
+            # Nested routes arrive as "solutions/crm/business-os"; both
+            # separators become spaces so the keyword reads as words rather
+            # than as a path.
+            keyword = route.strip("/").replace("-", " ").replace("/", " ").strip()
+            if keyword and not looks_like_code_path(keyword):
+                return keyword
+        if looks_like_code_path(title):
+            return None
         return title
 
     def _keyword_tokens_present(self, keyword: str, text: str) -> bool:
@@ -863,11 +1096,26 @@ class SeoCopyReviewService:
         return len([token for token in tokens if token in text]) >= max(1, min(3, len(tokens)))
 
     def _title_case_keyword(self, keyword: str) -> str:
+        """Title-case a keyword for use in a <title>.
+
+        Keywords usually arrive from a URL slug, which has already lost its
+        capitalisation — `/pcd-pharma-company` gives no clue that PCD is an
+        acronym. Plain `.capitalize()` turns every one of them into "Pcd",
+        "Seo", "Saas", which reads as a typo in a search result.
+
+        ACRONYMS is generic business and marketing vocabulary, not any one
+        customer's terminology, and adding to it is safe for every project.
+        """
         small = {"in", "and", "for", "with", "of", "to"}
         words = []
         for index, word in enumerate(keyword.replace("-", " ").split()):
             lower = word.lower()
-            words.append(lower if index and lower in small else lower.upper() if lower == "b2b" else lower.capitalize())
+            if lower in ACRONYMS:
+                words.append(lower.upper())
+            elif index and lower in small:
+                words.append(lower)
+            else:
+                words.append(lower.capitalize())
         return " ".join(words)
 
     def _escape_ts(self, value: str, quote: str) -> str:

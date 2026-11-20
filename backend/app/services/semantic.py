@@ -1,6 +1,7 @@
 """Service layer for local semantic SEO indexing and search."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import UUID
 
@@ -198,7 +199,16 @@ class SemanticService:
 
         for start in range(0, len(documents), batch_size):
             batch = list(documents[start:start + batch_size])
-            embeddings = self.embedding_provider.embed_texts([document.text for document in batch])
+            # Off the event loop. `model.encode` is CPU-bound sentence-transformers
+            # work with no awaits in it, so calling it directly stalls every other
+            # task in this process for the duration — including the SEO run's
+            # heartbeat, which is what tells the system the run is still alive.
+            # A long enough batch would have had a healthy run declared abandoned
+            # by its own indexing stage.
+            embeddings = await asyncio.to_thread(
+                self.embedding_provider.embed_texts,
+                [document.text for document in batch],
+            )
             if not embeddings:
                 continue
 

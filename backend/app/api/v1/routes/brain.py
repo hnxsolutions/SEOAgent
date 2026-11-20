@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.jobs.brain_jobs import dispatch_code_fixes_background, run_brain_cycle_background
@@ -67,6 +68,11 @@ async def brain_run_cycle(
     enqueue_or_background(
         background_tasks, "app.queue.jobs.run_brain_cycle", run_brain_cycle_background,
         run.id, project_id, tenant_id, max_retries=0,
+        # A brain cycle runs the whole SEO pipeline before it touches robots or
+        # the sitemap, so it needs the same budget as any other full run. On the
+        # queue's generic 30-minute default it was being killed part way through
+        # content, exactly as the other two enqueue sites were.
+        job_timeout=settings.SEO_RUN_JOB_TIMEOUT_SECONDS,
     )
     return {"status": "started", "seo_run_id": str(run.id), "project_id": str(project_id)}
 

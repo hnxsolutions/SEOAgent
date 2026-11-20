@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from pathlib import Path
 import re
 from typing import Dict, List, Optional, Sequence
@@ -45,23 +46,30 @@ from app.repo_agent.architecture import (
     html_metadata_patch_content,
 )
 from app.repo_agent.scanner import (
+    APP_DIR_PREFIXES,
     IGNORE_DIRS,
     MAX_FILE_SIZE_BYTES,
     NextJsRepoScanner,
     PathSafetyError,
     RepoIssueCandidate,
+    build_metadata_helper_profile,
     build_unified_diff,
     content_hash,
     is_client_component,
+    is_internal_app_path,
     label_from_route,
     metadata_patch_content,
+    detect_newline_style,
     read_repo_text,
+    repo_relative,
     resolve_repo_root,
     robots_patch_content,
     safe_child_path,
     schema_patch_content,
     sitemap_patch_content,
     static_routes_from_pages,
+    strip_app_prefix,
+    write_repo_text,
 )
 from app.repositories.repo_agent import RepoAgentRepository
 
@@ -87,8 +95,13 @@ class RepoAgentService:
         self.repository = RepoAgentRepository(db)
         self.scanner = scanner or NextJsRepoScanner()
         self.architecture_detector = RepoArchitectureDetector()
-        self.git_runner = git_runner or GitCommandRunner(settings.REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS)
-        self.validation_runner = validation_runner or ValidationRunner(settings.REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS)
+        self.git_runner = git_runner or GitCommandRunner(
+            settings.REPO_AGENT_GIT_COMMAND_TIMEOUT_SECONDS,
+            autocrlf=settings.REPO_AGENT_GIT_AUTOCRLF,
+        )
+        self.validation_runner = validation_runner or ValidationRunner(
+            settings.REPO_AGENT_VALIDATION_TIMEOUT_SECONDS
+        )
         self.github_client = github_client or GitHubClient()
 
     async def create_connection(
@@ -274,6 +287,9 @@ class RepoAgentService:
 
     def _architecture_scanned_files(self, root: Path, profile: ArchitectureProfileData):
         scanned = []
+        # Same metadata-helper profile the scanner uses, so files found through
+        # the architecture detector are judged by the same rules.
+        helpers = build_metadata_helper_profile(root)
         for file_path in self.architecture_detector.architecture_file_paths(profile):
             try:
                 path = safe_child_path(root, file_path)
@@ -286,7 +302,7 @@ class RepoAgentService:
                     continue
             except OSError:
                 continue
-            scanned.append(self.scanner._scan_file(path, root))
+            scanned.append(self.scanner._scan_file(path, root, helpers=helpers))
         return scanned
 
     def _architecture_issue_candidates(
@@ -342,13 +358,22 @@ class RepoAgentService:
 
     def _architecture_issue_type(self, zone: dict) -> SeoCodeIssueType:
         zone_type = str(zone.get("zone_type") or "")
-        if "schema" in zone_type:
+        # A "*_review" zone is a note about a file that already exists and is
+        # too rich to rewrite - the opposite of a missing artefact. Mapping it
+        # to missing_sitemap/missing_robots reported repositories that have both
+        # as having neither, so review zones fall through to the manual-review
+        # bucket below, which `_patch_for_issue` never patches.
+        #
+        # SeoCodeIssueType has no dedicated "needs manual review" member, so
+        # heading_semantics_risk is the existing stand-in for that bucket.
+        is_review = zone_type.endswith("_review") or "review" in zone_type
+        if "schema" in zone_type and not is_review:
             return SeoCodeIssueType.missing_schema
-        if "sitemap" in zone_type:
+        if "sitemap" in zone_type and not is_review:
             return SeoCodeIssueType.route_not_in_sitemap
-        if "robots" in zone_type:
+        if "robots" in zone_type and not is_review:
             return SeoCodeIssueType.missing_robots
-        if "metadata" in zone_type or "template" in zone_type:
+        if ("metadata" in zone_type or "template" in zone_type) and not is_review:
             return SeoCodeIssueType.weak_metadata
         return SeoCodeIssueType.heading_semantics_risk
 
@@ -486,7 +511,12 @@ class RepoAgentService:
                     validation_output = validation.output
                 self.git_runner.add(root, applied_paths)
                 git_diff_summary = self._git_cached_diff_summary(root) or self.git_runner.diff_summary(root)
-                commit = self.git_runner.commit(root, "SEO Agent: apply approved SEO fixes")
+                commit = self.git_runner.commit(
+                    root,
+                    "SEO Agent: apply approved SEO fixes",
+                    author_name=settings.REPO_AGENT_COMMIT_NAME,
+                    author_email=settings.REPO_AGENT_COMMIT_EMAIL,
+                )
                 if commit.returncode != 0:
                     final_status = PatchApplyRunStatus.failed
                     error_message = f"git commit failed: {commit.output}"
@@ -601,7 +631,12 @@ class RepoAgentService:
 
         root = resolve_repo_root(connection.local_path or "")
         commit_sha = self.git_runner.commit_sha(root)
-        push = self.git_runner.push_branch(root, apply_run.branch_name)
+        push = self.git_runner.push_branch(
+            root,
+            apply_run.branch_name,
+            token=settings.GITHUB_TOKEN,
+            username=settings.GITHUB_TOKEN_USERNAME,
+        )
         if push.returncode != 0:
             record = await self.repository.create_pull_request_record(
                 tenant_id=apply_run.tenant_id,
@@ -678,6 +713,7 @@ class RepoAgentService:
         root = resolve_repo_root(connection.local_path)
         results = await self.repository.list_apply_results(apply_run.id, tenant_id, limit=1000)
         restored_paths: List[str] = []
+        unrestored: List[str] = []
         self.git_runner.run(root, ["checkout", apply_run.branch_name])
         for result in results:
             if self._enum_value(result.status) != PatchApplyResultStatus.applied.value:
@@ -689,29 +725,62 @@ class RepoAgentService:
                     PatchApplyResultStatus.failed,
                     "Rollback backup file is missing.",
                 )
+                unrestored.append(result.file_path)
                 continue
             target = safe_child_path(root, result.file_path)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(read_repo_text(backup_path), encoding="utf-8")
+            # Byte-for-byte, so the restored file is indistinguishable from the
+            # one the apply replaced rather than merely equivalent to it.
+            target.write_bytes(backup_path.read_bytes())
             await self.repository.set_apply_result_status(result, PatchApplyResultStatus.rolled_back, "Restored from backup.")
             patch = await self.repository.get_patch(result.patch_id, tenant_id)
             if patch:
                 await self.repository.set_patch_status(patch, SeoCodePatchStatus.approved)
             restored_paths.append(result.file_path)
 
+        # A rollback that did not restore everything, or whose commit failed,
+        # is not a rollback. Reporting it as one is worse than failing: the next
+        # decision is made believing the working tree is back to normal.
+        errors: List[str] = []
+        if unrestored:
+            errors.append(
+                f"{len(unrestored)} of {len(unrestored) + len(restored_paths)} applied "
+                f"patches could not be restored: {', '.join(sorted(unrestored))}"
+            )
+
         if restored_paths:
             self.git_runner.add(root, restored_paths)
-            self.git_runner.commit(root, "SEO Agent: rollback approved SEO fixes")
+            commit = self.git_runner.commit(
+                root,
+                "SEO Agent: rollback approved SEO fixes",
+                author_name=settings.REPO_AGENT_COMMIT_NAME,
+                author_email=settings.REPO_AGENT_COMMIT_EMAIL,
+            )
+            if commit.returncode != 0 and not self._nothing_to_commit(commit.output):
+                # The files are back on disk but the branch does not say so.
+                errors.append(f"git commit failed during rollback: {commit.output}")
+                logger.error(
+                    "Rollback commit failed",
+                    apply_run_id=str(apply_run.id),
+                    output=commit.output[:500],
+                )
+
         apply_run = await self.repository.finish_apply_run(
             apply_run,
-            status=PatchApplyRunStatus.rolled_back,
+            status=PatchApplyRunStatus.failed if errors else PatchApplyRunStatus.rolled_back,
             patches_applied=apply_run.patches_applied,
             patches_failed=apply_run.patches_failed,
             validation_status=apply_run.validation_status,
             validation_output=apply_run.validation_output,
             git_diff_summary=apply_run.git_diff_summary,
-            error_message=None,
+            error_message="; ".join(errors) if errors else None,
         )
+        if errors:
+            logger.error(
+                "Rollback did not complete cleanly",
+                apply_run_id=str(apply_run.id),
+                errors=errors,
+            )
         await self.db.commit()
         await self.db.refresh(apply_run)
         return apply_run
@@ -746,6 +815,12 @@ class RepoAgentService:
             target = safe_child_path(root, patch.file_path)
         except PathSafetyError as exc:
             return {**base, "status": PatchApplyResultStatus.failed, "reason": str(exc)}
+        # The raw bytes are read once, here, and are the only place the file's
+        # original newline convention still exists: read_repo_text translates
+        # every newline to a line feed so hashes and diffs compare logical
+        # content.
+        original_bytes = target.read_bytes() if target.exists() else b""
+        newline = detect_newline_style(original_bytes)
         current_content = read_repo_text(target) if target.exists() else ""
         current_hash = content_hash(current_content)
         if current_hash != patch.original_content_hash:
@@ -755,10 +830,36 @@ class RepoAgentService:
                 "reason": "Hash mismatch conflict; current file content differs from the proposed patch base.",
                 "new_content_hash": current_hash,
             }
-        backup = self._write_backup(root, apply_run.id, patch.id, patch.file_path, current_content)
+        # No backup, no patch. Failing this one patch rather than the whole run
+        # keeps the others reviewable, and the file is left untouched either way
+        # because the write below never happens.
+        try:
+            backup = self._write_backup(
+                root,
+                apply_run.id,
+                patch.id,
+                patch.file_path,
+                current_content,
+                original_bytes=original_bytes,
+            )
+        except (OSError, PathSafetyError, RepoAgentError) as exc:
+            logger.error(
+                "Refusing to apply a patch whose backup could not be written",
+                patch_id=str(patch.id),
+                file_path=patch.file_path,
+                error=str(exc),
+            )
+            return {
+                **base,
+                "status": PatchApplyResultStatus.failed,
+                "reason": f"Could not write a rollback backup; patch not applied: {exc}",
+            }
         target.parent.mkdir(parents=True, exist_ok=True)
         proposed = patch.proposed_content or ""
-        target.write_text(proposed, encoding="utf-8")
+        # Written back in the convention the file already used, so a CRLF
+        # checkout stays CRLF. The content is unchanged either way: the patch
+        # text is newline-normalised and so is every hash computed from it.
+        write_repo_text(target, proposed, newline=newline)
         return {
             **base,
             "status": PatchApplyResultStatus.applied,
@@ -766,6 +867,16 @@ class RepoAgentService:
             "new_content_hash": content_hash(proposed),
             "backup_path": str(backup),
         }
+
+    @staticmethod
+    def _nothing_to_commit(output: str) -> bool:
+        """git exits non-zero when there is nothing staged.
+
+        After a rollback that is the expected outcome - the files match the
+        branch again - so it must not be read as a failed commit.
+        """
+        lowered = (output or "").lower()
+        return "nothing to commit" in lowered or "no changes added to commit" in lowered
 
     def _branch_name(self, scan_id: UUID) -> str:
         return f"seo-agent/{str(scan_id)[:8]}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
@@ -785,12 +896,92 @@ class RepoAgentService:
         result = self.git_runner.run(root, ["diff", "--cached", "--stat"])
         return result.output if result.returncode == 0 else result.output
 
-    def _write_backup(self, root: Path, apply_run_id: UUID, patch_id: UUID, file_path: str, content: str) -> Path:
-        safe_name = file_path.replace("\\", "/").replace("/", "__")
-        backup_dir = root.parent / ".seo-agent-backups" / root.name / str(apply_run_id)
+    def backup_root(self) -> Path:
+        """Where pre-apply copies of patched files are kept.
+
+        Configurable, and deliberately NOT inside the repository or beside it.
+        It used to be `<repo>/../.seo-agent-backups`, which in a container put
+        the only copy of the rollback material in the writable layer: recreating
+        the container deleted it, and a rollback afterwards could restore
+        nothing. It must point at storage that outlives the container - a named
+        volume - and at a path the backend's own user can write.
+        """
+        return Path(settings.REPO_AGENT_BACKUP_ROOT)
+
+    def _repo_backup_key(self, root: Path) -> str:
+        """A stable, collision-free directory name for one checkout.
+
+        The basename alone is not enough: two different checkouts are often both
+        called "site", and their backups must not land in the same place. The
+        digest of the resolved path keeps them apart while the readable prefix
+        keeps the directory identifiable.
+        """
+        resolved = Path(root).resolve().as_posix()
+        digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", root.name or "repo").strip("-") or "repo"
+        return f"{name}-{digest}"
+
+    def backup_dir_for_run(self, root: Path, apply_run_id: UUID) -> Path:
+        """<backup root>/<repo key>/<apply run id>."""
+        return self.backup_root() / self._repo_backup_key(root) / str(apply_run_id)
+
+    @staticmethod
+    def _backup_file_name(patch_id: UUID, file_path: str) -> str:
+        """One flat, safe filename for a repository-relative path.
+
+        Rejects anything that could climb out of the backup directory, then
+        flattens what is left. The patch id prefix makes the name unique even
+        when two patches target the same file, and a long path is truncated
+        with a digest so it cannot exceed the filesystem's name limit.
+        """
+        clean = file_path.replace("\\", "/").strip("/")
+        parts = [part for part in clean.split("/") if part]
+        if not parts or any(part in {"..", "."} for part in parts):
+            raise PathSafetyError(f"Unsafe file path for a backup: {file_path!r}")
+        flat = re.sub(r"[^A-Za-z0-9._-]", "_", "__".join(parts))
+        if len(flat) > 120:
+            digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:12]
+            flat = f"{flat[:100]}-{digest}"
+        return f"{patch_id}-{flat}"
+
+    def _write_backup(
+        self,
+        root: Path,
+        apply_run_id: UUID,
+        patch_id: UUID,
+        file_path: str,
+        content: str,
+        *,
+        original_bytes: Optional[bytes] = None,
+    ) -> Path:
+        """Save the pre-apply file, then prove it was saved.
+
+        The backup stores the file's exact bytes when they are available, not a
+        newline-normalised copy of its text, so restoring it reproduces the
+        original byte for byte - line endings and any byte-order mark included.
+
+        The read-back is the point: a patch must never be applied unless its
+        undo material is on disk and correct, because this file is the only
+        thing standing between a bad patch and an unrecoverable working tree.
+        """
+        backup_dir = self.backup_dir_for_run(root, apply_run_id)
+        backup_path = backup_dir / self._backup_file_name(patch_id, file_path)
+        resolved_dir = backup_dir.resolve()
+        if not str(backup_path.resolve()).startswith(str(resolved_dir)):
+            raise PathSafetyError("Backup path escapes the apply run directory")
+
         backup_dir.mkdir(parents=True, exist_ok=True)
-        backup_path = backup_dir / f"{patch_id}-{safe_name}"
-        backup_path.write_text(content, encoding="utf-8")
+        payload = original_bytes if original_bytes is not None else content.encode("utf-8")
+        backup_path.write_bytes(payload)
+
+        if backup_path.read_bytes() != payload:
+            raise RepoAgentError(
+                f"Backup verification failed for {file_path}; refusing to apply the patch"
+            )
+        if content_hash(read_repo_text(backup_path)) != content_hash(content):
+            raise RepoAgentError(
+                f"Backup content does not match the file it was taken from ({file_path})"
+            )
         return backup_path
 
     def _is_ignored_patch_path(self, file_path: str) -> bool:
@@ -1078,7 +1269,9 @@ class RepoAgentService:
             patch_type = SeoCodePatchType.schema_addition
             risk = SeoCodePatchRisk.medium
         elif issue.issue_type == SeoCodeIssueType.missing_robots:
-            file_path = "app/robots.ts"
+            # Resolve to whichever app directory this repository uses, so a
+            # src/-based project does not get a second robots route at app/.
+            file_path = repo_relative(root, "app/robots.ts")
             path = safe_child_path(root, file_path)
             if path.exists():
                 return None
@@ -1087,7 +1280,7 @@ class RepoAgentService:
             proposed = robots_patch_content(site_url)
             patch_type = SeoCodePatchType.robots_update
         elif issue.issue_type in {SeoCodeIssueType.missing_sitemap, SeoCodeIssueType.route_not_in_sitemap}:
-            file_path = "app/sitemap.ts"
+            file_path = repo_relative(root, "app/sitemap.ts")
             path = safe_child_path(root, file_path)
             original = read_repo_text(path) if path.exists() else ""
             original_hash = content_hash(original)
@@ -1155,9 +1348,11 @@ class RepoAgentService:
         return None
 
     def _is_internal_patch_path(self, file_path: str) -> bool:
-        clean = file_path.replace("\\", "/").removeprefix("app/").strip("/")
-        first = clean.split("/", 1)[0]
-        return first in {"admin", "api", "_components", "dashboard"}
+        # Delegates to the scanner's rule so there is one definition of
+        # "internal" and it understands both app/ and src/app/. The local copy
+        # stripped only "app/", so src/app/admin/... was not recognised as
+        # internal and could have been offered as a patch target.
+        return is_internal_app_path(file_path)
 
     async def _site_url(self, project_id: Optional[UUID], tenant_id: UUID, fallback: Optional[str] = None) -> str:
         if project_id:
@@ -1179,16 +1374,22 @@ class RepoAgentService:
                 route = ""
             route = "/" + route.strip("/") if route else "/"
             return site_url.rstrip("/") + ("" if route == "/" else route)
-        route = file_path.removeprefix("app/").removesuffix("/page.tsx").removesuffix("page.tsx")
+        # The public route comes from the path inside the app directory, so a
+        # src/-based repo canonicalises to /company and not /src/app/company.
+        route = strip_app_prefix(file_path).removesuffix("/page.tsx").removesuffix("page.tsx")
         route = "/" + route.strip("/")
         if file_path.endswith("layout.tsx") or route == "/":
             route = "/"
         return site_url.rstrip("/") + ("" if route == "/" else route)
 
     def _default_page_file(self, scanned_files) -> Optional[str]:
-        for preferred in ["app/page.tsx", "app/layout.tsx"]:
-            if any(file.file_path == preferred for file in scanned_files):
-                return preferred
+        # The home page and root layout live under whichever app directory the
+        # repository uses, so check both prefixes before falling back.
+        for name in ("page.tsx", "layout.tsx"):
+            for prefix in APP_DIR_PREFIXES:
+                preferred = f"{prefix}/{name}"
+                if any(file.file_path == preferred for file in scanned_files):
+                    return preferred
         for file in scanned_files:
             if file.detected_purpose in {RepoFilePurpose.page, RepoFilePurpose.layout}:
                 return file.file_path
@@ -1202,9 +1403,10 @@ class RepoAgentService:
         if not page_url:
             return None
         path = urlsplit(page_url).path.strip("/")
-        expected = "app/page.tsx" if not path else f"app/{path}/page.tsx"
-        if any(file.file_path == expected for file in scanned_files):
-            return expected
+        for prefix in APP_DIR_PREFIXES:
+            expected = f"{prefix}/page.tsx" if not path else f"{prefix}/{path}/page.tsx"
+            if any(file.file_path == expected for file in scanned_files):
+                return expected
         tokens = set(re.findall(r"[a-z0-9]+", path.lower()))
         best = None
         best_score = 0

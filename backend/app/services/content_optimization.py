@@ -1,6 +1,8 @@
 """Local-LLM-powered content optimization suggestions."""
 from __future__ import annotations
 
+import asyncio
+
 from collections import defaultdict
 from datetime import datetime
 import hashlib
@@ -27,11 +29,86 @@ from app.services.project_context import project_context_prompt
 logger = structlog.get_logger(__name__)
 
 
+class ContentRunAlreadyRunning(RuntimeError):
+    """Another generation for this crawl has not finished yet.
+
+    Its own exception type so the orchestrator can tell "someone already
+    started this" from a genuine failure, and report it as such instead of
+    marking the stage broken.
+    """
+
+
+class UnusableModelResponse(RuntimeError):
+    """The model answered, but the answer could not be read as suggestions.
+
+    Deliberately not an ``OllamaRequestError``. That type covers an unreachable
+    or erroring Ollama as well as a malformed reply, and the two call for
+    opposite handling: a model that is down should fail the run loudly, while a
+    single reply this service cannot parse is an ordinary event to log and step
+    past. Collapsing them meant either one page could kill the run, or an
+    entirely dead Ollama could produce a "completed" run with no suggestions in
+    it — both of which this stage has done.
+    """
+
+
 TITLE_MIN_LENGTH = 30
 TITLE_MAX_LENGTH = 60
 META_MIN_LENGTH = 50
 META_MAX_LENGTH = 160
 GENERIC_TITLES = {"home", "homepage", "untitled", "quotes to scrape", "login"}
+
+#: Below this, a page gives the model nothing to work from. The prompt is built
+#: out of the page's own text, so asking about an empty page invites invention,
+#: and inventing content is the one thing this product must never do.
+LLM_MIN_WORD_COUNT = 50
+
+#: Enough substance for an answer engine to quote, and for subheadings to be
+#: worth suggesting. Below it, an FAQ or answer block would be padding.
+AEO_MIN_WORD_COUNT = 300
+
+#: What the audit calls thin. Kept in step with it so the two cannot disagree
+#: about whether a page needs more content.
+THIN_CONTENT_WORDS = 300
+
+
+#: The JSON line asked of the model for each suggestion type.
+#:
+#: The prompt used to request all nine on every page and cap the reply at 1200
+#: tokens. ``_suggestion_records`` only ever reads the types it is given, so the
+#: rest were generated and thrown away — and on a CPU-only Ollama the reply
+#: length *is* the runtime: a 3B model emits a few tokens a second, so asking
+#: for nine sections cost minutes a page. Asking only for what will be stored is
+#: the same output for a fraction of the time.
+#: Placeholders are written as <angle-bracketed slots> on purpose. Spelled as
+#: plain descriptive text — "50-160 char meta description" — a 3B model copies
+#: them back verbatim instead of writing anything: measured on six real pages,
+#: three returned the placeholder itself as the suggestion. Those then failed the
+#: length check and were replaced with canned filler, so the page got a
+#: meaningless description and nobody could tell the model had never answered.
+SUGGESTION_JSON_SHAPES: Dict[str, str] = {
+    # No "reason" on these three: `_reason()` returns a fixed sentence for them
+    # and never reads what the model wrote. Asking for it anyway meant paying to
+    # generate a field that was discarded on arrival — on a CPU-only box, output
+    # tokens are the runtime, so this was pure cost.
+    "seo_title": '  "seo_title": {"suggested_value": "<your title here, 30-60 characters>", "confidence_score": 0-100}',
+    "meta_description": '  "meta_description": {"suggested_value": "<your description here, 50-160 characters>", "confidence_score": 0-100}',
+    "schema": '  "schema": {"suggested_value": {"@context": "https://schema.org", "@type": "WebPage"}, "confidence_score": 0-100}',
+    # The rest do surface the model's reason, so it is asked for — but bounded.
+    # Left open it writes a paragraph nobody reads in full.
+    "h1": '  "h1": {"suggested_value": "<your single H1 here>", "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+    "headings": '  "headings": {"suggested_value": ["<your H2 or H3 here>"], "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+    # Exactly two pairs. Left unbounded the model writes four or five, which was
+    # the single largest block of output on a typical page.
+    "faq": '  "faq": {"suggested_value": [{"question": "<question 1>", "answer": "<answer 1>"}, {"question": "<question 2>", "answer": "<answer 2>"}], "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+    "content_refresh": '  "content_refresh": {"suggested_value": ["<your recommendation>"], "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+    "answer_block": '  "answer_block": {"suggested_value": "<your 40-60 word direct answer>", "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+    "internal_link_context": '  "internal_link_context": {"suggested_value": ["<sentence showing where the link goes>"], "reason": "<why, under 12 words>", "confidence_score": 0-100}',
+}
+
+#: Output budget per requested section, and the floor below which even a
+#: one-field reply would be truncated mid-JSON and fail to parse.
+TOKENS_PER_SUGGESTION = 170
+MIN_PREDICT_TOKENS = 320
 
 
 class ContentOptimizationService:
@@ -53,6 +130,21 @@ class ContentOptimizationService:
         pages = await self.repository.list_crawl_pages(crawl_id)
         if not pages:
             raise ValueError("Crawl has no pages")
+
+        # Refuse to start a second generation for the same crawl while one is
+        # still going. Two runs over the same pages do not finish any sooner —
+        # they share one CPU-bound model, so each takes twice as long — and they
+        # race to write the same suggestions. This happened the moment a resume
+        # was triggered twice: both workers ground away at the same 171 pages,
+        # the stage looked stalled, and the dashboard showed a stage that kept
+        # resetting itself.
+        in_flight = await self.repository.find_active_run(crawl_id, tenant_id)
+        if in_flight is not None:
+            raise ContentRunAlreadyRunning(
+                f"A content run for this crawl is already in progress "
+                f"({in_flight.progress or 0}% complete). Wait for it to finish, "
+                "or let it fail before starting another."
+            )
 
         run = await self.repository.create_run(crawl, model=settings.OLLAMA_DEFAULT_MODEL)
         await self.db.commit()
@@ -94,32 +186,112 @@ class ContentOptimizationService:
                 link_recs_by_page[rec.target_page_id].append(rec)
 
             created_count = 0
-            for index, page in enumerate(pages, start=1):
-                page_payload = await self._generate_page_payload(
-                    page,
-                    issues_by_page[page.id],
-                    scores_by_page.get(page.id),
-                    link_recs_by_page[page.id],
-                    project_context_text,
-                )
-                records = self._suggestion_records(
-                    run=run,
-                    page=page,
-                    payload=page_payload,
-                    audit_issues=issues_by_page[page.id],
-                    page_score=scores_by_page.get(page.id),
-                    internal_link_recs=link_recs_by_page[page.id],
-                    existing_keys=existing_keys,
-                )
-                if records:
-                    created_count += await self.repository.add_suggestions(records)
-                    for record in records:
-                        existing_keys.add((record["page_id"], record["suggestion_type"], record["content_hash"]))
+            analysed_count = 0
+            skipped: Dict[str, int] = defaultdict(int)
 
-                run.progress = min(95, 5 + int((index / max(len(pages), 1)) * 90))
-                await self.db.commit()
+            # Decide what every page needs before generating anything. The model
+            # is the whole cost of this stage; everything else here is arithmetic.
+            planned: List[tuple[Any, List[ContentOptimizationSuggestionType]]] = []
+            for page in pages:
+                issue_types = {issue.issue_type for issue in issues_by_page[page.id]}
+                link_recs = link_recs_by_page[page.id]
+                pending_types = self._pending_types(page, issue_types, link_recs, existing_keys)
+                skip_reason = self._skip_reason(page, issue_types, link_recs, pending_types)
+                if skip_reason:
+                    skipped[skip_reason] += 1
+                    continue
+                planned.append((page, pending_types))
 
-            await self.repository.finish_run(run, total_pages=len(pages), total_suggestions=created_count)
+            total_to_analyse = len(planned)
+            await self._publish_progress(run, 5, analysed_count, total_to_analyse, created_count)
+
+            # Generate in small concurrent batches. Measured on this hardware:
+            # with Ollama pinned to 4 cores, concurrency made throughput *worse*
+            # (2.12 -> 1.67 pages/min at 3 at a time) because one generation
+            # already saturates every core. With 8 cores there is headroom and
+            # two at a time is the best of the measured options (2.63 -> 2.94),
+            # while four is worse again. Hence a small, configurable degree
+            # rather than "as parallel as possible".
+            #
+            # Only the model calls overlap. Everything touching the database
+            # happens one at a time below, because an AsyncSession is a single
+            # connection and concurrent use corrupts it.
+            batch_size = max(1, int(settings.CONTENT_LLM_CONCURRENCY))
+
+            for offset in range(0, total_to_analyse, batch_size):
+                batch = planned[offset:offset + batch_size]
+
+                payloads = await asyncio.gather(
+                    *(
+                        self._generate_page_payload(
+                            page,
+                            issues_by_page[page.id],
+                            scores_by_page.get(page.id),
+                            link_recs_by_page[page.id],
+                            project_context_text,
+                            requested_types=pending_types,
+                        )
+                        for page, pending_types in batch
+                    ),
+                    return_exceptions=True,
+                )
+
+                for (page, pending_types), payload in zip(batch, payloads):
+                    if isinstance(payload, UnusableModelResponse):
+                        # One page's reply is not the run. A local model
+                        # occasionally returns something that will not parse, and
+                        # aborting here threw away every page already generated —
+                        # which is how a stage that had done sixty pages of real
+                        # work ended up recording nothing at all. The page is
+                        # counted and skipped; the next run picks it up, because
+                        # its suggestions are still missing and the filter sees
+                        # that.
+                        skipped["llm_unusable_response"] += 1
+                        logger.warning(
+                            "Content optimization skipped a page",
+                            run_id=str(run.id),
+                            url=getattr(page, "url", None),
+                            error=str(payload),
+                        )
+                        continue
+                    if isinstance(payload, BaseException):
+                        # Anything else — an unreachable model, a cancelled task —
+                        # is not this page's problem and must stop the run rather
+                        # than be silently absorbed into a "completed" result.
+                        raise payload
+
+                    analysed_count += 1
+                    records = self._suggestion_records(
+                        run=run,
+                        page=page,
+                        payload=payload,
+                        audit_issues=issues_by_page[page.id],
+                        page_score=scores_by_page.get(page.id),
+                        internal_link_recs=link_recs_by_page[page.id],
+                        existing_keys=existing_keys,
+                        target_types=pending_types,
+                    )
+                    if records:
+                        created_count += await self.repository.add_suggestions(records)
+                        for record in records:
+                            existing_keys.add(
+                                (record["page_id"], record["suggestion_type"], record["content_hash"])
+                            )
+
+                progress = 5 + int((min(offset + batch_size, total_to_analyse) / max(total_to_analyse, 1)) * 90)
+                await self._publish_progress(run, progress, analysed_count, total_to_analyse, created_count)
+
+            logger.info(
+                "Content optimization page selection",
+                run_id=str(run.id),
+                pages_crawled=len(pages),
+                pages_analysed=analysed_count,
+                pages_skipped=dict(skipped),
+            )
+            # total_pages records what was analysed, not what was crawled: it is
+            # the denominator for "suggestions per page" everywhere downstream,
+            # and counting skipped pages in it would understate the stage.
+            await self.repository.finish_run(run, total_pages=analysed_count, total_suggestions=created_count)
             await self.repository.set_run_status(run, ContentOptimizationRunStatus.completed, progress=100)
             await self.db.commit()
             await self.db.refresh(run)
@@ -197,19 +369,177 @@ class ContentOptimizationService:
         page_score: Optional[Any],
         internal_link_recs: List[Any],
         project_context_text: str,
+        requested_types: Optional[List[ContentOptimizationSuggestionType]] = None,
     ) -> Dict[str, Any]:
-        prompt = self._build_prompt(page, audit_issues, page_score, internal_link_recs, project_context_text)
+        prompt = self._build_prompt(
+            page,
+            audit_issues,
+            page_score,
+            internal_link_recs,
+            project_context_text,
+            requested_types=requested_types,
+        )
+        # Budget the reply to what was asked for. On a CPU-only Ollama the token
+        # count is the runtime, so a flat 1200 made a page needing one new title
+        # cost the same as a page needing all nine sections.
+        sections = len(requested_types) if requested_types else len(SUGGESTION_JSON_SHAPES)
+        num_predict = max(MIN_PREDICT_TOKENS, sections * TOKENS_PER_SUGGESTION)
         try:
             response = await self.llm_service.generate(
                 prompt,
                 model=settings.OLLAMA_DEFAULT_MODEL,
-                options={"temperature": 0.2, "num_predict": 1200},
+                options={"temperature": 0.2, "num_predict": num_predict},
             )
             return self._parse_llm_json(response.get("response", ""))
         except OllamaRequestError:
             raise
         except LocalLLMError:
             raise
+
+    async def _publish_progress(
+        self,
+        run: ContentOptimizationRun,
+        progress: int,
+        analysed: int,
+        total: int,
+        suggestions: int,
+    ) -> None:
+        """Write what has happened so far where the dashboard can see it.
+
+        These counters used to be set once, by ``finish_run``, at the very end.
+        Until then the run reported zero pages and zero suggestions however much
+        work it had actually done, so an hour of generation looked identical to a
+        hung process: a spinner, "Running", and nothing else. The operator had no
+        way to tell progress from a stall — and on this stack a stall is a real
+        possibility, which made the ambiguity worse.
+
+        Publishing on every batch costs one small UPDATE and turns the stage into
+        something you can watch: pages analysed out of pages selected, and
+        suggestions found so far.
+        """
+        run.progress = min(95, progress)
+        run.total_pages = analysed
+        run.total_suggestions = suggestions
+        await self.db.commit()
+        logger.info(
+            "Content optimization progress",
+            run_id=str(run.id),
+            analysed=analysed,
+            selected=total,
+            suggestions=suggestions,
+            progress=run.progress,
+        )
+
+    def _pending_types(
+        self,
+        page,
+        issue_types: set[str],
+        internal_link_recs: List[Any],
+        existing_keys: set[SuggestionKey],
+    ) -> List[ContentOptimizationSuggestionType]:
+        """The suggestion types this page does not already have an answer for.
+
+        ``_suggestion_records`` discards any suggestion whose key is already
+        stored, so a page whose every key exists produced nothing no matter what
+        the model said. That work was still being paid for: a full generation per
+        page, on every run. Because this agent runs on a schedule, most runs are
+        repeat runs over pages nobody edited, which made it the common case
+        rather than the exception.
+
+        Computing the keys first costs a few hashes and decides whether the
+        generation is worth starting at all.
+        """
+        pending: List[ContentOptimizationSuggestionType] = []
+        for suggestion_type in self._target_types(page, issue_types, internal_link_recs):
+            current_value = self._current_value(page, suggestion_type, internal_link_recs)
+            content_hash = self._content_hash(page, suggestion_type, current_value, issue_types)
+            if (page.id, suggestion_type, content_hash) not in existing_keys:
+                pending.append(suggestion_type)
+        return pending
+
+    def _skip_reason(
+        self,
+        page,
+        issue_types: set[str],
+        internal_link_recs: List[Any],
+        pending_types: List[ContentOptimizationSuggestionType],
+    ) -> Optional[str]:
+        """Why this page does not need a generation, or None if it does.
+
+        One local model call costs tens of seconds of CPU, and the stage made one
+        for every crawled page in sequence — a hundred-page site spent over an
+        hour re-deriving advice for pages with nothing wrong with them.
+
+        The tests applied here are the ones that change the answer:
+
+        *Reachability.* A page Google will not index cannot be improved by better
+        copy on it. A non-200 needs fixing, not rewriting, and the audit already
+        reports that.
+
+        *Material.* The prompt is built from the page's own text. Below a floor
+        there is nothing for the model to summarise, and what comes back is
+        invention rather than optimisation — which this product must not produce.
+
+        *Deficiency.* A page with no audit issues, a title and description within
+        length, exactly one h1, schema markup and no link recommendations has
+        nothing identified to fix. Spending a minute asking anyway is how the
+        stage came to take longer than the crawl that fed it.
+        """
+        if not pending_types:
+            # Two different facts that would otherwise be logged as one. Now that
+            # the requested types are need-driven, an empty list can mean the page
+            # had nothing to ask about as easily as it can mean every answer is
+            # already stored, and an operator reading the counts should be able to
+            # tell "nothing to do here" from "done this already".
+            if not self._target_types(page, issue_types, internal_link_recs):
+                return "nothing_needed"
+            return "already_suggested"
+
+        status_code = getattr(page, "status_code", None)
+        if status_code is not None and int(status_code) != 200:
+            return "not_200"
+
+        if getattr(page, "noindex", False):
+            return "noindex"
+
+        if int(page.word_count or 0) < LLM_MIN_WORD_COUNT:
+            return "too_little_content"
+
+        if issue_types or internal_link_recs:
+            return None
+
+        if self._has_weak_metadata(page):
+            return None
+
+        return "no_deficiency"
+
+    def _has_weak_metadata(self, page) -> bool:
+        """Whether the page's own fields show something worth rewriting.
+
+        Deliberately the same bounds the suggestion validator already enforces,
+        so this cannot select a page the rest of the service would then refuse to
+        produce anything for.
+        """
+        title = (page.title or "").strip()
+        if not title or len(title) < TITLE_MIN_LENGTH or len(title) > TITLE_MAX_LENGTH:
+            return True
+        if title.lower() in GENERIC_TITLES:
+            return True
+
+        meta = (page.meta_description or "").strip()
+        if not meta or len(meta) < META_MIN_LENGTH or len(meta) > META_MAX_LENGTH:
+            return True
+
+        h1_source = page.h1 or []
+        if isinstance(h1_source, str):
+            h1_source = [h1_source]
+        if len([value for value in h1_source if str(value).strip()]) != 1:
+            return True
+
+        if not getattr(page, "has_schema_markup", False):
+            return True
+
+        return False
 
     def _suggestion_records(
         self,
@@ -220,9 +550,14 @@ class ContentOptimizationService:
         page_score: Optional[Any],
         internal_link_recs: List[Any],
         existing_keys: set[SuggestionKey],
+        target_types: Optional[List[ContentOptimizationSuggestionType]] = None,
     ) -> List[Dict[str, Any]]:
         issue_types = {issue.issue_type for issue in audit_issues}
-        target_types = self._target_types(page, issue_types, internal_link_recs)
+        # Passed in by the caller, which already computed these to decide whether
+        # the generation was worth running. Recomputing here would let the set
+        # that justified the model call drift from the set it is applied to.
+        if target_types is None:
+            target_types = self._target_types(page, issue_types, internal_link_recs)
         records: List[Dict[str, Any]] = []
         for suggestion_type in target_types:
             current_value = self._current_value(page, suggestion_type, internal_link_recs)
@@ -269,23 +604,80 @@ class ContentOptimizationService:
         issue_types: set[str],
         internal_link_recs: List[Any],
     ) -> List[ContentOptimizationSuggestionType]:
-        values = [
-            ContentOptimizationSuggestionType.seo_title,
-            ContentOptimizationSuggestionType.meta_description,
-            ContentOptimizationSuggestionType.headings,
-            ContentOptimizationSuggestionType.faq,
-            ContentOptimizationSuggestionType.schema,
-            ContentOptimizationSuggestionType.content_refresh,
-            ContentOptimizationSuggestionType.answer_block,
-        ]
+        """The suggestion types this page has a reason to be asked about.
+
+        Every page used to be asked for all seven base types plus whatever was
+        conditional, so the model wrote a title for pages with a good title and
+        schema for pages that already had schema. None of it was wasted output in
+        the sense of being wrong — it was wasted because the page had no
+        deficiency for it to address, and on a CPU-only Ollama the length of the
+        reply *is* the runtime of the stage. A page needing one new description
+        cost the same four minutes as a page needing everything.
+
+        Each type below is now asked for only when something about the page says
+        it is needed. The bounds are the ones the validator already enforces, so
+        this cannot request something the rest of the service would then refuse
+        to store, nor skip something it would have accepted.
+        """
+        values: List[ContentOptimizationSuggestionType] = []
+        T = ContentOptimizationSuggestionType
+
+        title = (page.title or "").strip()
+        if (
+            not title
+            or len(title) < TITLE_MIN_LENGTH
+            or len(title) > TITLE_MAX_LENGTH
+            or title.lower() in GENERIC_TITLES
+            or issue_types & {"missing_title", "title_too_short", "title_too_long", "duplicate_title"}
+        ):
+            values.append(T.seo_title)
+
+        meta = (page.meta_description or "").strip()
+        if (
+            not meta
+            or len(meta) < META_MIN_LENGTH
+            or len(meta) > META_MAX_LENGTH
+            or issue_types & {
+                "missing_meta_description",
+                "meta_description_too_short",
+                "meta_description_too_long",
+                "duplicate_meta_description",
+            }
+        ):
+            values.append(T.meta_description)
+
         h1_source = page.h1 or []
         if isinstance(h1_source, str):
             h1_source = [h1_source]
         h1_values = [value for value in h1_source if str(value).strip()]
         if "missing_h1" in issue_types or "multiple_h1" in issue_types or len(h1_values) != 1:
-            values.insert(2, ContentOptimizationSuggestionType.h1)
+            values.append(T.h1)
+
+        # A long page with no subheadings is hard to scan and hard to extract an
+        # answer from. A short one does not need them.
+        h2_values = page.h2 or []
+        if int(page.word_count or 0) >= AEO_MIN_WORD_COUNT and not h2_values:
+            values.append(T.headings)
+
+        if not getattr(page, "has_schema_markup", False) or "missing_schema" in issue_types:
+            values.append(T.schema)
+
+        if "thin_content" in issue_types or int(page.word_count or 0) < THIN_CONTENT_WORDS:
+            values.append(T.content_refresh)
+
+        # The two AEO additions. They are the reason an answer engine can quote
+        # the page, so they are worth asking for — but only on a page with enough
+        # substance to answer from, and not where the page already carries FAQ
+        # markup of its own.
+        if int(page.word_count or 0) >= AEO_MIN_WORD_COUNT:
+            schema_types = {str(value).lower() for value in (getattr(page, "schema_types", None) or [])}
+            if "faqpage" not in schema_types:
+                values.append(T.faq)
+            values.append(T.answer_block)
+
         if internal_link_recs:
-            values.append(ContentOptimizationSuggestionType.internal_link_context)
+            values.append(T.internal_link_context)
+
         return values
 
     def _build_prompt(
@@ -295,7 +687,14 @@ class ContentOptimizationService:
         page_score: Optional[Any],
         internal_link_recs: List[Any],
         project_context_text: str = "",
+        requested_types: Optional[List[ContentOptimizationSuggestionType]] = None,
     ) -> str:
+        # Ask only for the sections that will actually be stored. Anything else
+        # is output the model spends seconds producing and this service discards.
+        wanted = {t.value for t in requested_types} if requested_types else set(SUGGESTION_JSON_SHAPES)
+        shape_lines = ",\n".join(
+            line for name, line in SUGGESTION_JSON_SHAPES.items() if name in wanted
+        )
         issue_types = [issue.issue_type for issue in audit_issues]
         text_preview = re.sub(r"\s+", " ", (page.text_content or "").strip())[:1500]
         h1 = page.h1 or []
@@ -312,20 +711,14 @@ class ContentOptimizationService:
         ]
         return (
             "You are a local SEO assistant running inside a self-hosted app. "
-            "Return only valid JSON. Do not rewrite the whole page. Do not create spammy or keyword-stuffed text. "
+            "Return only valid JSON. Replace every <...> slot with your own text written for this "
+            "specific page; never copy a slot back. Do not rewrite the whole page. Do not create "
+            "spammy or keyword-stuffed text. "
             "Make concise page-level suggestions only; no visual/UI/UX changes and no publishing instructions.\n\n"
             f"{project_context_text}\n\n"
             "JSON shape:\n"
             "{\n"
-            '  "seo_title": {"suggested_value": "30-60 char title", "reason": "...", "confidence_score": 0-100},\n'
-            '  "meta_description": {"suggested_value": "50-160 char meta description", "reason": "...", "confidence_score": 0-100},\n'
-            '  "h1": {"suggested_value": "one H1 if needed", "reason": "...", "confidence_score": 0-100},\n'
-            '  "headings": {"suggested_value": ["H2 or H3 suggestion"], "reason": "...", "confidence_score": 0-100},\n'
-            '  "faq": {"suggested_value": [{"question": "...", "answer": "..."}], "reason": "...", "confidence_score": 0-100},\n'
-            '  "schema": {"suggested_value": {"@context": "https://schema.org", "@type": "WebPage"}, "reason": "...", "confidence_score": 0-100},\n'
-            '  "content_refresh": {"suggested_value": ["short recommendation"], "reason": "...", "confidence_score": 0-100},\n'
-            '  "answer_block": {"suggested_value": "40-60 word direct answer", "reason": "...", "confidence_score": 0-100},\n'
-            '  "internal_link_context": {"suggested_value": ["sentence showing where to place a suggested internal link"], "reason": "...", "confidence_score": 0-100}\n'
+            f"{shape_lines}\n"
             "}\n\n"
             f"URL: {page.url}\n"
             f"Current title: {page.title or ''}\n"
@@ -341,20 +734,74 @@ class ContentOptimizationService:
         )
 
     def _parse_llm_json(self, text: str) -> Dict[str, Any]:
+        """Read the model's reply as an object, or say clearly that it was not one.
+
+        A 3B model asked for JSON mostly returns JSON, and sometimes returns
+        JSON wrapped in prose, or two objects, or one that stops mid-way because
+        it hit the token budget. Every one of those used to escape this function
+        as a raw ``JSONDecodeError``: the fallback ``json.loads`` below was
+        unguarded, so the careful ``OllamaRequestError`` above it only covered
+        the case where no braces were found at all. That bare decode error then
+        travelled all the way up and failed the whole run.
+
+        The attempts below are ordered cheapest first and all end the same way —
+        an ``OllamaRequestError`` the caller can treat as "this page did not
+        produce anything", which is a normal outcome, not a crash.
+        """
         stripped = (text or "").strip()
         if stripped.startswith("```"):
             stripped = re.sub(r"^```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
             stripped = re.sub(r"```$", "", stripped).strip()
-        try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError:
-            match = re.search(r"(\{.*\})", stripped, re.DOTALL)
-            if not match:
-                raise OllamaRequestError("Ollama response did not contain valid JSON.")
-            data = json.loads(match.group(1))
-        if not isinstance(data, dict):
-            raise OllamaRequestError("Ollama JSON response must be an object.")
-        return data
+
+        for candidate in self._json_candidates(stripped):
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+
+        raise UnusableModelResponse("Model response did not contain a valid JSON object.")
+
+    @staticmethod
+    def _json_candidates(stripped: str) -> List[str]:
+        """Progressively more forgiving readings of one reply.
+
+        The last of these repairs a reply cut off by the token budget, by closing
+        the structures still open at the last complete field. A page whose FAQ
+        was truncated should still yield its title and description rather than
+        nothing.
+        """
+        candidates = [stripped]
+
+        # The outermost braces, for a reply wrapped in explanation.
+        first, last = stripped.find("{"), stripped.rfind("}")
+        if first != -1 and last > first:
+            candidates.append(stripped[first:last + 1])
+
+        # The first complete object, for a reply that ran two together.
+        depth = 0
+        for index, char in enumerate(stripped):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(stripped[stripped.find("{"):index + 1])
+                    break
+
+        # Truncated mid-object: keep everything up to the last field that closed,
+        # then shut the structures the model left open.
+        if first != -1:
+            body = stripped[first:]
+            cut = max(body.rfind("},"), body.rfind('",'), body.rfind("],"))
+            if cut > 0:
+                repaired = body[:cut + 1].rstrip(",")
+                opens = repaired.count("{") - repaired.count("}")
+                brackets = repaired.count("[") - repaired.count("]")
+                candidates.append(repaired + "]" * max(brackets, 0) + "}" * max(opens, 0))
+
+        return candidates
 
     def _payload_item(self, payload: Dict[str, Any], suggestion_type: ContentOptimizationSuggestionType) -> Dict[str, Any]:
         item = payload.get(suggestion_type.value) or {}
@@ -393,34 +840,58 @@ class ContentOptimizationService:
             return self._json_text(self._validate_list(value, fallback))
         return self._clean_text(str(value or ""))
 
-    def _validate_title(self, value: str, page) -> str:
+    @staticmethod
+    def _is_placeholder(value: str) -> bool:
+        """Whether the model handed a prompt slot back instead of writing anything.
+
+        Measured on six real pages, three replies were the slot text itself. A
+        returned slot is the absence of an answer, and must not be dressed up as
+        one.
+        """
+        stripped = value.strip()
+        if stripped.startswith("<") and stripped.endswith(">"):
+            return True
+        lowered = stripped.lower()
+        return any(
+            marker in lowered
+            for marker in ("your title here", "your description here", "char meta description",
+                           "char title", "your answer", "your question", "<why>")
+        )
+
+    def _fit_or_drop(self, value: str, page, minimum: int, maximum: int) -> str:
+        """Keep the model's own words, trimmed to fit — or return nothing.
+
+        Three outcomes, and the middle one is the fix:
+
+        *Too long* is salvageable. A description four characters over the limit
+        is good copy that needs trimming, and trimming it keeps the model's
+        meaning. The old code discarded it instead, because the length test sat
+        in the reject branch and the truncation below it could then only ever
+        apply to the replacement.
+
+        *Too short, spammy, or a returned slot* means there is nothing to work
+        with. This used to substitute a fixed sentence — "Explore {topic} with
+        concise details, helpful context, and related resources for visitors" —
+        and store it as a suggestion. Thirteen pages got near-identical copy that
+        said nothing about them, presented as the agent's recommendation. An
+        empty return drops the suggestion instead, which is honest: the page
+        keeps its existing text, the gap stays visible in the audit, and the next
+        run tries again.
+        """
         candidate = self._clean_text(value)
-        if (
-            len(candidate) < TITLE_MIN_LENGTH
-            or len(candidate) > TITLE_MAX_LENGTH
-            or self._is_spammy(candidate)
-        ):
-            candidate = f"{self._topic(page)} Guide and Page Overview"
-        if len(candidate) < TITLE_MIN_LENGTH:
-            candidate = f"{candidate} for Search Visitors"
-        if len(candidate) > TITLE_MAX_LENGTH:
-            candidate = self._truncate_words(candidate, TITLE_MAX_LENGTH)
+        if not candidate or self._is_placeholder(candidate) or self._is_spammy(candidate):
+            return ""
+        if len(candidate) > maximum:
+            candidate = self._truncate_words(candidate, maximum)
+        if len(candidate) < minimum:
+            return ""
         return candidate
 
+    def _validate_title(self, value: str, page) -> str:
+        return self._fit_or_drop(value, page, TITLE_MIN_LENGTH, TITLE_MAX_LENGTH)
+
     def _validate_meta(self, value: str, page) -> str:
-        candidate = self._clean_text(value)
-        if (
-            len(candidate) < META_MIN_LENGTH
-            or len(candidate) > META_MAX_LENGTH
-            or self._is_spammy(candidate)
-        ):
-            candidate = (
-                f"Explore {self._topic(page)} with concise details, helpful context, "
-                "and related resources for visitors."
-            )
-        if len(candidate) > META_MAX_LENGTH:
-            candidate = self._truncate_words(candidate, META_MAX_LENGTH)
-        return candidate
+        return self._fit_or_drop(value, page, META_MIN_LENGTH, META_MAX_LENGTH)
 
     def _validate_schema(self, value: Any, page) -> Dict[str, Any]:
         if isinstance(value, str):

@@ -16,6 +16,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.url_utils import URLNormalizer
 from app.models.crawl import CrawlError, CrawlJob, CrawlLink, CrawlPage, CrawlStatus
 
+
+def truncate_text(value: Optional[str], limit: int) -> Optional[str]:
+    """Fit a value to its column, preserving None and empty-as-None.
+
+    A crawler reads whatever a site happens to contain, so any bounded text
+    column is a constraint violation waiting for the right page. Clipping on the
+    way in keeps one oversized value from failing the whole transaction.
+    """
+    if value is None:
+        return None
+    clipped = value[:limit]
+    return clipped or None
+
 POSTGRES_TEXT_CODECS = {
     "UTF8": "utf-8",
     "UNICODE": "utf-8",
@@ -162,7 +175,15 @@ class CrawlRepository:
                     source_page_id=source_page_id,
                     url=link_data.get("url"),
                     normalized_url=link_data.get("normalized_url"),
-                    link_text=link_data.get("text"),
+                    # Truncated to the column width. Card-style links wrap a
+                    # whole block — heading, description and CTA — so their
+                    # anchor text routinely runs past 500 characters. Inserted
+                    # raw, one such link raised StringDataRightTruncationError,
+                    # rolled back the transaction that was also saving the page,
+                    # and the task retried until the SEO run's timeout expired.
+                    # Nothing useful is lost: anchor text is used for diversity
+                    # counting, which a truncated value still serves.
+                    link_text=truncate_text(link_data.get("text"), 500),
                     link_type=link_type,
                     rel_attribute=link_data.get("rel"),
                     is_nofollow=link_data.get("is_nofollow", False),
@@ -272,9 +293,28 @@ class CrawlRepository:
             ).where(CrawlPage.crawl_job_id == job_id)
         )
 
+        # How many distinct pages this site actually links to, which is not the
+        # same as how many were fetched. `total_pages_discovered` was counted by
+        # the worker as it *enqueued* URLs, and enqueueing stops at the page cap
+        # — so it could never exceed the cap and always equalled the number
+        # crawled. A 171-page site reported "99 discovered, 99 crawled" and
+        # looked exhaustive, while 72 pages were never visited and the audit,
+        # the suggestions and the planner were all built from 58% of the site
+        # with nothing saying so.
+        #
+        # Counting the link graph instead gives the honest denominator: every
+        # internal URL the crawl saw, whether or not there was budget to fetch it.
+        discovered = await self.db.execute(
+            select(func.count(func.distinct(func.coalesce(CrawlLink.normalized_url, CrawlLink.url))))
+            .where(CrawlLink.crawl_job_id == job_id, CrawlLink.link_type == "internal")
+        )
+
         internal_links, external_links, issues = link_sums.one()
         total_pages = int(page_count.scalar() or 0)
 
+        # A page can be crawled without being linked to (the start URL, sitemap
+        # entries), so the honest figure is at least what was fetched.
+        job.total_pages_discovered = max(int(discovered.scalar() or 0), total_pages)
         job.total_pages_crawled = total_pages
         job.total_pages_failed = int(failed_count.scalar() or 0)
         job.total_internal_links = int(internal_links or 0)

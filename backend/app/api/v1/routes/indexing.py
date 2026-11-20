@@ -172,6 +172,29 @@ async def project_indexing_summary(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
+@router.post("/projects/{project_id}/autofix")
+async def autofix_indexing_issues(
+    project_id: UUID,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Optional[int] = Query(None, ge=1, le=200),
+):
+    """Work the indexing backlog end to end: inspect, prepare fixes, re-check.
+
+    Prepares fixes — a planner task and, where the issue maps to a connected
+    repository, a proposed patch. It does not apply patches, open pull requests
+    or publish anything; those stay behind explicit approval.
+    """
+    from app.services.indexing_autofix import IndexingAutofixService
+
+    try:
+        return await IndexingAutofixService(db).run(
+            project_id, _tenant_id(current_user), limit=limit
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
 def _tenant_id(current_user: dict) -> UUID:
     tenant_id = current_user.get("tenant_id")
     if not tenant_id:

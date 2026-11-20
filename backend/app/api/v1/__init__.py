@@ -36,6 +36,8 @@ from app.api.v1.routes import (
     code_review,
     deployment_verification,
     operations,
+    growth,
+    content_engine,
     pagespeed,
     indexing,
     keyword_baselines,
@@ -88,6 +90,8 @@ api_router.include_router(patch_pipeline.router, prefix="/patch-pipeline", tags=
 api_router.include_router(code_review.router, prefix="/code-review", tags=["Code Review / Approval"])
 api_router.include_router(deployment_verification.router, prefix="/deployment-verification", tags=["Deployment Verification"])
 api_router.include_router(operations.router, prefix="/operations", tags=["SEO Operations Engine"])
+api_router.include_router(growth.router, prefix="/growth", tags=["AI SEO Growth Engine"])
+api_router.include_router(content_engine.router, prefix="/content-engine", tags=["Autonomous Content Engine"])
 api_router.include_router(pagespeed.router, prefix="/pagespeed", tags=["Core Web Vitals"])
 api_router.include_router(brain.router, prefix="/brain", tags=["SEO Brain (Orchestrator)"])
 api_router.include_router(indexing.router, prefix="/indexing", tags=["GSC Indexing Intelligence"])

@@ -1,5 +1,7 @@
 'use client';
 
+import { parseApiDate } from '@/lib/utils';
+
 import type { ReactNode } from 'react';
 import { BadgeCheck, Rocket, Gauge, Search, Activity, ArrowRight } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -161,7 +163,7 @@ export default function DeploymentVerificationPage() {
             <ol className="space-y-2">
               {timeline.map((e, i) => (
                 <li key={i} className="flex items-start gap-3 text-sm">
-                  <span className="mt-0.5 font-mono text-xs text-muted-foreground">{new Date(e.time).toLocaleTimeString()}</span>
+                  <span className="mt-0.5 font-mono text-xs text-muted-foreground">{parseApiDate(e.time).toLocaleTimeString()}</span>
                   <span className="text-slate-800">{e.event}</span>
                 </li>
               ))}

@@ -2,13 +2,55 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import httpx
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+# The environment variable the credential helper below reads the token from.
+#
+# HTTPS push needs a credential, and every way of supplying one has a leak to
+# avoid: a token in the remote URL or in `-c http.extraHeader=` shows up in the
+# process list and in git's own error messages, and `credential.helper store`
+# writes it to disk in plain text. Passing it in the child process environment
+# and having git read it from there keeps it out of argv, out of .git/config and
+# off the filesystem.
+TOKEN_ENV_VAR = "SEO_AGENT_GIT_TOKEN"
+USERNAME_ENV_VAR = "SEO_AGENT_GIT_USERNAME"
+
+# A git credential helper is run through the shell when it starts with "!".
+# This one answers only the "get" action and prints nothing for store/erase, so
+# git never caches or writes the credential anywhere.
+ENV_CREDENTIAL_HELPER = (
+    f'!f() {{ test "$1" = get && printf "username=%s\\npassword=%s\\n" '
+    f'"${USERNAME_ENV_VAR}" "${TOKEN_ENV_VAR}"; }}; f'
+)
+
+REDACTED = "***"
+
+# Fallback authorship, used when a caller does not pass one. The real values
+# come from settings, so a deployment can change them without touching code.
+DEFAULT_COMMIT_NAME = "SEO Agent"
+DEFAULT_COMMIT_EMAIL = "seo-agent@localhost"
+
+
+def redact_secret(text: str, secret: Optional[str]) -> str:
+    """Remove a secret from captured output.
+
+    Belt and braces. The token is not passed on the command line, so git has no
+    reason to echo it - but command output is stored on the apply run and shown
+    in the dashboard, and a credential must never reach either by accident.
+    """
+    if not text or not secret or len(secret) < 8:
+        return text
+    return text.replace(secret, REDACTED)
 
 
 @dataclass
@@ -46,26 +88,75 @@ class GitHubClientError(RuntimeError):
 class GitCommandRunner:
     """Thin wrapper around git commands with timeout and captured output."""
 
-    def __init__(self, timeout_seconds: int = 120):
+    def __init__(self, timeout_seconds: int = 120, autocrlf: Optional[str] = None):
         self.timeout_seconds = timeout_seconds
+        # End-of-line policy for every command this runner issues.
+        #
+        # git decides whether to convert line endings from core.autocrlf, which
+        # it reads from the repository, the user's config and the system config.
+        # A container sees none of the host's system config, so the same
+        # checkout gets one answer from the owner's git and another from the
+        # agent's: on a Windows checkout with LF blobs, the host cleans CRLF
+        # back to LF on staging while the container stores the CRLF verbatim.
+        # The agent's commit then rewrites every line of every file it touched.
+        #
+        # None keeps git's own resolution, so nothing changes unless a
+        # deployment states the policy its checkouts actually use.
+        self.autocrlf = autocrlf
 
-    def run(self, root: Path, args: List[str], timeout_seconds: Optional[int] = None) -> CommandResult:
+    def _config_args(self, root: Path) -> List[str]:
+        """Configuration applied to one command, never persisted anywhere.
+
+        Trust this one repository for this one command: a checkout
+        bind-mounted into a container is owned by a different uid than the
+        process reading it, and git then refuses every command with "detected
+        dubious ownership". The operator chose this path, so trusting it is
+        their decision; it is scoped to exactly that directory rather than the
+        "*" wildcard, and nothing is written to the repository's config or to
+        any global config.
+        """
+        args = ["-c", f"safe.directory={Path(root).as_posix()}"]
+        if self.autocrlf is not None:
+            args += ["-c", f"core.autocrlf={self.autocrlf}"]
+        return args
+
+    def run(
+        self,
+        root: Path,
+        args: List[str],
+        timeout_seconds: Optional[int] = None,
+        env: Optional[Dict[str, str]] = None,
+        secret: Optional[str] = None,
+    ) -> CommandResult:
+        child_env = None
+        if env:
+            child_env = {**os.environ, **env}
+        config_args = self._config_args(root)
         try:
             completed = subprocess.run(
-                ["git", *args],
+                ["git", *config_args, *args],
                 cwd=str(root),
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds or self.timeout_seconds,
                 check=False,
+                env=child_env,
             )
-            return CommandResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+            return CommandResult(
+                completed.returncode,
+                redact_secret(completed.stdout or "", secret),
+                redact_secret(completed.stderr or "", secret),
+            )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            return CommandResult(-1, stdout, f"{stderr}\nCommand timed out".strip())
+            return CommandResult(
+                -1,
+                redact_secret(stdout, secret),
+                redact_secret(f"{stderr}\nCommand timed out".strip(), secret),
+            )
         except OSError as exc:
-            return CommandResult(-1, "", str(exc))
+            return CommandResult(-1, "", redact_secret(str(exc), secret))
 
     def require(self, root: Path, args: List[str], label: str) -> CommandResult:
         result = self.run(root, args)
@@ -88,8 +179,38 @@ class GitCommandRunner:
         if paths:
             self.require(root, ["add", "--", *paths], "git add")
 
-    def commit(self, root: Path, message: str) -> CommandResult:
-        return self.run(root, ["commit", "-m", message])
+    def commit(
+        self,
+        root: Path,
+        message: str,
+        *,
+        author_name: str = DEFAULT_COMMIT_NAME,
+        author_email: str = DEFAULT_COMMIT_EMAIL,
+    ) -> CommandResult:
+        """Commit the staged changes under the agent's own authorship.
+
+        The identity is passed with -c on this one command. A container has no
+        git identity of its own, and without this the commit fails with
+        "Author identity unknown" - which is how the first real apply run
+        ended, after the patches had already been applied and validated.
+
+        Not `git config --global` and not a write to the repository's own
+        config: the agent must not leave identity behind in a checkout it was
+        only lent, and must not inherit or alter whatever identity the owner of
+        that checkout uses for their own commits.
+        """
+        return self.run(
+            root,
+            [
+                "-c",
+                f"user.name={author_name}",
+                "-c",
+                f"user.email={author_email}",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
 
     def commit_sha(self, root: Path) -> Optional[str]:
         result = self.run(root, ["rev-parse", "HEAD"])
@@ -97,14 +218,71 @@ class GitCommandRunner:
             return None
         return result.stdout.strip() or None
 
-    def push_branch(self, root: Path, branch_name: str) -> CommandResult:
-        return self.run(root, ["push", "-u", "origin", branch_name])
+    def remote_url(self, root: Path, remote: str = "origin") -> Optional[str]:
+        result = self.run(root, ["remote", "get-url", remote])
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    def push_branch(
+        self,
+        root: Path,
+        branch_name: str,
+        *,
+        token: Optional[str] = None,
+        username: str = "x-access-token",
+        remote: str = "origin",
+    ) -> CommandResult:
+        """Push a branch, authenticating an HTTPS remote with a token.
+
+        The token travels in the child process environment and is read back by
+        the credential helper configured for this one command, so it never
+        appears in argv, in .git/config, or in any file. An SSH remote is pushed
+        untouched - it authenticates with the host's keys and a token would do
+        nothing.
+
+        GIT_TERMINAL_PROMPT=0 makes a missing or rejected credential fail
+        immediately instead of blocking on a prompt that nothing can answer.
+        """
+        args: List[str] = []
+        env: Dict[str, str] = {"GIT_TERMINAL_PROMPT": "0"}
+        url = self.remote_url(root, remote)
+        https_remote = bool(url and url.startswith(("http://", "https://")))
+
+        if token and https_remote:
+            env[TOKEN_ENV_VAR] = token
+            env[USERNAME_ENV_VAR] = username
+            args += [
+                # Drop any helper the environment already configured, so only
+                # this one answers and no system keychain is consulted.
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={ENV_CREDENTIAL_HELPER}",
+            ]
+        elif token and url and not https_remote:
+            logger.info(
+                "Pushing to a non-HTTPS remote; token authentication does not apply",
+                remote=remote,
+                scheme=url.split(":", 1)[0],
+            )
+        elif not token:
+            logger.info("Pushing without token authentication; no GitHub token is configured")
+
+        args += ["push", "-u", remote, branch_name]
+        return self.run(root, args, env=env, secret=token)
 
 
 class ValidationRunner:
     """Runs optional project validation commands in the repository root."""
 
-    def __init__(self, timeout_seconds: int = 120):
+    # A missing interpreter is not a failing build. Reported as the same plain
+    # "validation failed" it reads as "the patch broke the project", which is
+    # the one conclusion that would tempt someone to force the pull request
+    # through. This marker keeps the two apart in the stored output.
+    MISSING_TOOL_PREFIX = "VALIDATION TOOLING MISSING"
+
+    def __init__(self, timeout_seconds: int = 900):
         self.timeout_seconds = timeout_seconds
 
     def parse_commands(self, raw_commands: str) -> List[str]:
@@ -143,10 +321,16 @@ class ValidationRunner:
                 if completed.returncode != 0:
                     return ValidationResult(False, "\n\n".join(outputs))
             except subprocess.TimeoutExpired:
-                outputs.append(f"$ {command}\nCommand timed out")
+                outputs.append(
+                    f"$ {command}\nCommand timed out after {self.timeout_seconds}s"
+                )
                 return ValidationResult(False, "\n\n".join(outputs))
             except OSError as exc:
-                outputs.append(f"$ {command}\n{exc}")
+                outputs.append(
+                    f"$ {command}\n{self.MISSING_TOOL_PREFIX}: {parts[0]} could not be run "
+                    f"where the agent is running ({exc}). This is not a failing build - the "
+                    "validation toolchain is absent."
+                )
                 return ValidationResult(False, "\n\n".join(outputs))
         return ValidationResult(True, "\n\n".join(outputs))
 

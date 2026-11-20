@@ -33,10 +33,53 @@ class BlogTopicStatus(str, enum.Enum):
 
 
 class BlogDraftStatus(str, enum.Enum):
+    """The life of one article, from an idea to something being measured.
+
+    The first four values predate this workflow and keep their exact spelling,
+    so every existing row stays valid and no backfill is needed. The rest name
+    the stages that were previously invisible — an article sitting in `draft`
+    could equally have been unwritten, written but unchecked, or checked and
+    waiting for a person, and nothing could tell them apart.
+
+    `rejected` is deliberately reachable from anywhere and goes nowhere: a
+    rejected article is finished, not parked.
+    """
+
+    idea = "idea"
+    researched = "researched"
+    outline = "outline"
     draft = "draft"
+    seo_validated = "seo_validated"
+    pending_approval = "pending_approval"
     approved = "approved"
-    rejected = "rejected"
     published = "published"
+    monitoring = "monitoring"
+    rejected = "rejected"
+
+
+#: The only moves allowed, as {from: {to, ...}}.
+#:
+#: Enforced in the service rather than by the database because the useful
+#: failure is an API error naming the attempted move, not an integrity error.
+#: The rule that matters: nothing reaches `published` except from `approved`,
+#: so no path — autonomous or otherwise — publishes without a human.
+BLOG_DRAFT_TRANSITIONS: dict[str, set[str]] = {
+    "idea": {"researched", "rejected"},
+    "researched": {"outline", "rejected"},
+    "outline": {"draft", "rejected"},
+    "draft": {"seo_validated", "outline", "rejected"},
+    "seo_validated": {"pending_approval", "draft", "rejected"},
+    "pending_approval": {"approved", "rejected", "draft"},
+    "approved": {"published", "rejected"},
+    "published": {"monitoring"},
+    "monitoring": {"pending_approval"},  # a refresh re-enters the approval loop
+    "rejected": set(),
+}
+
+
+def can_transition(current: str, target: str) -> bool:
+    """Whether this move is legal. Unknown states are never legal."""
+    return target in BLOG_DRAFT_TRANSITIONS.get(str(current), set())
 
 
 class BlogPlan(Base):

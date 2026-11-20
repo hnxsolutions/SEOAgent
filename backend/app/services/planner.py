@@ -118,9 +118,13 @@ class PlannerService:
             ])
             report = self._report_values(run, signals, touched_tasks, created_count)
             await self.repository.create_report(report)
+            # Everything upserted that was not newly created was refreshed.
+            # Recording it separates "nothing to do" from "nothing happened".
+            refreshed_count = max(len(touched_tasks) - created_count, 0)
             run = await self.repository.finish_run(
                 run,
                 tasks_created=created_count,
+                tasks_refreshed=refreshed_count,
                 high_priority_tasks=high_priority_count,
                 signal_ids=signals["ids"],
             )
@@ -130,6 +134,7 @@ class PlannerService:
                 "Completed weekly SEO planner run",
                 run_id=str(run.id),
                 tasks_created=created_count,
+                tasks_refreshed=refreshed_count,
                 high_priority_tasks=high_priority_count,
             )
             return run

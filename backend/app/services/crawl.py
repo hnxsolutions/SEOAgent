@@ -21,7 +21,7 @@ from app.crawler.queue_manager import CrawlQueueManager, CrawlTask, TaskPriority
 from app.core.config import settings
 from app.core.redis import REDIS_UNAVAILABLE_MESSAGE, RedisUnavailableError
 from app.core.url_utils import URLNormalizer
-from app.repositories.crawl import CrawlRepository
+from app.repositories.crawl import CrawlRepository, truncate_text
 
 logger = structlog.get_logger(__name__)
 
@@ -428,7 +428,10 @@ class CrawlService:
             source_page_id=source_page_id,
             url=link_data.get("url"),
             normalized_url=link_data.get("normalized_url"),
-            link_text=link_data.get("text"),
+            # Same clipping as the repository path — see the note there. This
+            # call site is not the one the crawl worker uses, but it writes the
+            # same bounded column from the same untrusted page content.
+            link_text=truncate_text(link_data.get("text"), 500),
             link_type=link_data.get("link_type", "internal"),
             rel_attribute=link_data.get("rel"),
             is_nofollow=link_data.get("is_nofollow", False),

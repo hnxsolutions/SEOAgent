@@ -70,6 +70,7 @@ class PlannerRepository:
             target_week_end=target_week_end,
             status=SeoPlannerRunStatus.queued,
             tasks_created=0,
+            tasks_refreshed=0,
             high_priority_tasks=0,
         )
         self.db.add(run)
@@ -124,6 +125,7 @@ class PlannerRepository:
         *,
         tasks_created: int,
         high_priority_tasks: int,
+        tasks_refreshed: int = 0,
         signal_ids: dict,
     ) -> SeoPlannerRun:
         now = datetime.utcnow()
@@ -137,6 +139,7 @@ class PlannerRepository:
         run.blog_plan_id = signal_ids.get("blog_plan_id")
         run.repo_scan_run_id = signal_ids.get("repo_scan_run_id")
         run.tasks_created = tasks_created
+        run.tasks_refreshed = tasks_refreshed
         run.high_priority_tasks = high_priority_tasks
         run.status = SeoPlannerRunStatus.completed
         run.completed_at = now
