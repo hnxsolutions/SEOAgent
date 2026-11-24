@@ -22,6 +22,13 @@ def _patch(target, code="export default function robots(){return {}}", is_new=Tr
     return S(target_file=target, generated_code=code, is_new_file=is_new)
 
 
+def _tx(root, tmp_path, name="run"):
+    """Writes now go through a FileTransaction, which owns the undo material."""
+    from app.repo_agent.file_transaction import FileTransaction
+
+    return FileTransaction(root, name, backup_root=Path(tmp_path) / f"backups-{name}")
+
+
 def _init_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.io"], cwd=tmp_path, capture_output=True, check=True)
@@ -47,9 +54,11 @@ def test_resolve_target_keeps_app_when_present(tmp_path):
 
 def test_apply_one_writes_seo_file(tmp_path):
     svc = _svc()
-    ok, rel, detail = svc._apply_one(tmp_path, _patch("app/robots.ts"))
-    assert ok and rel == "app/robots.ts"
-    assert (tmp_path / "app" / "robots.ts").read_text().startswith("export default")
+    root = tmp_path / "repo"
+    root.mkdir()
+    ok, rel, detail = svc._apply_one(root, _patch("app/robots.ts"), _tx(root, tmp_path))
+    assert ok and rel == "app/robots.ts", detail
+    assert (root / "app" / "robots.ts").read_text().startswith("export default")
 
 
 @pytest.mark.parametrize("bad", [
@@ -61,40 +70,66 @@ def test_apply_one_writes_seo_file(tmp_path):
 ])
 def test_apply_one_refuses_protected_targets(tmp_path, bad):
     svc = _svc()
-    ok, rel, detail = svc._apply_one(tmp_path, _patch(bad, code="x"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    ok, rel, detail = svc._apply_one(root, _patch(bad, code="x"), _tx(root, tmp_path))
     assert not ok and "protected" in detail.lower()
-    assert not (tmp_path / bad).exists()
+    assert not (root / bad).exists()
 
 
 def test_apply_one_allows_seo_component_files(tmp_path):
     # Our own generators target these — they must NOT be blocked by the UI guard.
     svc = _svc()
+    root = tmp_path / "repo"
+    root.mkdir()
     for good in ("app/components/JsonLd.tsx", "src/components/Seo.tsx"):
-        ok, rel, detail = svc._apply_one(tmp_path, _patch(good, code="export default ()=>null"))
+        ok, rel, detail = svc._apply_one(
+            root, _patch(good, code="export default ()=>null"), _tx(root, tmp_path, good)
+        )
         assert ok, f"{good} should be allowed ({detail})"
 
 
-def test_real_git_rollback_reverts_working_tree(tmp_path):
+def test_real_git_rollback_removes_only_this_runs_files(tmp_path):
+    """Rollback is transaction-scoped now.
+
+    It used to run `git reset --hard` + `git clean -fd` + `git checkout <base>`,
+    which also destroyed unrelated modified and untracked files. The contract is
+    now narrower and safer: this run's own writes are undone, everything else —
+    including the branch HEAD — is left exactly as it was.
+    """
     root = _init_repo(tmp_path)
     svc = _svc()
     svc.git.checkout_branch(root, "seo-agent/test")
-    ok, rel, _ = svc._apply_one(root, _patch("app/robots.ts"))
+    # unrelated user work that the old rollback would have destroyed
+    (root / "README.md").write_text("USER EDIT\n", encoding="utf-8")
+    (root / "scratch.txt").write_text("USER UNTRACKED\n", encoding="utf-8")
+
+    tx = _tx(root, tmp_path)
+    ok, rel, _ = svc._apply_one(root, _patch("app/robots.ts"), tx)
     assert ok and (root / "app" / "robots.ts").exists()
-    # rollback should discard the new file and return to base branch
-    svc._rollback(root, S(default_branch="main"))
+
+    report = tx.rollback()
+    assert report.clean
     assert not (root / "app" / "robots.ts").exists()
-    current = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root, capture_output=True, text=True)
-    assert current.stdout.strip() == "main"
+    # unrelated work survives
+    assert (root / "README.md").read_text() == "USER EDIT\n"
+    assert (root / "scratch.txt").read_text() == "USER UNTRACKED\n"
+    # and we did NOT move off the working branch
+    current = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root,
+                             capture_output=True, text=True)
+    assert current.stdout.strip() == "seo-agent/test"
 
 
 def test_real_git_apply_commit_produces_sha(tmp_path):
     root = _init_repo(tmp_path)
     svc = _svc()
     svc.git.checkout_branch(root, "seo-agent/commit-test")
-    ok, rel, _ = svc._apply_one(root, _patch("app/sitemap.ts", code="export default ()=>[]"))
+    ok, rel, _ = svc._apply_one(
+        root, _patch("app/sitemap.ts", code="export default ()=>[]"), _tx(root, tmp_path)
+    )
     assert ok
     svc.git.add(root, [rel])
-    commit = svc.git.commit(root, "SEO Agent: test")
+    commit = svc.git.commit(root, "SEO Agent: test", paths=[rel])
     assert commit.returncode == 0
     assert svc.git.commit_sha(root)
 

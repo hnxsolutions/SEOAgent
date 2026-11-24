@@ -521,7 +521,18 @@ class NextJsRepoScanner:
         )
         return [self._scan_file(path, root, helpers=helpers) for path in ordered]
 
-    def analyze(self, files: List[ScannedRepoFile]) -> List[RepoIssueCandidate]:
+    def analyze(
+        self, files: List[ScannedRepoFile], structure=None
+    ) -> List[RepoIssueCandidate]:
+        """Find SEO defects in a scanned repository.
+
+        ``structure`` is a `ProjectStructure` from
+        `app.repo_agent.project_structure.detect_structure`. It is optional so
+        existing callers keep working, but without it the structural detectors
+        (inherited canonical, broken internal link) cannot run: both need to know
+        which application root this repository actually serves from, and guessing
+        is what caused patches to be written into a parallel `app/` tree before.
+        """
         issues: List[RepoIssueCandidate] = []
         by_path = {file.file_path: file for file in files}
         app_files = [file for file in files if is_app_path(file.file_path)]
@@ -676,7 +687,104 @@ class NextJsRepoScanner:
                     "Make the metadata title unique for this page.",
                 )
             )
+        issues.extend(self._structural_issues(files, by_path, structure))
         return issues
+
+    def _structural_issues(
+        self, files: List[ScannedRepoFile], by_path: dict, structure
+    ) -> List[RepoIssueCandidate]:
+        """Defects that are fixed by removing or rewriting code, not adding it.
+
+        Imported lazily: `structural_detectors` reaches back into this module
+        through `project_structure`, so a module-level import would be circular.
+        """
+        if structure is None:
+            return []
+        from app.repo_agent.structural_detectors import (
+            find_broken_internal_links,
+            find_inherited_canonicals,
+            routes_without_own_canonical,
+        )
+
+        issues: List[RepoIssueCandidate] = []
+
+        for finding in find_inherited_canonicals(files, structure):
+            file = by_path.get(finding.file_path)
+            if not file:
+                continue
+            affected = routes_without_own_canonical(files, structure)
+            issues.append(
+                self._file_issue(
+                    file,
+                    SeoCodeIssueType.inherited_canonical,
+                    # High, not critical: it only bites the routes that have no
+                    # canonical of their own, and the count tells the reviewer
+                    # how much is actually at stake.
+                    SeoCodeIssueSeverity.high,
+                    "Canonical declared in the root layout",
+                    finding.detail
+                    + f" {len(affected)} route file(s) currently inherit it.",
+                    "Remove the canonical from the root layout and give each route its own.",
+                )
+            )
+
+        routes = static_routes_from_pages(files)
+        link_files = self._discover_link_files(structure.root, files)
+        link_by_path = {file.file_path: file for file in link_files}
+        for finding in find_broken_internal_links(link_files, routes):
+            file = link_by_path.get(finding.file_path)
+            if not file:
+                continue
+            suggestion = finding.payload.get("new_href")
+            issues.append(
+                self._file_issue(
+                    file,
+                    SeoCodeIssueType.broken_internal_link,
+                    SeoCodeIssueSeverity.high,
+                    "Internal link points at a route that does not exist",
+                    finding.detail,
+                    (f"Repoint the link to {suggestion}." if suggestion
+                     else "Decide the correct destination; no single replacement was obvious."),
+                )
+            )
+        return issues
+
+    # Links live in ordinary components, which the SEO-helper walk deliberately
+    # skips (it only wants files named like seo.ts / JsonLd.tsx). Link checking
+    # therefore needs its own, wider pass — bounded so a large repository cannot
+    # turn a scan into a full-tree read.
+    LINK_SCAN_DIRS = ("components", "src/components", "data", "src/data")
+    LINK_SCAN_FILE_LIMIT = 400
+
+    def _discover_link_files(
+        self, root: Path, already: List[ScannedRepoFile]
+    ) -> List[ScannedRepoFile]:
+        """The already-scanned files plus the component/data files links live in."""
+        collected = list(already)
+        seen = {file.file_path for file in already}
+        budget = self.LINK_SCAN_FILE_LIMIT
+        folders = [root / prefix for prefix in app_dir_prefixes(root)]
+        folders += [root / name for name in self.LINK_SCAN_DIRS]
+        for folder in folders:
+            if budget <= 0:
+                break
+            if not folder.exists() or not folder.is_dir():
+                continue
+            for path in sorted(folder.rglob("*")):
+                if budget <= 0:
+                    break
+                if not self._is_scannable_file(path, root):
+                    continue
+                rel = path.relative_to(root).as_posix()
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                budget -= 1
+                try:
+                    collected.append(self._scan_file(path, root))
+                except OSError:
+                    continue
+        return collected
 
     @staticmethod
     def _first_by_path(

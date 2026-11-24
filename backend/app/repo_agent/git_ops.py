@@ -186,8 +186,14 @@ class GitCommandRunner:
         *,
         author_name: str = DEFAULT_COMMIT_NAME,
         author_email: str = DEFAULT_COMMIT_EMAIL,
+        paths: Optional[Iterable[str]] = None,
     ) -> CommandResult:
         """Commit the staged changes under the agent's own authorship.
+
+        When `paths` is given the commit is limited to those pathspecs, so
+        anything the checkout's owner had already staged stays staged and
+        uncommitted. Without it the whole index is committed, which is only
+        appropriate where the caller controls the index.
 
         The identity is passed with -c on this one command. A container has no
         git identity of its own, and without this the commit fails with
@@ -199,18 +205,19 @@ class GitCommandRunner:
         only lent, and must not inherit or alter whatever identity the owner of
         that checkout uses for their own commits.
         """
-        return self.run(
-            root,
-            [
-                "-c",
-                f"user.name={author_name}",
-                "-c",
-                f"user.email={author_email}",
-                "commit",
-                "-m",
-                message,
-            ],
-        )
+        args = [
+            "-c",
+            f"user.name={author_name}",
+            "-c",
+            f"user.email={author_email}",
+            "commit",
+            "-m",
+            message,
+        ]
+        pathspecs = list(dict.fromkeys(paths or []))
+        if pathspecs:
+            args += ["--", *pathspecs]
+        return self.run(root, args)
 
     def commit_sha(self, root: Path) -> Optional[str]:
         result = self.run(root, ["rev-parse", "HEAD"])

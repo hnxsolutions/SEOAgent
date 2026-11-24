@@ -45,6 +45,9 @@ from app.repo_agent.architecture import (
     RepoArchitectureDetector,
     html_metadata_patch_content,
 )
+from types import SimpleNamespace
+
+from app.repo_agent.project_structure import detect_structure
 from app.repo_agent.scanner import (
     APP_DIR_PREFIXES,
     IGNORE_DIRS,
@@ -208,7 +211,15 @@ class RepoAgentService:
             await self.repository.create_architecture_profile(run, architecture_data.as_record())
             file_by_path = {file.file_path: file for file in files}
             scanned_by_path = {file.file_path: file for file in scanned_files}
-            candidates = self.scanner.analyze(scanned_files)
+            # Pass the repository's real structure so the structural detectors
+            # (inherited canonical, broken internal link) can run. Without it
+            # analyze() skips them rather than guessing which application root
+            # this project serves from.
+            try:
+                structure = detect_structure(str(root))
+            except PathSafetyError:
+                structure = None
+            candidates = self.scanner.analyze(scanned_files, structure)
             candidates.extend(self._architecture_issue_candidates(architecture_data, scanned_by_path, file_by_path))
             candidates.extend(await self._signal_issue_candidates(run, scanned_files, file_by_path))
             candidates.extend(await self._planner_issue_candidates(run, scanned_files, file_by_path))
@@ -394,7 +405,10 @@ class RepoAgentService:
         site_url = await self._site_url(run.project_id, run.tenant_id, fallback=connection.repo_url)
         records = []
         for issue in issues:
-            patch_values = await self._patch_for_issue(issue, root, file_by_id, static_routes, site_url, architecture_profile)
+            patch_values = await self._patch_for_issue(
+                issue, root, file_by_id, static_routes, site_url, architecture_profile,
+                scanned_files=scanned_for_routes,
+            )
             if not patch_values:
                 continue
             existing = await self.repository.existing_patch(
@@ -1215,6 +1229,103 @@ class RepoAgentService:
             source_reference_id=source_id,
         )
 
+    @staticmethod
+    def _dynamic_patterns(scanned_files):
+        """Dynamic route patterns, so a link a [slug] route serves is not 'broken'."""
+        if not scanned_files:
+            return []
+        from app.repo_agent.structural_detectors import dynamic_route_patterns
+
+        return dynamic_route_patterns(scanned_files)
+
+    def _structural_patch_for_issue(
+        self,
+        issue: SeoCodeIssue,
+        root: Path,
+        file_path: Optional[str],
+        static_routes: List[str],
+        scanned_files,
+    ) -> Optional[dict]:
+        """Build a removal / rewrite patch for the two structural issue types.
+
+        Returns None for every other issue type, so the additive flow below is
+        untouched.
+
+        The defect is re-derived from the file as it is **now** rather than from
+        anything recorded at scan time: the file may have changed since, and a
+        patch built on stale assumptions is exactly what the apply-time guards
+        exist to reject. Re-deriving means the patch is either correct or not
+        produced at all.
+        """
+        from app.repo_agent.project_structure import detect_structure
+        from app.repo_agent.structural_detectors import (
+            build_patch,
+            find_broken_internal_links,
+            find_inherited_canonicals,
+        )
+
+        structural_types = {
+            SeoCodeIssueType.inherited_canonical: SeoCodePatchType.canonical_removal,
+            SeoCodeIssueType.broken_internal_link: SeoCodePatchType.internal_link_fix,
+        }
+        patch_type = structural_types.get(issue.issue_type)
+        if patch_type is None or not file_path:
+            return None
+
+        try:
+            structure = detect_structure(str(root))
+            path = safe_child_path(root, file_path)
+            original = read_repo_text(path)
+        except (PathSafetyError, OSError):
+            return None
+        if not original:
+            return None
+
+        probe = SimpleNamespace(file_path=file_path, content=original,
+                                has_canonical=False, metadata_facets_from_helper=frozenset())
+        if issue.issue_type == SeoCodeIssueType.inherited_canonical:
+            findings = find_inherited_canonicals([probe], structure)
+        else:
+            findings = [
+                f for f in find_broken_internal_links(
+                    [probe], static_routes,
+                    dynamic_patterns=self._dynamic_patterns(scanned_files),
+                )
+                if f.actionable
+            ]
+        if not findings:
+            return None
+
+        candidate = build_patch(findings[0], original, structure)
+        if not candidate.ok:
+            logger.info(
+                "Structural patch rejected by the vocabulary",
+                issue_type=issue.issue_type.value,
+                file_path=file_path,
+                reasons=candidate.reasons[:3],
+            )
+            return None
+
+        return {
+            "tenant_id": issue.tenant_id,
+            "project_id": issue.project_id,
+            "repo_connection_id": issue.repo_connection_id,
+            "scan_run_id": issue.scan_run_id,
+            "issue_id": issue.id,
+            "file_path": file_path,
+            "patch_type": patch_type,
+            "original_content_hash": content_hash(original),
+            "diff_text": build_unified_diff(file_path, original, candidate.after),
+            "proposed_content": candidate.after,
+            "explanation": (
+                f"{patch_type.value} for {issue.issue_type.value} in {file_path}. "
+                "Bounded by the patch vocabulary: the change was re-derived from the "
+                "file's current content and re-validated before being proposed."
+            ),
+            "risk_level": SeoCodePatchRisk.medium,
+            "status": SeoCodePatchStatus.proposed,
+        }
+
     async def _patch_for_issue(
         self,
         issue: SeoCodeIssue,
@@ -1223,6 +1334,7 @@ class RepoAgentService:
         static_routes: List[str],
         site_url: str,
         architecture_profile,
+        scanned_files=None,
     ) -> Optional[dict]:
         target_file = file_by_id.get(issue.file_id) if issue.file_id else None
         file_path = getattr(target_file, "file_path", None)
@@ -1231,6 +1343,11 @@ class RepoAgentService:
         original = ""
         original_hash = "0" * 64
         risk = SeoCodePatchRisk.low
+
+        structural = self._structural_patch_for_issue(issue, root, file_path, static_routes,
+                                                      scanned_files)
+        if structural is not None:
+            return structural
 
         if issue.issue_type in {
             SeoCodeIssueType.missing_metadata,

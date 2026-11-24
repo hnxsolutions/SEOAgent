@@ -27,7 +27,19 @@ from app.framework_patches import PatchContext, SUPPORTED_SURFACES, generate_pat
 from app.models.crawl import CrawlJob, CrawlPage, CrawlStatus
 from app.models.generated_patch import GeneratedPatchValidation, GeneratedSeoPatch
 from app.models.project import Project
+from app.models.repo_agent import RepoConnection
 from app.repo_agent.architecture import RepoArchitectureDetector
+from app.repo_agent.project_structure import (
+    ProjectStructure,
+    REJECTED,
+    RESOLVED,
+    ResolvedTarget,
+    detect_structure,
+    resolve_target,
+    shadow_root_risk,
+    strip_target_hint,
+)
+from app.repo_agent.scanner import PathSafetyError
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +83,12 @@ class FrameworkPatchGeneratorService:
                     "framework": summary.get("primary_framework"),
                     "note": "No dedicated generator for this stack; SEO changes stay head-only + manual."}
 
+        # Resolve the repository the patches will actually land in. Without it
+        # the generators' template paths ("app/sitemap.ts") cannot be mapped onto
+        # the structure the project really uses, so patches are recorded but
+        # never marked safe or ready — the generator does not guess paths.
+        structure, structure_note = await self._structure(project_id, tenant_id)
+
         ctx = await self._context(project, framework_key)
         wanted = surfaces or self._surfaces_for(summary)
         confidence = await self._confidence(framework_key, tenant_id)
@@ -85,7 +103,9 @@ class FrameworkPatchGeneratorService:
             await self.db.delete(row)
 
         created = 0
+        rejected = 0
         seen_hashes: set = set()
+        seen_targets: Dict[str, str] = {}
         for surface in wanted:
             content = generate_patch(framework_key, surface, ctx)
             if not content:
@@ -95,17 +115,34 @@ class FrameworkPatchGeneratorService:
                 # e.g. Next.js metadata already carries OG/Twitter — no duplicate row.
                 continue
             seen_hashes.add(code_hash)
-            safe, reason = self._safety_check(content.target_file)
-            validation_status, notes = self._validate(content, safe, reason)
-            ready = bool(safe and content.code_fixable and validation_status == GeneratedPatchValidation.passed)
+
+            resolved = self._resolve(content.target_file, structure, structure_note)
+            safe, reason = self._safety_check(resolved.path or content.target_file)
+            validation_status, notes = self._validate(
+                content, safe, reason, resolved, structure, seen_targets
+            )
+            if resolved.ok and resolved.path:
+                seen_targets[resolved.path] = content.surface
+            ready = bool(
+                safe
+                and content.code_fixable
+                and resolved.ok
+                and validation_status == GeneratedPatchValidation.passed
+            )
+            if validation_status == GeneratedPatchValidation.failed:
+                rejected += 1
             patch = GeneratedSeoPatch(
                 tenant_id=tenant_id, project_id=project_id,
                 framework=content.framework, surface=content.surface,
-                patch_type=content.patch_type, target_file=content.target_file,
+                patch_type=content.patch_type,
+                target_file=resolved.path or content.target_file,
                 language=content.language, generated_code=content.code,
-                is_new_file=content.is_new_file, code_fixable=content.code_fixable,
-                explanation=self._explain(content, ctx), notes=content.notes,
-                safe=safe, safety_reason=reason,
+                # Trust the repository, not the template, for whether this
+                # creates a file.
+                is_new_file=resolved.is_new_file if resolved.ok else content.is_new_file,
+                code_fixable=content.code_fixable,
+                explanation=self._explain(content, ctx, resolved), notes=content.notes,
+                safe=safe and resolved.ok, safety_reason=reason,
                 validation_status=validation_status, validation_notes=notes,
                 seo_before=seo_before, performance_before=perf_before,
                 ready_for_pr=ready, confidence=confidence,
@@ -116,9 +153,21 @@ class FrameworkPatchGeneratorService:
 
         await self.db.commit()
         logger.info("framework_patches_generated", project_id=str(project_id),
-                    framework=framework_key, count=created)
-        return {"status": "generated", "generated": created, "framework": framework_key,
-                "surfaces": wanted}
+                    framework=framework_key, count=created, rejected=rejected,
+                    structure=structure.router if structure else "unavailable")
+        result: Dict[str, Any] = {
+            "status": "generated", "generated": created, "framework": framework_key,
+            "surfaces": wanted, "rejected": rejected,
+        }
+        if structure is None:
+            result["structure"] = "unavailable"
+            result["note"] = structure_note
+        else:
+            result["structure"] = structure.router
+            result["app_root"] = structure.app_prefix or structure.pages_prefix
+            if structure.ambiguous:
+                result["note"] = structure.ambiguity_reason
+        return result
 
     # -- context ------------------------------------------------------------
 
@@ -189,43 +238,171 @@ class FrameworkPatchGeneratorService:
 
     # -- validation + safety ------------------------------------------------
 
+    async def _structure(
+        self, project_id: UUID, tenant_id: UUID
+    ) -> tuple[Optional[ProjectStructure], str]:
+        """Detect the structure of the repository connected to this project.
+
+        Returns ``(None, reason)`` when no usable checkout is reachable. The
+        caller must then refuse to mark any patch safe or ready, rather than
+        falling back to the generators' template paths.
+        """
+        connections = (await self.db.execute(
+            select(RepoConnection).where(
+                RepoConnection.project_id == project_id,
+                RepoConnection.tenant_id == tenant_id,
+            ).order_by(RepoConnection.updated_at.desc())
+        )).scalars().all()
+        if not connections:
+            return None, "No repository is connected to this project, so patch targets cannot be resolved."
+
+        errors = []
+        for connection in connections:
+            if not connection.local_path:
+                errors.append("a connection has no local_path")
+                continue
+            try:
+                return detect_structure(connection.local_path), ""
+            except PathSafetyError as exc:
+                errors.append(f"{connection.local_path}: {exc}")
+        return None, "Repository checkout is not reachable (" + "; ".join(errors) + ")."
+
+    def _resolve(
+        self, target_file: str, structure: Optional[ProjectStructure], structure_note: str
+    ) -> ResolvedTarget:
+        if structure is None:
+            return ResolvedTarget(
+                original=target_file,
+                status=REJECTED,
+                reason=structure_note or "Repository unavailable; refusing to guess a path.",
+            )
+        return resolve_target(target_file, structure)
+
     def _safety_check(self, target_file: str) -> tuple[bool, Optional[str]]:
         """Reuse the shared Patch Safety classifier's protected-path guard. SEO
         files pass; anything touching UI/business/auth/payments/DB is rejected."""
         # strip parenthetical hints like "app/page.tsx (metadata export)"
-        path = target_file.split(" (")[0].strip()
+        path = strip_target_hint(target_file)
         if self._safety._is_unsafe_path(path):
             return False, "Target path is a protected (UI/business/auth/payments/DB) area."
         return True, "SEO-safe target (metadata/robots/sitemap/schema surface only)."
 
-    def _validate(self, content, safe: bool, reason: Optional[str]) -> tuple[GeneratedPatchValidation, dict]:
-        notes: Dict[str, Any] = {}
-        if not safe:
-            notes["safety"] = reason
-            return GeneratedPatchValidation.failed, notes
+    def _validate(
+        self,
+        content,
+        safe: bool,
+        reason: Optional[str],
+        resolved: ResolvedTarget,
+        structure: Optional[ProjectStructure],
+        seen_targets: Optional[Dict[str, str]] = None,
+    ) -> tuple[GeneratedPatchValidation, dict]:
+        """Validate a generated patch against the repository it would land in.
 
-        code = content.code or ""
+        A patch is only ``passed`` when its target resolves inside the connected
+        checkout, matches the structure the project actually uses, and does not
+        collide with an existing file or another patch in the same run. Checks
+        that did not run are reported as gated — never as passed.
+        """
+        notes: Dict[str, Any] = {}
+        failures: List[str] = []
+        notes["safety"] = reason
+
+        # 1-2. Target resolves, and onto the structure this project really uses.
+        notes["target_resolution"] = resolved.status
+        notes["target_reason"] = resolved.reason
+        if resolved.original and resolved.path and strip_target_hint(resolved.original) != resolved.path:
+            notes["target_remapped_from"] = strip_target_hint(resolved.original)
+        if structure is not None:
+            notes["project_structure"] = (
+                f"{structure.router} router at "
+                f"{structure.app_prefix or structure.pages_prefix or 'unknown'}"
+            )
+            notes["language"] = "typescript" if structure.typescript else "javascript"
+        else:
+            notes["project_structure"] = "unavailable"
+
+        if not safe:
+            failures.append("safety: target is a protected area")
+        if resolved.status != RESOLVED:
+            failures.append(f"target_resolution: {resolved.reason}")
+
+        # 5. A target that would introduce a competing application root is never
+        # safe, whatever surface it claims to be.
+        if structure is not None and resolved.path:
+            shadow = shadow_root_risk(resolved.path, structure)
+            if shadow:
+                notes["shadow_root"] = shadow
+                failures.append(f"shadow_root: {shadow}")
+            else:
+                notes["shadow_root"] = "none: target is inside the active application root"
+
+        # 3-4. Existing vs new file must match reality on disk.
+        if resolved.status == RESOLVED:
+            notes["target_exists"] = resolved.exists
+            if content.is_new_file and resolved.exists:
+                failures.append(
+                    f"new_file_conflict: {resolved.path} already exists; refusing to overwrite it "
+                    "with generated content"
+                )
+            notes["file_mode"] = "create" if resolved.is_new_file else "update"
+
+        # 6. Two patches in one run must not target the same file.
+        if seen_targets and resolved.path and resolved.path in seen_targets:
+            failures.append(
+                f"duplicate_target: {resolved.path} is already targeted by the "
+                f"{seen_targets[resolved.path]} patch in this run"
+            )
+
+        # 7. Patch type must suit the target it was mapped onto.
+        type_problem = self._patch_type_mismatch(content, resolved)
+        if type_problem:
+            failures.append(f"patch_type: {type_problem}")
+        else:
+            notes["patch_type_check"] = "passed"
+
         # Static structural checks appropriate to the language.
+        code = content.code or ""
         static_ok = bool(code.strip())
         if content.language in ("typescript", "tsx", "javascript"):
             static_ok = static_ok and code.count("{") == code.count("}") and code.count("(") == code.count(")")
         if content.language in ("json", "xml"):
             static_ok = static_ok and ("<" in code or "{" in code)
         notes["static_structure"] = "passed" if static_ok else "failed: unbalanced/empty"
-        notes["safety"] = reason
-
         if not static_ok:
-            return GeneratedPatchValidation.failed, notes
+            failures.append("static_structure: generated code is empty or unbalanced")
 
-        # Full validation requires the real project — mark honestly as gated.
-        notes["typecheck"] = "gated: run on a connected repository"
-        notes["lint"] = "gated: run on a connected repository"
-        notes["build"] = "gated: run on a connected repository"
+        # 9. Only ever claim a check that actually ran.
+        notes["typecheck"] = "gated: not run (requires installing and compiling the project)"
+        notes["lint"] = "gated: not run (requires the project's own lint setup)"
+        notes["build"] = "gated: not run (requires a full project build)"
         notes["pagespeed_cwv"] = "gated: measured after apply + deploy (before/after)"
         if not content.code_fixable:
             notes["apply"] = "guided setting (not an auto-appliable code file)"
-        # Static + safety passed. This is a real, reviewable, SEO-safe patch.
+
+        if failures:
+            notes["failures"] = failures
+            notes["summary"] = failures[0]
+            return GeneratedPatchValidation.failed, notes
+
+        notes["summary"] = (
+            f"Structural checks passed against the connected repository; target {resolved.path}."
+        )
         return GeneratedPatchValidation.passed, notes
+
+    @staticmethod
+    def _patch_type_mismatch(content, resolved: ResolvedTarget) -> Optional[str]:
+        """Check the surface against the file it was mapped onto."""
+        if resolved.status != RESOLVED or not resolved.path:
+            return None
+        path = resolved.path
+        expectations = {
+            "sitemap": ("sitemap", "a sitemap route or public/sitemap.xml"),
+            "robots": ("robots", "a robots route or public/robots.txt"),
+        }
+        expected = expectations.get(content.surface)
+        if expected and expected[0] not in path.rsplit("/", 1)[-1].lower():
+            return f"{content.surface} patch targets {path}, which is not {expected[1]}"
+        return None
 
     async def _confidence(self, framework_key: str, tenant_id: UUID) -> int:
         """Evidence-based confidence: the Learning Engine's verification history,
@@ -254,10 +431,17 @@ class FrameworkPatchGeneratorService:
         return max(30, min(99, base))
 
     @staticmethod
-    def _explain(content, ctx: PatchContext) -> str:
-        return (f"Framework-native {content.surface} patch for {content.framework} "
-                f"targeting {content.target_file}. SEO-safe only — head/config surface, "
+    def _explain(content, ctx: PatchContext, resolved: Optional[ResolvedTarget] = None) -> str:
+        target = (resolved.path if resolved and resolved.path else content.target_file)
+        base = (f"Framework-native {content.surface} patch for {content.framework} "
+                f"targeting {target}. SEO-safe only — head/config surface, "
                 f"no UI, layout, business logic, auth, payments, CRM or database changes.")
+        if resolved and resolved.status != RESOLVED:
+            return base + f" NOT APPLICABLE: {resolved.reason}"
+        if resolved and resolved.path and strip_target_hint(resolved.original) != resolved.path:
+            return base + (f" Target was mapped from the framework template path "
+                           f"{strip_target_hint(resolved.original)} onto this repository's structure.")
+        return base
 
     # -- read ---------------------------------------------------------------
 

@@ -34,8 +34,22 @@ from app.models.patch_pipeline import PIPELINE_STAGES, PatchPipeline, PatchPipel
 from app.models.project import Project
 from app.models.repo_agent import RepoConnection
 from app.repo_agent.architecture import RepoArchitectureDetector
+from app.repo_agent.file_transaction import FileTransaction
 from app.repo_agent.git_ops import GitCommandError, GitCommandRunner, ValidationRunner
-from app.repo_agent.scanner import repo_relative, resolve_repo_root, safe_child_path
+from app.repo_agent.project_structure import (
+    RESOLVED,
+    detect_structure,
+    resolve_target,
+    shadow_root_risk,
+)
+from app.repo_agent.scanner import (
+    PathSafetyError,
+    content_hash,
+    read_repo_text,
+    repo_relative,
+    resolve_repo_root,
+    safe_child_path,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -141,21 +155,33 @@ class PatchPipelineService:
         pipeline.branch_name = branch
         self._stage(pipeline, "branch", "succeeded", f"Created branch {branch}")
 
-        # apply (framework-aware, SEO-safe only)
+        # apply (framework-aware, SEO-safe only, transaction-scoped)
+        # Every write goes through the transaction so the run can undo exactly
+        # its own changes and nothing else.
+        transaction = FileTransaction(root, str(pipeline.id))
+        structure = self._structure(root)
         applied_paths: List[str] = []
+        skipped: List[Dict[str, str]] = []
         failed = 0
         for patch in patches:
-            ok, rel_path, detail = self._apply_one(root, patch)
+            ok, rel_path, detail = self._apply_one(root, patch, transaction, structure)
             if ok:
                 applied_paths.append(rel_path)
             else:
                 failed += 1
-                logger.info("patch_pipeline_patch_skipped", target=patch.target_file, reason=detail)
+                skipped.append({"target": patch.target_file, "resolved": rel_path, "reason": detail})
+                logger.info("patch_pipeline_patch_skipped", target=patch.target_file,
+                            resolved=rel_path, reason=detail)
         pipeline.patches_applied = len(applied_paths)
         pipeline.patches_failed = failed
+        if skipped:
+            self._note(pipeline, "skipped_patches", skipped)
         if not applied_paths:
-            self._stage(pipeline, "apply", "failed", "No patches could be safely applied.")
-            self._rollback(root, connection)
+            detail = "No patches could be safely applied."
+            if skipped:
+                detail += f" First reason: {skipped[0]['reason']}"
+            self._stage(pipeline, "apply", "failed", detail)
+            self._undo(pipeline, transaction, "apply")
             pipeline.status = PatchPipelineStatus.rolled_back
             await self._save(pipeline)
             return pipeline
@@ -168,8 +194,8 @@ class PatchPipelineService:
             pipeline.validation_status = "passed" if result.passed else "failed"
             pipeline.validation_output = (result.output or "")[:4000]
             if not result.passed:
-                # rollback: revert working tree, no commit, no PR.
-                self._rollback(root, connection)
+                # Undo only this run's own writes. No commit, no PR.
+                self._undo(pipeline, transaction, "validation")
                 self._stage(pipeline, "commit", "rolled_back", "Validation failed — reverted, no PR created.")
                 for s in ("pull_request", "deploy", "verify"):
                     self._stage(pipeline, s, "skipped", "Skipped after validation failure.")
@@ -190,12 +216,15 @@ class PatchPipelineService:
                 "SEO Agent: apply framework-safe SEO patches",
                 author_name=settings.REPO_AGENT_COMMIT_NAME,
                 author_email=settings.REPO_AGENT_COMMIT_EMAIL,
+                # Commit only this run's files. A bare `git commit` would sweep
+                # up whatever the checkout's owner had already staged.
+                paths=applied_paths,
             )
             if commit.returncode != 0:
                 raise GitCommandError(f"git commit failed: {commit.output}")
             pipeline.commit_sha = self.git.commit_sha(root)
         except GitCommandError as exc:
-            self._rollback(root, connection)
+            self._undo(pipeline, transaction, "commit")
             self._stage(pipeline, "commit", "failed", str(exc))
             pipeline.status = PatchPipelineStatus.failed
             pipeline.error = str(exc)[:500]
@@ -220,28 +249,81 @@ class PatchPipelineService:
                     status=pipeline.status.value, applied=pipeline.patches_applied)
         return pipeline
 
-    def _apply_one(self, root: Path, patch: GeneratedSeoPatch) -> Tuple[bool, str, str]:
-        """Framework-aware, SEO-safe file write. Resolves app/ vs src/app/ and
-        creates missing SEO files. Aborts on any protected target."""
+    def _apply_one(
+        self,
+        root: Path,
+        patch: GeneratedSeoPatch,
+        transaction: FileTransaction,
+        structure=None,
+    ) -> Tuple[bool, str, str]:
+        """Framework-aware, SEO-safe file write, revalidated at apply time.
+
+        A stored patch is a claim made at generation time. By the time it is
+        applied the repository may have moved on — or the record may predate the
+        structural validation added later — so every assumption is checked again
+        here against the real checkout, and the write itself goes through the
+        transaction so it can be undone precisely.
+        """
         rel = self._resolve_target(root, patch.target_file)
+
+        # Re-resolve against the repository's actual structure. This is what
+        # stops a historical record whose target was never mapped (e.g. the
+        # template path "app/sitemap.ts" stored before path resolution existed)
+        # from being applied on its original assumptions.
+        if structure is not None:
+            resolved = resolve_target(patch.target_file, structure)
+            if resolved.status != RESOLVED:
+                return False, rel, f"stale_patch: {resolved.reason}"
+            rel = resolved.path or rel
+            shadow = shadow_root_risk(rel, structure)
+            if shadow:
+                return False, rel, f"shadow_root: {shadow}"
+
         if self._is_protected(rel):
             return False, rel, "Protected (UI/business/auth/payments/DB) target — refused."
         try:
-            target = safe_child_path(root, rel)
-        except Exception as exc:
+            safe_child_path(root, rel)
+        except PathSafetyError as exc:
             return False, rel, f"Unsafe path: {exc}"
+
+        # A new-file patch must still be creating a file, and an update patch
+        # must still find the file it expected. The transaction enforces both
+        # and never reinterprets one as the other.
+        expect_new = bool(patch.is_new_file)
+        expected_hash = getattr(patch, "original_content_hash", None)
+        content = patch.generated_code or ""
+        if not expect_new:
+            # In-place patches append the SEO block when it is absent, so the
+            # content written is derived from what is on disk right now.
+            try:
+                existing = read_repo_text(safe_child_path(root, rel))
+            except (OSError, PathSafetyError) as exc:
+                return False, rel, f"Could not read the existing target: {exc}"
+            if content.strip() and content[:40] in existing:
+                return False, rel, "already_applied: the generated block is already present."
+            if expected_hash and content_hash(existing) != expected_hash:
+                return False, rel, (
+                    "original_changed: the file has changed since this patch was prepared."
+                )
+            content = existing.rstrip() + "\n\n" + content
+
+        ok, detail = transaction.write(
+            rel,
+            content,
+            expect_new=expect_new,
+            # The hash was checked above for the append case; pass it through for
+            # a straight replace so the transaction enforces it too.
+            expected_original_hash=expected_hash if expect_new is False else None,
+        )
+        return ok, rel, detail
+
+    @staticmethod
+    def _structure(root: Path):
+        """The repository's real structure, or None when it cannot be read."""
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # New-file patches replace; in-place patches append the SEO block if absent.
-            if patch.is_new_file or not target.exists():
-                target.write_text(patch.generated_code, encoding="utf-8")
-            else:
-                existing = target.read_text(encoding="utf-8", errors="ignore")
-                if patch.generated_code.strip() and patch.generated_code[:40] not in existing:
-                    target.write_text(existing.rstrip() + "\n\n" + patch.generated_code, encoding="utf-8")
-            return True, rel, "applied"
-        except Exception as exc:
-            return False, rel, str(exc)
+            return detect_structure(str(root))
+        except PathSafetyError:
+            return None
 
     # Never write a UI-component file, even if the base classifier allows it.
     _UI_SEGMENTS = {"components", "component", "ui", "styles", "css", "widgets", "layouts"}
@@ -274,12 +356,47 @@ class PatchPipelineService:
         rel = target_file.split(" (")[0].strip().lstrip("/")
         return repo_relative(root, rel)
 
-    def _rollback(self, root: Path, connection) -> None:
-        """Revert the working tree to the base branch — never leave partial edits."""
-        base = connection.default_branch or settings.GITHUB_DEFAULT_BASE_BRANCH or "main"
-        self.git.run(root, ["reset", "--hard"])
-        self.git.run(root, ["clean", "-fd"])   # discard newly-created (untracked) SEO files
-        self.git.run(root, ["checkout", base])
+    def _undo(self, pipeline: PatchPipeline, transaction: FileTransaction, stage: str) -> None:
+        """Undo exactly this run's own file writes.
+
+        This replaces a previous implementation that ran `git reset --hard`,
+        `git clean -fd` and `git checkout <base>`. Those commands cannot tell
+        this run's changes from the checkout owner's: in a working tree holding
+        unrelated modified or untracked files they destroyed all of them, with
+        no backup. Nothing here runs a git command, so pre-existing
+        modifications, untracked files and the index are left exactly as they
+        were. A file that someone else changed after this run wrote it is
+        reported as a conflict instead of being overwritten.
+        """
+        report = transaction.rollback()
+        self._note(pipeline, "rollback", {"stage": stage, **report.as_dict()})
+        if report.clean:
+            logger.info("patch_pipeline_rolled_back", pipeline_id=str(pipeline.id),
+                        stage=stage, restored=len(report.restored), removed=len(report.removed))
+            return
+        logger.warning(
+            "patch_pipeline_rollback_incomplete",
+            pipeline_id=str(pipeline.id), stage=stage,
+            conflicts=len(report.conflicts), failures=len(report.failures),
+        )
+        detail = "; ".join(
+            f"{item['path']}: {item['reason']}" for item in (report.conflicts + report.failures)
+        )
+        pipeline.error = (
+            f"Rollback left {len(report.conflicts)} conflict(s) and "
+            f"{len(report.failures)} failure(s): {detail}"
+        )[:500]
+
+    def _note(self, pipeline: PatchPipeline, key: str, value) -> None:
+        """Attach a structured note to the pipeline row for the review UI."""
+        stages = list(pipeline.stages or [])
+        notes = next((s for s in stages if s.get("name") == "__notes__"), None)
+        if notes is None:
+            notes = {"name": "__notes__", "status": "info"}
+            stages.append(notes)
+        notes[key] = value
+        pipeline.stages = stages
+        flag_modified(pipeline, "stages")
 
     # -- PR / deploy / verify / learn (reuse engines) -----------------------
 

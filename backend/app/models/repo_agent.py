@@ -53,6 +53,17 @@ class SeoCodeIssueType(str, enum.Enum):
     heading_semantics_risk = "heading_semantics_risk"
     duplicate_metadata = "duplicate_metadata"
     route_not_in_sitemap = "route_not_in_sitemap"
+    # Structural defects (migration 0049). Unlike the values above, these are not
+    # "something is missing" — they are something present that is wrong, and they
+    # are fixed by removing or rewriting code rather than adding it. Detection
+    # lives in app/repo_agent/structural_detectors.py.
+    #
+    # inherited_canonical: a canonical declared in the ROOT layout, which every
+    # route without its own inherits. Distinct from duplicate_metadata, which is
+    # two pages sharing metadata rather than one declaration leaking downward.
+    inherited_canonical = "inherited_canonical"
+    # broken_internal_link: an href pointing at a route the repository does not build.
+    broken_internal_link = "broken_internal_link"
 
 
 class SeoCodeIssueSeverity(str, enum.Enum):
@@ -79,6 +90,7 @@ class SeoCodeIssueStatus(str, enum.Enum):
 
 
 class SeoCodePatchType(str, enum.Enum):
+    # Additive types: the patch only ever adds markup or config that was absent.
     metadata_update = "metadata_update"
     schema_addition = "schema_addition"
     sitemap_update = "sitemap_update"
@@ -86,6 +98,15 @@ class SeoCodePatchType(str, enum.Enum):
     canonical_addition = "canonical_addition"
     og_twitter_addition = "og_twitter_addition"
     semantic_html_safe_suggestion = "semantic_html_safe_suggestion"
+    # Structural types (migration 0048). These remove or rewrite existing code,
+    # so each one is bounded by an explicit rule set — the paths it may touch and
+    # the single operation it may perform — in app/repo_agent/patch_vocabulary.py.
+    # Nothing here grants free-form code modification.
+    canonical_removal = "canonical_removal"
+    internal_link_fix = "internal_link_fix"
+    metadata_replace = "metadata_replace"
+    config_update = "config_update"
+    multi_file_patch = "multi_file_patch"
 
 
 class SeoCodePatchRisk(str, enum.Enum):
